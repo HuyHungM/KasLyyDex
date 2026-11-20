@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Hướng 3 — App Đọc Truyện (kiểu app mobile, feed chương mới)</title>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#faf9f7; --card:#ffffff; --ink:#1c1b1a; --muted:#8a857c;
+    --line:#eceae4; --red:#e8492e; --red-soft:#fdeee9; --gold:#b98a1f;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Be Vietnam Pro",sans-serif;background:#d8d4cc;color:var(--ink);padding:24px}
+  img{display:block}
+  a{text-decoration:none;color:inherit}
+  .board-label{max-width:1560px;margin:0 auto 12px;font-size:14px;font-weight:600;color:#4c463c}
+  .board-label small{font-weight:400;color:#6d675c}
+  .board{max-width:1560px;margin:0 auto 28px;display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+  .desktop{width:1180px;background:var(--bg);border-radius:14px;overflow:hidden;box-shadow:0 12px 40px rgba(40,35,25,.25)}
+  .phone{width:375px;background:var(--bg);border-radius:30px;border:9px solid #191713;overflow:hidden;box-shadow:0 12px 40px rgba(40,35,25,.3);position:relative}
+  .phone-screen{height:760px;overflow:hidden;position:relative}
+  .frame-label{font-size:12px;font-weight:600;color:#4c463c;margin-bottom:8px}
+
+  .hd{display:flex;align-items:center;gap:18px;padding:12px 24px;background:var(--card);border-bottom:1px solid var(--line)}
+  .logo{display:flex;align-items:center;gap:8px;font-weight:800;font-size:18px;letter-spacing:-.02em}
+  .logo i{width:30px;height:30px;border-radius:9px;background:var(--red);color:#fff;display:grid;place-items:center;font-style:normal;font-size:14px;font-weight:800}
+  .search{flex:1;max-width:430px;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:10px 14px;color:var(--muted);font-size:13px}
+  .nav{margin-left:auto;display:flex;gap:4px}
+  .nav a{display:flex;align-items:center;gap:7px;padding:9px 14px;border-radius:10px;font-size:13.5px;font-weight:600;color:var(--muted)}
+  .nav a.on{background:var(--red-soft);color:var(--red)}
+  .nav svg{width:17px;height:17px}
+  .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);background:var(--card);display:grid;place-items:center;color:var(--muted)}
+
+  .cols{display:flex;gap:24px;padding:20px 24px}
+  .main-col{flex:1;min-width:0}
+  .side{width:320px;flex-shrink:0}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .panel-h{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .panel-h h2{font-size:15.5px;font-weight:800}
+  .panel-h .more{margin-left:auto;font-size:12.5px;font-weight:600;color:var(--red)}
+  .live{width:7px;height:7px;border-radius:99px;background:var(--red);box-shadow:0 0 0 3px var(--red-soft)}
+
+  /* signature: feed rows */
+  .fr{display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);align-items:center}
+  .fr:last-child{border-bottom:0}
+  .fr img{width:46px;height:69px;object-fit:cover;border-radius:8px}
+  .fr-b{flex:1;min-width:0}
+  .fr-t{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fr-chs{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+  .ch-pill{font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line);color:var(--ink)}
+  .ch-pill.new{background:var(--red-soft);border-color:#f6cdbf;color:var(--red)}
+  .ch-pill small{color:var(--muted);font-weight:500}
+  .fr-d{font-size:11.5px;color:var(--muted);white-space:nowrap}
+
+  .hscroll{display:flex;gap:14px;padding:16px;overflow:hidden}
+  .hc{width:128px;flex-shrink:0;position:relative}
+  .hc .cv{position:relative;aspect-ratio:2/3;border-radius:10px;overflow:hidden}
+  .hc img{width:100%;height:100%;object-fit:cover}
+  .rank{position:absolute;left:-4px;top:-4px;width:26px;height:26px;border-radius:8px;background:var(--ink);color:#fff;font-size:13px;font-weight:800;display:grid;place-items:center}
+  .rank.r1{background:var(--red)}
+  .hc h3{font-size:12.5px;font-weight:600;line-height:1.3;margin-top:7px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .hc .cm{font-size:11.5px;color:var(--muted);margin-top:2px}
+
+  .bxh-row{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line)}
+  .bxh-row:last-child{border-bottom:0}
+  .bxh-n{width:22px;font-size:15px;font-weight:800;color:var(--muted);font-style:italic}
+  .bxh-n.top{color:var(--red)}
+  .bxh-row img{width:36px;height:54px;object-fit:cover;border-radius:6px}
+  .bxh-t{flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bxh-f{font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .tabs{display:flex;gap:6px;padding:12px 16px 0}
+  .tabs a{font-size:12.5px;font-weight:700;padding:7px 12px;border-radius:999px;color:var(--muted)}
+  .tabs a.on{background:var(--ink);color:#fff}
+
+  .tu-empty{padding:22px 16px;text-align:center}
+  .tu-empty p{font-size:13px;color:var(--muted);line-height:1.6}
+  .tu-empty .btn{margin-top:12px;display:inline-block;padding:10px 20px;border-radius:10px;background:var(--red);color:#fff;font-size:13px;font-weight:700}
+
+  .ft{padding:18px 24px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);text-align:center}
+
+  /* mobile */
+  .m-hd{padding:12px 14px;background:var(--card);border-bottom:1px solid var(--line)}
+  .m-hd-row{display:flex;align-items:center;gap:10px}
+  .m-search{margin-top:10px;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:11px 14px;color:var(--muted);font-size:13px}
+  .m-sec{padding:12px 0 0}
+  .m-sec .panel{border-radius:0;border-left:0;border-right:0}
+  .m-sec .panel-h{padding:12px 14px}
+  .m-sec .fr{padding:11px 14px}
+  .m-hscroll{display:flex;gap:12px;padding:12px 14px;overflow:hidden}
+  .m-hscroll .hc{width:104px}
+  .tabbar{position:absolute;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding:8px 6px 14px}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:600;color:var(--muted);position:relative}
+  .tab.on{color:var(--red)}
+  .tab svg{width:21px;height:21px}
+  .dot{position:absolute;top:-2px;right:calc(50% - 16px);width:8px;height:8px;border-radius:99px;background:var(--red);border:2px solid var(--card)}
+
+  /* reader */
+  .rdr{background:#fff;height:100%;position:relative}
+  .r-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:10px;padding:12px;background:rgba(255,255,255,.95);border-bottom:1px solid var(--line);font-size:13px;z-index:2}
+  .r-top .t{flex:1;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .r-top .s{color:var(--muted);font-weight:500}
+  .r-page{padding:52px 0 118px}
+  .r-page img{width:100%}
+  .r-set{position:absolute;bottom:64px;left:0;right:0;display:flex;align-items:center;gap:8px;padding:9px 12px;background:rgba(250,249,247,.97);border-top:1px solid var(--line);z-index:2}
+  .seg{display:flex;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .seg a{padding:8px 12px;font-size:12px;font-weight:700;color:var(--muted)}
+  .seg a.on{background:var(--ink);color:#fff}
+  .bg-dots{display:flex;gap:6px;margin-left:auto;align-items:center}
+  .bg-dot{width:24px;height:24px;border-radius:99px;border:2px solid var(--line)}
+  .bg-dot.on{border-color:var(--red);box-shadow:0 0 0 2px var(--red-soft)}
+  .r-bot{position:absolute;bottom:0;left:0;right:0;display:flex;align-items:center;gap:8px;padding:10px 10px 16px;background:var(--card);border-top:1px solid var(--line);z-index:2}
+  .r-btn{flex:1;text-align:center;padding:12px 6px;border-radius:10px;font-size:13px;font-weight:700;background:var(--bg);border:1px solid var(--line)}
+  .r-btn.pri{background:var(--red);color:#fff;border-color:var(--red)}
+  .r-btn.dis{color:#c4bfb5}
+  .r-mid{font-size:12px;font-weight:700;color:var(--muted);white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="board-label">HƯỚNG 3 — APP ĐỌC TRUYỆN &nbsp;<small>gọn như app mobile: feed chương mới là trung tâm, BXH + tủ truyện ở cột phải, thanh cài đặt reader ngay trong màn đọc · sáng mặc định, có dark mode</small></div>
+<div class="board">
+
+  <div class="desktop">
+    <div class="hd">
+      <a class="logo"><i>T</i>TruyệnViệt</a>
+      <div class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Tìm truyện, tác giả, thể loại…</div>
+      <nav class="nav">
+        <a class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1Z"/></svg>Trang chủ</a>
+        <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Thể loại</a>
+        <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8m-4-4v4M7 4h10v5a5 5 0 0 1-10 0Z"/><path d="M7 6H4a3 3 0 0 0 3 5m10-5h3a3 3 0 0 1-3 5"/></svg>BXH</a>
+        <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4Z"/></svg>Tủ truyện</a>
+      </nav>
+      <div class="icon-btn"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg></div>
+    </div>
+
+    <div class="cols">
+      <div class="main-col">
+        <div class="panel" style="margin-bottom:20px">
+          <div class="panel-h"><span class="live"></span><h2>Mới cập nhật</h2><a class="more">Xem tất cả →</a></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa1c7c817-4e59-43b7-9365-09675a149a6f%2F2f4aca53-64c7-46ac-ae85-3bc9b3169890.png.256.jpg"><div class="fr-b"><div class="fr-t">One Piece</div><div class="fr-chs"><span class="ch-pill new">Chương 1198 <small>· 2 giờ trước</small></span><span class="ch-pill">Chương 1197</span><span class="ch-pill">Chương 1196</span></div></div><span class="fr-d">Tiếng Việt</span></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"><div class="fr-b"><div class="fr-t">Kage no Jitsuryokusha ni Naritakute!</div><div class="fr-chs"><span class="ch-pill new">Chương 68.2 <small>· 5 giờ trước</small></span><span class="ch-pill">Chương 68.1</span><span class="ch-pill">Chương 67</span></div></div><span class="fr-d">Tiếng Việt</span></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa77742b1-befd-49a4-bff5-1ad4e6b0ef7b%2F6e518bd1-5f60-446b-8832-bfe6bf74834b.jpg.256.jpg"><div class="fr-b"><div class="fr-t">Chainsaw Man</div><div class="fr-chs"><span class="ch-pill new">Chương 190 <small>· hôm qua</small></span><span class="ch-pill">Chương 189</span><span class="ch-pill">Chương 188</span></div></div><span class="fr-d">English</span></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Faa6c76f7-5f5f-46b6-a800-911145f81b9b%2Fd3e909b9-c667-48a5-beec-ac96f23fa228.jpg.256.jpg"><div class="fr-b"><div class="fr-t">Sono Bisque Doll wa Koi o Suru</div><div class="fr-chs"><span class="ch-pill new">Chương 115.5 <small>· 2 ngày trước</small></span><span class="ch-pill">Chương 115.4</span></div></div><span class="fr-d">English</span></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fe78a489b-6632-4d61-b00b-5206f5b8b22b%2F420ec3c0-2dab-47f2-8f9e-a9e0c3faf16d.jpg.256.jpg"><div class="fr-b"><div class="fr-t">Tensei Shitara Slime datta Ken</div><div class="fr-chs"><span class="ch-pill new">Chương 120 <small>· 3 ngày trước</small></span><span class="ch-pill">Chương 119</span><span class="ch-pill">Chương 118</span></div></div><span class="fr-d">Tiếng Việt</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-h"><h2>Phổ biến nhất</h2><a class="more">Xem tất cả →</a></div>
+          <div class="hscroll">
+            <a class="hc"><span class="rank r1">1</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F32d76d19-8a05-4db0-9fc2-e0b0648fe9d0%2Fe90bdc47-c8b9-4df7-b2c0-17641b645ee1.jpg.256.jpg"></div><h3>Na Honjaman Level-Up</h3><div class="cm">★ 8.7 · Full</div></a>
+            <a class="hc"><span class="rank">2</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Faa6c76f7-5f5f-46b6-a800-911145f81b9b%2Fd3e909b9-c667-48a5-beec-ac96f23fa228.jpg.256.jpg"></div><h3>Sono Bisque Doll wa Koi o Suru</h3><div class="cm">★ 8.9 · Full</div></a>
+            <a class="hc"><span class="rank">3</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"></div><h3>Kage no Jitsuryokusha ni Naritakute!</h3><div class="cm">★ 8.4 · Ch. 68</div></a>
+            <a class="hc"><span class="rank">4</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa77742b1-befd-49a4-bff5-1ad4e6b0ef7b%2F6e518bd1-5f60-446b-8832-bfe6bf74834b.jpg.256.jpg"></div><h3>Chainsaw Man</h3><div class="cm">★ 9.0 · Ch. 190</div></a>
+            <a class="hc"><span class="rank">5</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fd8a959f7-648e-4c8d-8f23-f1f3f8e129f3%2Fd22cfde3-268a-48a3-b5ed-73772834764d.jpg.256.jpg"></div><h3>One Punch-Man</h3><div class="cm">★ 8.8 · Ch. 201</div></a>
+            <a class="hc"><span class="rank">6</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fb0b721ff-c388-4486-aa0f-c2b0bb321512%2Fb9a049b0-186b-4714-a83e-bb965458914a.jpg.256.jpg"></div><h3>Sousou no Frieren</h3><div class="cm">★ 9.1 · Ch. 140</div></a>
+          </div>
+        </div>
+      </div>
+
+      <div class="side">
+        <div class="panel" style="margin-bottom:20px">
+          <div class="tabs"><a class="on">Theo dõi</a><a>Đánh giá</a><a>Mới</a></div>
+          <div class="bxh-row"><span class="bxh-n top">1</span><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F32d76d19-8a05-4db0-9fc2-e0b0648fe9d0%2Fe90bdc47-c8b9-4df7-b2c0-17641b645ee1.jpg.256.jpg"><span class="bxh-t">Na Honjaman Level-Up</span><span class="bxh-f">120k</span></div>
+          <div class="bxh-row"><span class="bxh-n top">2</span><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa1c7c817-4e59-43b7-9365-09675a149a6f%2F2f4aca53-64c7-46ac-ae85-3bc9b3169890.png.256.jpg"><span class="bxh-t">One Piece</span><span class="bxh-f">98k</span></div>
+          <div class="bxh-row"><span class="bxh-n top">3</span><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa77742b1-befd-49a4-bff5-1ad4e6b0ef7b%2F6e518bd1-5f60-446b-8832-bfe6bf74834b.jpg.256.jpg"><span class="bxh-t">Chainsaw Man</span><span class="bxh-f">87k</span></div>
+          <div class="bxh-row"><span class="bxh-n">4</span><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fb0b721ff-c388-4486-aa0f-c2b0bb321512%2Fb9a049b0-186b-4714-a83e-bb965458914a.jpg.256.jpg"><span class="bxh-t">Sousou no Frieren</span><span class="bxh-f">48k</span></div>
+          <div class="bxh-row"><span class="bxh-n">5</span><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fd8a959f7-648e-4c8d-8f23-f1f3f8e129f3%2Fd22cfde3-268a-48a3-b5ed-73772834764d.jpg.256.jpg"><span class="bxh-t">One Punch-Man</span><span class="bxh-f">45k</span></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><h2>Tủ truyện của bạn</h2><a class="more">Mở tủ →</a></div>
+          <div class="tu-empty">
+            <p>Chưa theo dõi truyện nào.<br>Bấm <b>＋ Theo dõi</b> ở trang truyện để lưu vào tủ và nhận thông báo chương mới.</p>
+            <a class="btn">Khám phá truyện</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="ft">TruyệnViệt — demo đọc truyện phi thương mại · Dữ liệu & ảnh từ MangaDex · Ủng hộ tác giả bằng cách mua truyện bản quyền.</div>
+  </div>
+
+  <!-- mobile home -->
+  <div>
+    <div class="frame-label">Mobile — trang chủ (feed chương mới)</div>
+    <div class="phone"><div class="phone-screen">
+      <div class="m-hd">
+        <div class="m-hd-row">
+          <a class="logo"><i>T</i>TruyệnViệt</a>
+          <div style="margin-left:auto" class="icon-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg></div>
+        </div>
+        <div class="m-search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Tìm truyện, tác giả, thể loại…</div>
+      </div>
+      <div class="m-sec">
+        <div class="panel">
+          <div class="panel-h"><span class="live"></span><h2>Mới cập nhật</h2><a class="more">Tất cả →</a></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa1c7c817-4e59-43b7-9365-09675a149a6f%2F2f4aca53-64c7-46ac-ae85-3bc9b3169890.png.256.jpg"><div class="fr-b"><div class="fr-t">One Piece</div><div class="fr-chs"><span class="ch-pill new">Chương 1198 <small>· 2 giờ</small></span><span class="ch-pill">1197</span></div></div></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"><div class="fr-b"><div class="fr-t">Kage no Jitsuryokusha ni Naritakute!</div><div class="fr-chs"><span class="ch-pill new">Chương 68.2 <small>· 5 giờ</small></span><span class="ch-pill">68.1</span></div></div></div>
+          <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa77742b1-befd-49a4-bff5-1ad4e6b0ef7b%2F6e518bd1-5f60-446b-8832-bfe6bf74834b.jpg.256.jpg"><div class="fr-b"><div class="fr-t">Chainsaw Man</div><div class="fr-chs"><span class="ch-pill new">Chương 190 <small>· hôm qua</small></span><span class="ch-pill">189</span></div></div></div>
+        </div>
+      </div>
+      <div class="m-sec">
+        <div class="panel">
+          <div class="panel-h"><h2>Phổ biến nhất</h2><a class="more">Tất cả →</a></div>
+          <div class="m-hscroll">
+            <a class="hc"><span class="rank r1">1</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F32d76d19-8a05-4db0-9fc2-e0b0648fe9d0%2Fe90bdc47-c8b9-4df7-b2c0-17641b645ee1.jpg.256.jpg"></div><h3>Na Honjaman Level-Up</h3></a>
+            <a class="hc"><span class="rank">2</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Faa6c76f7-5f5f-46b6-a800-911145f81b9b%2Fd3e909b9-c667-48a5-beec-ac96f23fa228.jpg.256.jpg"></div><h3>Sono Bisque Doll wa Koi o Suru</h3></a>
+            <a class="hc"><span class="rank">3</span><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"></div><h3>Kage no Jitsuryokusha…</h3></a>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <a class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1Z"/></svg>Trang chủ</a>
+        <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Thể loại</a>
+        <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8m-4-4v4M7 4h10v5a5 5 0 0 1-10 0Z"/><path d="M7 6H4a3 3 0 0 0 3 5m10-5h3a3 3 0 0 1-3 5"/></svg>BXH</a>
+        <a class="tab"><span class="dot"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4Z"/></svg>Tủ truyện</a>
+      </div>
+    </div></div>
+  </div>
+
+  <!-- mobile reader -->
+  <div>
+    <div class="frame-label">Mobile — reader + thanh cài đặt</div>
+    <div class="phone"><div class="phone-screen">
+      <div class="rdr">
+        <div class="r-top">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m15 5-7 7 7 7"/></svg>
+          <span class="t">Kage no Jitsuryokusha… <span class="s">· Chương 1</span></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </div>
+        <div class="r-page"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fcmdxd98sb0x3yprd%2Emangadex%2Enetwork%2Fdata%2F0a616d8668fba7ed30f85ab272475896%2F1%2D010de865320f2c1b11a195df40cb26b7fa19c5c9dbbbeb176babacfc7e347abf%2Ejpg" alt="Trang 5"></div>
+        <div class="r-set">
+          <div class="seg"><a class="on">Cuộn dọc</a><a>Lật ngang</a></div>
+          <div class="bg-dots">
+            <span class="bg-dot on" style="background:#fff"></span>
+            <span class="bg-dot" style="background:#f3ead8"></span>
+            <span class="bg-dot" style="background:#14161d"></span>
+          </div>
+        </div>
+        <div class="r-bot">
+          <a class="r-btn dis">← Trước</a>
+          <span class="r-mid">5/41</span>
+          <a class="r-btn pri">Chương sau →</a>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</div>
+</body>
+</html>

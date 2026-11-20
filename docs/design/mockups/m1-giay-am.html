@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Hướng 1 — Giấy Ấm (light editorial, thuần Việt)</title>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f6f1e7; --card:#fffdf7; --ink:#232019; --muted:#7a7466;
+    --line:#e6ddcb; --red:#d9432a; --red-deep:#b23420; --gold:#c9972c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Be Vietnam Pro",sans-serif;background:#d8d4cc;color:var(--ink);padding:24px}
+  img{display:block}
+  a{text-decoration:none;color:inherit}
+  .board-label{max-width:1560px;margin:0 auto 12px;font-size:14px;font-weight:600;color:#4c463c}
+  .board-label small{font-weight:400;color:#6d675c}
+  .board{max-width:1560px;margin:0 auto 28px;display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+  .desktop{width:1180px;background:var(--paper);border-radius:14px;overflow:hidden;box-shadow:0 12px 40px rgba(40,35,25,.25)}
+  .phone{width:375px;background:var(--paper);border-radius:30px;border:9px solid #191713;overflow:hidden;box-shadow:0 12px 40px rgba(40,35,25,.3);position:relative}
+  .phone-screen{height:760px;overflow:hidden;position:relative}
+  .frame-label{font-size:12px;font-weight:600;color:#4c463c;margin-bottom:8px}
+
+  /* ===== desktop header ===== */
+  .hd{display:flex;align-items:center;gap:22px;padding:14px 28px;background:var(--card);border-bottom:1px solid var(--line)}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;letter-spacing:-.02em}
+  .seal{width:34px;height:34px;background:var(--red);color:#fff;border-radius:7px;display:grid;place-items:center;font-size:13px;font-weight:800;transform:rotate(-4deg);box-shadow:2px 2px 0 rgba(35,32,25,.15)}
+  .nav{display:flex;gap:20px;font-size:14px;font-weight:500;color:var(--muted)}
+  .nav a.on{color:var(--ink);font-weight:700}
+  .search{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:9px 16px;width:280px;color:var(--muted);font-size:13px}
+  .icon-btn{width:38px;height:38px;border-radius:999px;border:1px solid var(--line);background:var(--card);display:grid;place-items:center;color:var(--muted)}
+
+  /* ===== hero split ===== */
+  .hero{display:flex;gap:40px;padding:36px 28px;align-items:center}
+  .hero-txt{flex:1}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.14em;color:var(--red);margin-bottom:10px}
+  .hero h1{font-size:42px;font-weight:800;letter-spacing:-.03em;line-height:1.08}
+  .chips{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
+  .chip{font-size:12px;font-weight:600;padding:5px 12px;border-radius:999px;background:var(--card);border:1px solid var(--line);color:var(--muted)}
+  .chip.hot{color:var(--red-deep);border-color:#ecc9b8;background:#fbeee6}
+  .hero p{font-size:14px;line-height:1.7;color:var(--muted);max-width:52ch}
+  .cta{display:flex;gap:12px;margin-top:20px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:13px 26px;border-radius:999px;font-size:14px;font-weight:700}
+  .btn-red{background:var(--red);color:#fff}
+  .btn-ghost{background:var(--card);border:1px solid var(--line);color:var(--ink)}
+  .hero-cover{position:relative;width:230px;flex-shrink:0}
+  .hero-cover img{width:230px;height:345px;object-fit:cover;border-radius:10px;box-shadow:10px 10px 0 var(--red)}
+  .stamp{position:absolute;top:-14px;right:-14px;width:64px;height:64px;border:2.5px solid var(--red);color:var(--red);border-radius:10px;display:grid;place-items:center;font-weight:800;font-size:13px;text-align:center;line-height:1.15;transform:rotate(8deg);background:rgba(246,241,231,.9)}
+
+  /* ===== sections ===== */
+  .sec{padding:8px 28px 30px}
+  .sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
+  .sec-h h2{font-size:21px;font-weight:800;letter-spacing:-.02em}
+  .sec-h .more{margin-left:auto;font-size:13px;font-weight:600;color:var(--red)}
+  .sec-h .sub{font-size:13px;color:var(--muted)}
+
+  .continue{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .cc{display:flex;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}
+  .cc img{width:52px;height:78px;object-fit:cover;border-radius:6px}
+  .cc-t{font-size:13.5px;font-weight:700;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .cc-m{font-size:12px;color:var(--muted);margin-top:4px}
+  .cc-bar{height:4px;background:var(--line);border-radius:99px;margin-top:8px;overflow:hidden}
+  .cc-bar i{display:block;height:100%;background:var(--red);border-radius:99px}
+
+  .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:20px 16px}
+  .card .cv{position:relative;aspect-ratio:2/3;border-radius:10px;overflow:hidden;background:var(--line)}
+  .card .cv img{width:100%;height:100%;object-fit:cover}
+  .rate{position:absolute;left:6px;top:6px;background:rgba(35,32,25,.82);color:#ffd98a;font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px}
+  .card h3{font-size:13.5px;font-weight:600;line-height:1.35;margin-top:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .card .cm{font-size:12px;color:var(--muted);margin-top:3px}
+  .card .cm b{color:var(--red-deep);font-weight:600}
+
+  .feed{display:grid;grid-template-columns:1fr 1fr;gap:0 28px}
+  .fr{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);align-items:center}
+  .fr img{width:42px;height:63px;object-fit:cover;border-radius:6px}
+  .fr-t{font-size:13.5px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fr-c{font-size:12px;font-weight:600;color:var(--red-deep);background:#fbeee6;padding:4px 10px;border-radius:999px;white-space:nowrap}
+  .fr-d{font-size:11.5px;color:var(--muted);white-space:nowrap;width:74px;text-align:right}
+
+  .ft{padding:20px 28px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);text-align:center}
+
+  /* ===== mobile ===== */
+  .m-hd{padding:12px 14px 8px;background:var(--card);border-bottom:1px solid var(--line)}
+  .m-hd-row{display:flex;align-items:center;gap:10px}
+  .m-hd .logo{font-size:16px}
+  .m-hd .seal{width:28px;height:28px;font-size:11px}
+  .m-search{margin-top:10px;display:flex;align-items:center;gap:8px;background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:10px 14px;color:var(--muted);font-size:13px}
+  .m-chips{display:flex;gap:8px;padding:10px 14px;overflow:hidden}
+  .m-chips .chip{white-space:nowrap;flex-shrink:0}
+  .m-sec{padding:6px 14px 14px}
+  .m-sec h2{font-size:16px;font-weight:800;margin-bottom:10px}
+  .m-cont{display:flex;gap:10px;overflow:hidden}
+  .m-cc{width:230px;flex-shrink:0;display:flex;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px}
+  .m-cc img{width:44px;height:66px;object-fit:cover;border-radius:6px}
+  .m-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 10px}
+  .m-grid .card h3{font-size:12.5px}
+  .tabbar{position:absolute;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding:8px 6px 14px}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:600;color:var(--muted)}
+  .tab.on{color:var(--red)}
+  .tab svg{width:21px;height:21px}
+
+  /* ===== mobile reader ===== */
+  .rdr{background:#f3ead8;height:100%;position:relative}
+  .r-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:10px;padding:12px 12px;background:rgba(243,234,216,.94);border-bottom:1px solid #e2d5ba;font-size:13px;z-index:2}
+  .r-top .t{flex:1;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .r-top .s{color:#8a7d61;font-weight:500}
+  .r-page{padding:52px 0 70px}
+  .r-page img{width:100%}
+  .r-count{position:absolute;top:60px;right:10px;background:rgba(35,32,25,.75);color:#f3ead8;font-size:11px;font-weight:600;padding:4px 9px;border-radius:999px;z-index:2}
+  .r-bot{position:absolute;bottom:0;left:0;right:0;display:flex;align-items:center;gap:8px;padding:10px 10px 16px;background:rgba(243,234,216,.96);border-top:1px solid #e2d5ba;z-index:2}
+  .r-btn{flex:1;text-align:center;padding:12px 6px;border-radius:12px;font-size:13px;font-weight:700;background:#fffdf7;border:1px solid #e2d5ba}
+  .r-btn.pri{background:var(--red);color:#fff;border-color:var(--red)}
+  .r-btn.dis{color:#b3a88f}
+  .r-mid{font-size:12px;font-weight:700;color:#8a7d61;white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="board-label">HƯỚNG 1 — GIẤY ẤM &nbsp;<small>nền giấy ấm, chữ Be Vietnam Pro, dấu triện đỏ làm điểm nhấn · hợp người đọc Việt quen web sáng · có dark mode</small></div>
+<div class="board">
+
+  <!-- ================= DESKTOP HOME ================= -->
+  <div class="desktop">
+    <div class="hd">
+      <a class="logo"><span class="seal">TV</span>TruyệnViệt</a>
+      <nav class="nav"><a class="on">Trang chủ</a><a>Thể loại</a><a>Bảng xếp hạng</a><a>Tủ truyện</a></nav>
+      <div class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Tìm truyện… (vd: One Piece)</div>
+      <div class="icon-btn"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg></div>
+    </div>
+
+    <div class="hero">
+      <div class="hero-txt">
+        <div class="eyebrow">NỔI BẬT TUẦN NAY</div>
+        <h1>Sousou no Frieren</h1>
+        <div class="chips"><span class="chip hot">★ 9.1 · 48.2k theo dõi</span><span class="chip">Đang tiến hành</span><span class="chip">2020</span><span class="chip">Phiêu lưu</span><span class="chip">Phép thuật</span></div>
+        <p>Đoàn dũng sĩ đã đánh bại Quỷ Vương. Nhưng với pháp sư elf Frieren, mười năm phiêu lưu chỉ là khoảnh khắc — và cuộc hành trình mới bắt đầu khi những người đồng đội lần lượt ra đi.</p>
+        <div class="cta"><a class="btn btn-red">Đọc từ đầu · Chương 1</a><a class="btn btn-ghost">＋ Thêm vào tủ</a></div>
+      </div>
+      <div class="hero-cover">
+        <img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fb0b721ff-c388-4486-aa0f-c2b0bb321512%2Fb9a049b0-186b-4714-a83e-bb965458914a.jpg.512.jpg" alt="Frieren">
+        <div class="stamp">BẢN<br>VIỆT</div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-h"><h2>Đọc tiếp</h2><span class="sub">3 truyện đang đọc dở</span></div>
+      <div class="continue">
+        <div class="cc"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"><div style="flex:1;min-width:0"><div class="cc-t">Kage no Jitsuryokusha ni Naritakute!</div><div class="cc-m">Chương 2 · 2 giờ trước</div><div class="cc-bar"><i style="width:22%"></i></div></div></div>
+        <div class="cc"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa1c7c817-4e59-43b7-9365-09675a149a6f%2F2f4aca53-64c7-46ac-ae85-3bc9b3169890.png.256.jpg"><div style="flex:1;min-width:0"><div class="cc-t">One Piece</div><div class="cc-m">Chương 1198 · hôm qua</div><div class="cc-bar"><i style="width:96%"></i></div></div></div>
+        <div class="cc"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fe78a489b-6632-4d61-b00b-5206f5b8b22b%2F420ec3c0-2dab-47f2-8f9e-a9e0c3faf16d.jpg.256.jpg"><div style="flex:1;min-width:0"><div class="cc-t">Tensei Shitara Slime datta Ken</div><div class="cc-m">Chương 120 · 3 ngày trước</div><div class="cc-bar"><i style="width:81%"></i></div></div></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-h"><h2>Phổ biến nhất</h2><a class="more">Xem tất cả →</a></div>
+      <div class="grid">
+        <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F32d76d19-8a05-4db0-9fc2-e0b0648fe9d0%2Fe90bdc47-c8b9-4df7-b2c0-17641b645ee1.jpg.256.jpg"><span class="rate">★ 8.7</span></div><h3>Na Honjaman Level-Up</h3><div class="cm"><b>Chương 200</b> · Hoàn thành</div></a>
+        <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Faa6c76f7-5f5f-46b6-a800-911145f81b9b%2Fd3e909b9-c667-48a5-beec-ac96f23fa228.jpg.256.jpg"><span class="rate">★ 8.9</span></div><h3>Sono Bisque Doll wa Koi o Suru</h3><div class="cm"><b>Chương 115</b> · 2 ngày trước</div></a>
+        <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"><span class="rate">★ 8.4</span></div><h3>Kage no Jitsuryokusha ni Naritakute!</h3><div class="cm"><b>Chương 68</b> · 5 giờ trước</div></a>
+        <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa77742b1-befd-49a4-bff5-1ad4e6b0ef7b%2F6e518bd1-5f60-446b-8832-bfe6bf74834b.jpg.256.jpg"><span class="rate">★ 9.0</span></div><h3>Chainsaw Man</h3><div class="cm"><b>Chương 190</b> · 1 ngày trước</div></a>
+        <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fd8a959f7-648e-4c8d-8f23-f1f3f8e129f3%2Fd22cfde3-268a-48a3-b5ed-73772834764d.jpg.256.jpg"><span class="rate">★ 8.8</span></div><h3>One Punch-Man</h3><div class="cm"><b>Chương 201</b> · 4 ngày trước</div></a>
+        <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fe78a489b-6632-4d61-b00b-5206f5b8b22b%2F420ec3c0-2dab-47f2-8f9e-a9e0c3faf16d.jpg.256.jpg"><span class="rate">★ 8.5</span></div><h3>Tensei Shitara Slime datta Ken</h3><div class="cm"><b>Chương 120</b> · 3 ngày trước</div></a>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-h"><h2>Mới cập nhật</h2><a class="more">Xem tất cả →</a></div>
+      <div class="feed">
+        <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa1c7c817-4e59-43b7-9365-09675a149a6f%2F2f4aca53-64c7-46ac-ae85-3bc9b3169890.png.256.jpg"><span class="fr-t">One Piece</span><span class="fr-c">Chương 1198</span><span class="fr-d">2 giờ trước</span></div>
+        <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"><span class="fr-t">Kage no Jitsuryokusha ni Naritakute!</span><span class="fr-c">Chương 68.2</span><span class="fr-d">5 giờ trước</span></div>
+        <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa77742b1-befd-49a4-bff5-1ad4e6b0ef7b%2F6e518bd1-5f60-446b-8832-bfe6bf74834b.jpg.256.jpg"><span class="fr-t">Chainsaw Man</span><span class="fr-c">Chương 190</span><span class="fr-d">hôm qua</span></div>
+        <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Faa6c76f7-5f5f-46b6-a800-911145f81b9b%2Fd3e909b9-c667-48a5-beec-ac96f23fa228.jpg.256.jpg"><span class="fr-t">Sono Bisque Doll wa Koi o Suru</span><span class="fr-c">Chương 115.5</span><span class="fr-d">2 ngày trước</span></div>
+        <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fd8a959f7-648e-4c8d-8f23-f1f3f8e129f3%2Fd22cfde3-268a-48a3-b5ed-73772834764d.jpg.256.jpg"><span class="fr-t">One Punch-Man</span><span class="fr-c">Chương 201</span><span class="fr-d">4 ngày trước</span></div>
+        <div class="fr"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fe78a489b-6632-4d61-b00b-5206f5b8b22b%2F420ec3c0-2dab-47f2-8f9e-a9e0c3faf16d.jpg.256.jpg"><span class="fr-t">Tensei Shitara Slime datta Ken</span><span class="fr-c">Chương 120</span><span class="fr-d">3 ngày trước</span></div>
+      </div>
+    </div>
+    <div class="ft">TruyệnViệt — demo đọc truyện phi thương mại · Dữ liệu & ảnh từ MangaDex · Ủng hộ tác giả bằng cách mua truyện bản quyền.</div>
+  </div>
+
+  <!-- ================= MOBILE HOME ================= -->
+  <div>
+    <div class="frame-label">Mobile — trang chủ</div>
+    <div class="phone"><div class="phone-screen">
+      <div class="m-hd">
+        <div class="m-hd-row">
+          <a class="logo"><span class="seal">TV</span>TruyệnViệt</a>
+          <div style="margin-left:auto" class="icon-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg></div>
+        </div>
+        <div class="m-search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Tìm truyện…</div>
+      </div>
+      <div class="m-chips"><span class="chip hot">★ Top tuần</span><span class="chip">Hành động</span><span class="chip">Tình cảm</span><span class="chip">Isekai</span><span class="chip">Hài hước</span></div>
+      <div class="m-sec">
+        <h2>Đọc tiếp</h2>
+        <div class="m-cont">
+          <div class="m-cc"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"><div style="min-width:0"><div class="cc-t">Kage no Jitsuryokusha ni Naritakute!</div><div class="cc-m">Chương 2 · 2 giờ trước</div><div class="cc-bar"><i style="width:22%"></i></div></div></div>
+          <div class="m-cc"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa1c7c817-4e59-43b7-9365-09675a149a6f%2F2f4aca53-64c7-46ac-ae85-3bc9b3169890.png.256.jpg"><div style="min-width:0"><div class="cc-t">One Piece</div><div class="cc-m">Chương 1198 · hôm qua</div><div class="cc-bar"><i style="width:96%"></i></div></div></div>
+        </div>
+      </div>
+      <div class="m-sec">
+        <h2>Phổ biến nhất</h2>
+        <div class="m-grid">
+          <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F32d76d19-8a05-4db0-9fc2-e0b0648fe9d0%2Fe90bdc47-c8b9-4df7-b2c0-17641b645ee1.jpg.256.jpg"><span class="rate">★ 8.7</span></div><h3>Na Honjaman Level-Up</h3><div class="cm"><b>Ch. 200</b></div></a>
+          <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Faa6c76f7-5f5f-46b6-a800-911145f81b9b%2Fd3e909b9-c667-48a5-beec-ac96f23fa228.jpg.256.jpg"><span class="rate">★ 8.9</span></div><h3>Sono Bisque Doll wa Koi o Suru</h3><div class="cm"><b>Ch. 115</b></div></a>
+          <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fa77742b1-befd-49a4-bff5-1ad4e6b0ef7b%2F6e518bd1-5f60-446b-8832-bfe6bf74834b.jpg.256.jpg"><span class="rate">★ 9.0</span></div><h3>Chainsaw Man</h3><div class="cm"><b>Ch. 190</b></div></a>
+          <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2F77bee52c-d2d6-44ad-a33a-1734c1fe696a%2F6079dd31-838b-4d61-87c4-121f3ad19158.jpg.256.jpg"><span class="rate">★ 8.4</span></div><h3>Kage no Jitsuryokusha ni Naritakute!</h3><div class="cm"><b>Ch. 68</b></div></a>
+          <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fd8a959f7-648e-4c8d-8f23-f1f3f8e129f3%2Fd22cfde3-268a-48a3-b5ed-73772834764d.jpg.256.jpg"><span class="rate">★ 8.8</span></div><h3>One Punch-Man</h3><div class="cm"><b>Ch. 201</b></div></a>
+          <a class="card"><div class="cv"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fuploads.mangadex.org%2Fcovers%2Fe78a489b-6632-4d61-b00b-5206f5b8b22b%2F420ec3c0-2dab-47f2-8f9e-a9e0c3faf16d.jpg.256.jpg"><span class="rate">★ 8.5</span></div><h3>Tensei Shitara Slime datta Ken</h3><div class="cm"><b>Ch. 120</b></div></a>
+        </div>
+      </div>
+      <div class="tabbar">
+        <a class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1Z"/></svg>Trang chủ</a>
+        <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Thể loại</a>
+        <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8m-4-4v4M7 4h10v5a5 5 0 0 1-10 0Z"/><path d="M7 6H4a3 3 0 0 0 3 5m10-5h3a3 3 0 0 1-3 5"/></svg>BXH</a>
+        <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4Z"/></svg>Tủ truyện</a>
+      </div>
+    </div></div>
+  </div>
+
+  <!-- ================= MOBILE READER ================= -->
+  <div>
+    <div class="frame-label">Mobile — reader (nền sepia)</div>
+    <div class="phone"><div class="phone-screen">
+      <div class="rdr">
+        <div class="r-top">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m15 5-7 7 7 7"/></svg>
+          <span class="t">Kage no Jitsuryokusha… <span class="s">· Chương 1</span></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+        </div>
+        <div class="r-count">Trang 5/41</div>
+        <div class="r-page"><img src="http://localhost:3100/api/img?u=https%3A%2F%2Fcmdxd98sb0x3yprd%2Emangadex%2Enetwork%2Fdata%2F0a616d8668fba7ed30f85ab272475896%2F1%2D010de865320f2c1b11a195df40cb26b7fa19c5c9dbbbeb176babacfc7e347abf%2Ejpg" alt="Trang 5"></div>
+        <div class="r-bot">
+          <a class="r-btn dis">← Trước</a>
+          <span class="r-mid">5/41</span>
+          <a class="r-btn pri">Chương sau →</a>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</div>
+</body>
+</html>

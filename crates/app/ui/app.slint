@@ -1,0 +1,521 @@
+// TruyệnViệt — Slint UI, sumi ink + vermillion
+import { Button, ComboBox, LineEdit, ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export global Theme {
+    out property <color> ink: #0e0f13;
+    out property <color> panel: #171922;
+    out property <color> panel2: #1e212c;
+    out property <color> line: #2a2e3c;
+    out property <color> paper: #f2efe9;
+    out property <color> muted: #9aa0b4;
+    out property <color> vermillion: #ff5a3c;
+    out property <color> vermillion-dark: #d63f24;
+}
+
+export struct MangaCard {
+    id: string,
+    title: string,
+    cover: string,
+    badge: string,
+    year: string,
+}
+
+export struct CardRow {
+    cards: [MangaCard],
+}
+
+export struct HistoryCard {
+    manga-id: string,
+    chapter-id: string,
+    lang: string,
+    title: string,
+    cover: string,
+    label: string,
+}
+
+export struct ChapterRow {
+    id: string,
+    label: string,
+    title: string,
+    date: string,
+    read: bool,
+    external: string,
+}
+
+export struct PageItem {
+    index: int,
+    path: string,
+}
+
+export struct MangaDetail {
+    id: string,
+    title: string,
+    author: string,
+    status: string,
+    year: string,
+    description: string,
+    cover: string,
+    tags: [string],
+    count-label: string,
+    lang: string,
+    first-id: string,
+    first-label: string,
+    resume-id: string,
+    resume-label: string,
+    resume-lang: string,
+    has-external: bool,
+}
+
+component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 36px;
+    border-radius: 18px;
+    background: root.enabled ? (root.primary ? Theme.vermillion : Theme.panel) : Theme.panel;
+    border-width: root.primary ? 0 : 1px;
+    border-color: Theme.line;
+    horizontal-stretch: 0;
+    Text {
+        text: root.text;
+        color: root.enabled ? (root.primary ? white : Theme.paper) : Theme.muted;
+        font-size: 13px;
+        font-weight: root.primary ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component SectionTitle inherits HorizontalLayout {
+    in property <string> text;
+    spacing: 10px;
+    Rectangle { width: 5px; height: 22px; border-radius: 3px; background: Theme.vermillion; }
+    Text {
+        text: root.text;
+        color: Theme.paper;
+        font-size: 17px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Rectangle { horizontal-stretch: 1; height: 14px; opacity: 0.35;
+        // screentone dots
+        background: @linear-gradient(0deg, transparent, transparent);
+    }
+}
+
+component Card inherits Rectangle {
+    in property <MangaCard> data;
+    callback clicked();
+    border-radius: 8px;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.vermillion : Theme.line;
+    clip: true;
+    VerticalLayout {
+        spacing: 6px;
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 7px;
+            clip: true;
+            background: Theme.panel2;
+            Image {
+                source: data.cover;
+                width: 100%;
+                height: 100%;
+                image-fit: cover;
+            }
+            if data.badge != "" : Rectangle {
+                x: 6px; y: 6px;
+                width: badge-text.width + 12px;
+                height: 20px;
+                border-radius: 4px;
+                background: #0e0f13d9;
+                Text { x: 6px; y: 3px; name: badge-text; text: data.badge; color: Theme.paper; font-size: 10px; }
+            }
+        }
+        Text {
+            text: data.title;
+            color: touch.has-hover ? Theme.vermillion : Theme.paper;
+            font-size: 13px;
+            font-weight: 500;
+            overflow: elide;
+            height: 36px;
+            wrap: word-wrap;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component HistoryTile inherits Rectangle {
+    in property <HistoryCard> data;
+    callback clicked();
+    width: 240px;
+    height: 96px;
+    border-radius: 8px;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.vermillion : Theme.line;
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 10px;
+        Rectangle {
+            width: 56px;
+            border-radius: 4px;
+            clip: true;
+            background: Theme.panel2;
+            Image { source: data.cover; width: 100%; height: 100%; image-fit: cover; }
+        }
+        VerticalLayout {
+            spacing: 4px;
+            Text { text: data.title; color: Theme.paper; font-size: 13px; font-weight: 500; overflow: elide; wrap: word-wrap; height: 36px; }
+            Text { text: "Đọc tiếp · " + data.label; color: Theme.muted; font-size: 11px; }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component MainWindow inherits Window {
+    title: "TruyệnViệt — đọc manga";
+    width: 1280px;
+    height: 860px;
+    background: Theme.ink;
+    font-family: "Segoe UI";
+    default-font-size: 14px;
+    color: Theme.paper;
+
+    in-out property <string> search-text;
+    in property <string> page: "home";
+    in property <string> error;
+    in property <string> search-info;
+    in property <string> reader-title;
+    in property <string> reader-pos;
+    in property <string> lang: "vi";
+    in property <bool> has-vi;
+    in property <bool> has-en;
+    in property <bool> can-prev;
+    in property <bool> can-next;
+    in property <bool> busy-home;
+    in property <bool> busy-search;
+    in property <bool> busy-manga;
+    in property <bool> busy-reader;
+    in property <[CardRow]> popular-rows;
+    in property <[CardRow]> latest-rows;
+    in property <[CardRow]> result-rows;
+    in property <[HistoryCard]> history;
+    in property <[ChapterRow]> chapters;
+    in property <[PageItem]> pages;
+    in property <[string]> chapter-labels;
+    in property <int> chapter-index;
+    in property <MangaDetail> detail;
+
+    callback go-home();
+    callback do-search(string);
+    callback search-next();
+    callback search-prev();
+    callback open-manga(string);
+    callback open-chapter(string);
+    callback set-lang(string);
+    callback prev-chapter();
+    callback next-chapter();
+    callback read-first();
+    callback resume();
+    callback retry();
+    callback select-chapter(int);
+
+    forward-focus: reader-keys;
+
+    VerticalLayout {
+        // header
+        Rectangle {
+            height: 56px;
+            background: #0e0f13eb;
+            border-width: 0;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 16px;
+                Text {
+                    text: "TRUYỆN VIỆT";
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: Theme.paper;
+                    vertical-alignment: center;
+                    TouchArea { mouse-cursor: pointer; clicked => { root.go-home(); } }
+                }
+                LineEdit {
+                    horizontal-stretch: 1;
+                    placeholder-text: "Tìm truyện… (vd: One Piece)";
+                    text <=> root.search-text;
+                    accepted => { root.do-search(root.search-text); }
+                }
+                Btn { text: "Tìm"; primary: true; clicked => { root.do-search(root.search-text); } }
+                Btn { text: "Trang chủ"; clicked => { root.go-home(); } }
+            }
+        }
+
+        if root.error != "" : Rectangle {
+            height: 40px;
+            background: Theme.panel;
+            HorizontalLayout {
+                padding-left: 16px;
+                spacing: 12px;
+                Text { text: root.error; color: Theme.vermillion; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                Btn { text: "Thử lại"; clicked => { root.retry(); } }
+                Btn { text: "✕"; clicked => { root.error = ""; } }
+            }
+        }
+
+        // HOME
+        if root.page == "home" : ScrollView {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 20px;
+                Rectangle {
+                    height: 110px;
+                    border-radius: 12px;
+                    background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    VerticalLayout {
+                        padding: 24px;
+                        spacing: 6px;
+                        Text { text: "KHO MANGA BẢN VIỆT & ANH"; font-size: 26px; font-weight: 700; color: Theme.paper; }
+                        Text { text: "Hàng chục nghìn bộ truyện từ MangaDex — miễn phí, không quảng cáo, lịch sử đọc lưu trên máy bạn."; color: Theme.muted; font-size: 13px; }
+                    }
+                }
+                if root.history.length > 0 : VerticalLayout {
+                    spacing: 10px;
+                    SectionTitle { text: "ĐỌC TIẾP"; }
+                    Flickable {
+                        height: 100px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            for h in root.history: HistoryTile {
+                                data: h;
+                                clicked => { root.open-chapter(h.chapter-id); }
+                            }
+                        }
+                    }
+                }
+                SectionTitle { text: "PHỔ BIẾN NHẤT"; }
+                if root.busy-home : Text { text: "Đang tải…"; color: Theme.muted; }
+                ListView {
+                    height: 310px;
+                    for row in root.popular-rows: HorizontalLayout {
+                        height: 300px;
+                        spacing: 12px;
+                        for c in row.cards: Card {
+                            width: 176px;
+                            data: c;
+                            clicked => { root.open-manga(c.id); }
+                        }
+                    }
+                }
+                SectionTitle { text: "MỚI CẬP NHẬT"; }
+                ListView {
+                    height: 310px;
+                    for row in root.latest-rows: HorizontalLayout {
+                        height: 300px;
+                        spacing: 12px;
+                        for c in row.cards: Card {
+                            width: 176px;
+                            data: c;
+                            clicked => { root.open-manga(c.id); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // SEARCH
+        if root.page == "search" : ScrollView {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+                SectionTitle { text: "TÌM KIẾM"; }
+                Text { text: root.busy-search ? "Đang tìm…" : root.search-info; color: Theme.muted; font-size: 13px; }
+                ListView {
+                    height: 640px;
+                    for row in root.result-rows: HorizontalLayout {
+                        height: 300px;
+                        spacing: 12px;
+                        for c in row.cards: Card {
+                            width: 176px;
+                            data: c;
+                            clicked => { root.open-manga(c.id); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: center;
+                    Btn { text: "← Trang trước"; clicked => { root.search-prev(); } }
+                    Btn { text: "Trang sau →"; clicked => { root.search-next(); } }
+                }
+            }
+        }
+
+        // MANGA
+        if root.page == "manga" : ScrollView {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+                if root.busy-manga : Text { text: "Đang tải…"; color: Theme.muted; }
+                HorizontalLayout {
+                    spacing: 24px;
+                    Rectangle {
+                        width: 208px;
+                        height: 312px;
+                        border-radius: 8px;
+                        clip: true;
+                        background: Theme.panel;
+                        Image { source: root.detail.cover; width: 100%; height: 100%; image-fit: cover; }
+                    }
+                    VerticalLayout {
+                        spacing: 8px;
+                        Text { text: root.detail.title; font-size: 26px; font-weight: 700; wrap: word-wrap; }
+                        Text {
+                            text: (root.detail.author != "" ? "Tác giả: " + root.detail.author + "   " : "") + root.detail.status + (root.detail.year != "" ? "   " + root.detail.year : "") + "   " + root.detail.count-label;
+                            color: Theme.muted;
+                            font-size: 13px;
+                        }
+                        Flickable {
+                            height: 52px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                for t in root.detail.tags: Rectangle {
+                                    height: 22px;
+                                    width: tag-text.width + 16px;
+                                    border-radius: 11px;
+                                    background: Theme.panel;
+                                    border-width: 1px;
+                                    border-color: Theme.line;
+                                    Text { name: tag-text; x: 8px; y: 4px; text: t; color: Theme.muted; font-size: 11px; }
+                                }
+                            }
+                        }
+                        Text { text: root.detail.description; color: #f2efe9e6; font-size: 13px; wrap: word-wrap; height: 120px; overflow: elide; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            if root.detail.first-id != "" : Btn {
+                                text: "Đọc từ đầu · " + root.detail.first-label;
+                                primary: true;
+                                clicked => { root.read-first(); }
+                            }
+                            if root.detail.first-id == "" : Btn {
+                                text: root.detail.has-external ? "Chapter chỉ có ở nguồn ngoài" : "Chưa có chapter";
+                                enabled: false;
+                            }
+                            if root.detail.resume-id != "" : Btn {
+                                text: "Đọc tiếp · " + root.detail.resume-label;
+                                clicked => { root.resume(); }
+                            }
+                        }
+                    }
+                }
+                SectionTitle { text: "DANH SÁCH CHAPTER"; }
+                if root.has-vi && root.has-en : HorizontalLayout {
+                    spacing: 8px;
+                    Btn { text: "Tiếng Việt"; primary: root.lang == "vi"; clicked => { root.set-lang("vi"); } }
+                    Btn { text: "English"; primary: root.lang == "en"; clicked => { root.set-lang("en"); } }
+                }
+                ListView {
+                    height: 420px;
+                    for c in root.chapters: Rectangle {
+                        height: 40px;
+                        background: touch.has-hover ? Theme.panel2 : Theme.panel;
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 12px;
+                            Text { width: 90px; text: c.label + (c.read ? " ✓" : ""); color: c.read ? Theme.muted : Theme.vermillion; font-weight: 600; font-size: 13px; vertical-alignment: center; }
+                            Text { horizontal-stretch: 1; text: c.title; color: c.read ? Theme.muted : Theme.paper; font-size: 13px; overflow: elide; vertical-alignment: center; }
+                            Text { text: c.date; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+                        }
+                        touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if c.external != "" {
+                                    // open external source in default browser
+                                    root.open-chapter(c.id);
+                                } else {
+                                    root.open-chapter(c.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // READ
+        if root.page == "read" : VerticalLayout {
+            Rectangle {
+                height: 48px;
+                background: #0e0f13f2;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 12px;
+                    Btn { text: "← " + root.detail.title; clicked => { root.open-manga(root.detail.id); } }
+                    Text { text: root.reader-title; font-weight: 600; font-size: 14px; vertical-alignment: center; }
+                    Text { text: root.reader-pos; color: Theme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                    ComboBox {
+                        width: 130px;
+                        model: root.chapter-labels;
+                        current-index: root.chapter-index;
+                        selected(idx) => { root.select-chapter(idx); }
+                    }
+                    Btn { text: "← Trước"; enabled: root.can-prev; clicked => { root.prev-chapter(); } }
+                    Btn { text: "Sau →"; primary: true; enabled: root.can-next; clicked => { root.next-chapter(); } }
+                }
+            }
+            if root.busy-reader : VerticalLayout {
+                alignment: center;
+                Text { text: "Đang tải chapter…"; color: Theme.muted; horizontal-alignment: center; }
+            }
+            ListView {
+                vertical-stretch: 1;
+                for p in root.pages: VerticalLayout {
+                    Image {
+                        source: p.path;
+                        width: 100%;
+                        min-height: 300px;
+                        image-fit: contain;
+                    }
+                }
+            }
+            Rectangle {
+                height: 64px;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    Btn { text: "← Trước"; enabled: root.can-prev; clicked => { root.prev-chapter(); } }
+                    Btn { text: "Sau →"; primary: true; enabled: root.can-next; clicked => { root.next-chapter(); } }
+                }
+            }
+            reader-keys := FocusScope {
+                key-pressed(event) => {
+                    if (event.text == Keys.LeftArrow) {
+                        root.prev-chapter();
+                        return accept;
+                    }
+                    if (event.text == Keys.RightArrow) {
+                        root.next-chapter();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+        }
+    }
+}

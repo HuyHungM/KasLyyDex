@@ -1,0 +1,14 @@
+/target
+/cache
+/crates/ui/dist
+node_modules
+.next
+legacy-next/node_modules
+legacy-next/.next
+.env
+.env.*
+!.env.example
+.vercel
+/dist
+/build-*.txt
+/task*-*.log

@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0e0f13;
+  --color-panel: #171922;
+  --color-panel-2: #1e212c;
+  --color-line: #2a2e3c;
+  --color-paper: #f2efe9;
+  --color-muted: #9aa0b4;
+  --color-vermillion: #ff5a3c;
+  --color-vermillion-dark: #d63f24;
+
+  --font-sans: var(--font-be-vietnam), "Segoe UI", sans-serif;
+  --font-display: var(--font-oswald), "Arial Narrow", sans-serif;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+/* Manga screentone dots — signature texture */
+.halftone {
+  background-image: radial-gradient(circle, var(--color-line) 1.2px, transparent 1.2px);
+  background-size: 7px 7px;
+}
+
+::selection {
+  background: var(--color-vermillion);
+  color: #fff;
+}
