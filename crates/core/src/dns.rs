@@ -34,6 +34,12 @@ impl PublicDns {
     }
 }
 
+impl Default for PublicDns {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Resolve for PublicDns {
     fn resolve(&self, name: Name) -> Resolving {
         let resolver = self.0.clone();

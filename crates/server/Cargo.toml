@@ -5,7 +5,9 @@ edition = "2021"
 
 [dependencies]
 manga_core = { package = "core", path = "../core" }
+contracts = { path = "../contracts" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["fs", "compression-br", "compression-gzip"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
