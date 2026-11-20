@@ -6,7 +6,7 @@
 
 **Architecture:** Next.js owns web UI, SEO, authentication and `/api/v1/*` user BFF routes. Axum remains a separate content service for MangaDex, chapter/page access, DNS handling and image caching. Pure Rust domain/contracts/reader-core crates are shared by web WASM and future native adapters.
 
-**Tech Stack:** Next.js 16.4.6, React 19.3, TypeScript, Tailwind CSS 4.3, Better Auth (email/password + Google + JWT/JWKS), Neon PostgreSQL, Drizzle ORM/Drizzle Kit, Zod, Axum, Rust WASM via wasm-bindgen/wasm-pack, Playwright.
+**Tech Stack:** Next.js 16.4.6, React 19.3, TypeScript, Tailwind CSS 4.3, Neon Managed Auth (Better Auth email/password + Google + JWT/JWKS), Neon PostgreSQL, Drizzle ORM/Drizzle Kit for application tables, Zod, Axum, Rust WASM via wasm-bindgen/wasm-pack, Playwright.
 
 **Spec:** `docs/superpowers/specs/2026-11-20-kaslyydex-platform-design.md`
 
@@ -14,7 +14,9 @@
 
 - Product name: `KasLyyDex`; keep native UI work deferred to Phase 3 Android and Phase 4 GPUI.
 - Vercel runs Next.js/user BFF; Axum content service runs separately and is reached through `/api/content/*`.
-- Auth is email/password + Google OAuth. Browser sessions use HttpOnly/Secure/SameSite cookies; native clients later use JWT/JWKS.
+- Task 3 deploys a credential-free Vercel Preview before Task 4 provisions/configures Neon; never deploy Production before security and migration gates pass.
+- Auth is Neon Managed Auth (Better Auth): email/password + Google OAuth. Browser sessions use HttpOnly/Secure/SameSite cookies; native clients later use JWT/JWKS.
+- Neon Auth owns identity/session schema; Drizzle migrations manage only KasLyyDex application tables and never alter Neon-managed auth tables.
 - EXP is 100 per valid chapter at ≥80% progress, once per user/chapter; level is `min(1000, 1 + floor(total_xp / 200))`.
 - Cultivation titles are cosmetic/profile labels only; `user`, `moderator`, `admin` are separate authorization roles.
 - Comments are manga- and chapter-scoped, visible immediately, support one-level replies, spoiler flag, reports and moderation actions.
@@ -25,11 +27,11 @@
 
 ## Review Focus
 
-- Vercel/Neon preview and production environments must never share a mutable database branch: test environment selection and migration commands in Task 3.
+- Vercel/Neon preview and production environments must never share a mutable database branch: test environment selection and migration commands in Task 4.
 - Guest localStorage merge must not overwrite newer server progress or duplicate library/completion/XP rows: test conflict resolution and idempotency in Task 5.
 - A client cannot award XP by posting `percent=100`: test server-owned page count/ticket validation and duplicate completion in Task 6.
 - A user cannot edit/delete another user’s comment or access moderator routes: test ownership and role checks in Task 7.
-- Native token compatibility must be proven before Phase 3: test Better Auth JWT/JWKS verification against a separate verifier in Task 3.
+- Native token compatibility must be proven before Phase 3: test Neon Managed Auth JWT/JWKS verification against a separate verifier in Task 4.
 
 ---
 
@@ -39,7 +41,7 @@
 |---|---|
 | `web/` | Next.js application migrated from `legacy-next/` |
 | `web/app/api/v1/` | Typed user BFF route handlers |
-| `web/lib/auth.ts` | Better Auth config and providers |
+| `web/lib/auth/server.ts`, `web/lib/auth/client.ts` | Neon Managed Auth server/client adapters |
 | `web/lib/db/` | Drizzle client, schema, migrations and seed helpers |
 | `web/lib/contracts.ts` | TypeScript API contracts and Zod schemas |
 | `web/lib/progression.ts` | Pure XP/level/realm calculations |
@@ -68,8 +70,8 @@
 - [ ] **Step 1: Write the failing repository checks**: a shell check must find no user-facing `TruyệnViệt` product title in the root/web metadata except migration notes, and `web/package.json` must exist while `legacy-next/package.json` must not.
 - [ ] **Step 2: Run the check** and record RED against the current layout.
 - [ ] **Step 3: Move/rename the web app and update product metadata** to `KasLyyDex`; do not alter behavior or UI in this task.
-- [ ] **Step 4: Add `.env.example` with variable names only**: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RUST_CONTENT_API_ORIGIN`, `NEXT_PUBLIC_APP_URL`.
-- [ ] **Step 5: Run `npm install`/`npm run build` from `web/` and `cargo test --workspace`; expected: existing behavior still builds.
+- [ ] **Step 4: Add `.env.example` with variable names only**: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RUST_CONTENT_API_ORIGIN`, `NEXT_PUBLIC_APP_URL`. Values remain empty; Task 3 does not read or configure Neon/auth.
+- [ ] **Step 5: Run `npm ci`, `npm run build` from `web/` and `cargo test --workspace`; expected: existing behavior still builds.
 - [ ] **Step 6: Commit** `chore: establish KasLyyDex web workspace`.
 
 ---
@@ -97,47 +99,49 @@
 
 ---
 
-### Task 3: Next/Vercel/Neon foundation and auth
+### Task 3: Deploy the Next.js skeleton to Vercel before Neon setup
 
 **Files:**
-- Modify: `web/package.json`, `web/next.config.ts`, `web/tsconfig.json`
-- Create: `web/lib/db/client.ts`, `web/lib/db/schema.ts`, `web/lib/auth.ts`, `web/lib/auth-client.ts`
-- Create: `web/app/api/auth/[...all]/route.ts`, `web/app/api/v1/health/route.ts`
-- Create: `web/drizzle.config.ts`, `web/drizzle/0000_initial_auth.sql`
-- Create: `infra/vercel.md`, `infra/env.example`
+- Modify: `web/package.json`, `web/next.config.ts`, `web/app/layout.tsx`, `web/app/page.tsx`
+- Create: `web/app/api/v1/health/route.ts`, `infra/vercel.md`
 
 **Interfaces:**
-- Auth uses Better Auth with Drizzle/Postgres, email/password, Google and JWT/JWKS plugin.
 - `GET /api/v1/health` returns `{ ok: true, version: string }` without secrets.
 
-- [ ] **Step 1: Add a failing auth configuration test** asserting email/password and Google provider are enabled, cookie settings are secure in production, and JWT/JWKS endpoints are present.
-- [ ] **Step 2: Run the focused test with no database credentials; expected RED for missing config/schema.
-- [ ] **Step 3: Add Drizzle/Neon client using a pooled Node runtime connection, Better Auth adapter, provider config and route handler. Validate env at startup without logging secret values.
-- [ ] **Step 4: Create the initial migration for auth/profile support and a safe admin bootstrap mechanism based on an explicit email allowlist, not automatic level elevation.
-- [ ] **Step 5: Add Vercel/Neon instructions for Development, Preview and Production variables; configure Neon preview branch/migration workflow. Do not deploy with real credentials in the repository.
-- [ ] **Step 6: Run `npm run lint`, `npx tsc --noEmit`, and `npm run build`; expected GREEN with missing external credentials handled only in runtime config, not build output.
-- [ ] **Step 7: Run the JWT/JWKS spike: obtain a test token from the auth endpoint and verify its signature using a standard Rust JWT/JWKS verifier fixture. Record the result.
-- [ ] **Step 8: Commit** `feat: add Neon auth and Vercel foundation`.
+- [ ] **Step 1: Add a failing smoke test** asserting the Next root and `/api/v1/health` return 200, expose KasLyyDex branding, and do not require Neon/auth credentials.
+- [ ] **Step 2: Run the smoke test** and record RED because the health route and deployment shell are absent.
+- [ ] **Step 3: Add the minimal Vercel-ready shell and health route.** Keep existing legacy routes intact; do not add auth or database code in this task.
+- [ ] **Step 4: Run `npm run lint`, `npx tsc --noEmit`, and `npm run build`; expected GREEN without Neon credentials.
+- [ ] **Step 5: Link the existing Vercel account/project and deploy a Preview before provisioning or connecting Neon.** Do not deploy Production. If Vercel CLI authentication or project linkage is unavailable, stop at a reproducible local build and record the exact user action needed; Task 4 cannot begin until Preview URL is verified.
+- [ ] **Step 6: Verify Preview root and health route, then record Preview URL in the ignored SDD report, never source code.
+- [ ] **Step 7: Commit** `feat: deploy KasLyyDex web foundation`.
 
 ---
 
-### Task 4: Deploy Next skeleton to Vercel and route Axum content
+### Task 4: Neon Managed Auth, application schema and Axum content boundary
 
 **Files:**
-- Modify: `web/next.config.ts`, `web/app/layout.tsx`, `web/app/page.tsx`
-- Create: `web/lib/content-api.ts`, `web/app/api/content/[...path]/route.ts` or rewrite configuration
-- Create: `infra/vercel.md`, `infra/axum.md`, health endpoint changes in `crates/server`
+- Modify: `web/package.json`, `web/next.config.ts`, `web/.env.example`
+- Create: `web/lib/auth/server.ts`, `web/lib/auth/client.ts`, `web/lib/db/client.ts`, `web/lib/db/schema.ts`, `web/lib/contracts.ts`
+- Create: `web/app/api/auth/[...path]/route.ts`, `web/drizzle.config.ts`, `web/drizzle/0000_application.sql`
+- Modify: `web/package.json`, `web/.env.example`
+- Modify: `crates/server/src/main.rs`, `crates/core/src/mangadex.rs`
+- Create/update: `infra/vercel.md`, `infra/axum.md`
 
 **Interfaces:**
-- Browser calls `/api/content/*`; server rewrites/proxies to `RUST_CONTENT_API_ORIGIN`.
-- Axum exposes content health and rejects invalid content IDs with structured errors.
+- Auth uses Neon Managed Auth (`@neon/auth/next/server`, `@neon/auth/next`), email/password + Google. Do not create or migrate Neon-managed auth tables with Drizzle.
+- Drizzle owns application tables only; `profiles.user_id` stores opaque auth user ID text and does not assume UUID format.
+- Browser content requests use `/api/content/*` and proxy to `RUST_CONTENT_API_ORIGIN`.
+- Axum exposes the content namespace and rejects invalid content IDs with structured errors.
 
-- [ ] **Step 1: Add a failing smoke test** that requests `/`, `/api/v1/health`, `/api/content/latest`, and an invalid content ID through the intended local topology.
-- [ ] **Step 2: Run it before proxy configuration; expected RED for `/api/content/*` and health route.
-- [ ] **Step 3: Implement local proxy/rewrite and Axum content namespace without duplicating MangaDex logic in Next.
-- [ ] **Step 4: Add Vercel project settings and deployment checklist; deploy a public Preview only after the user’s Vercel authorization is available.
-- [ ] **Step 5: Verify Preview returns Next HTML, content data, compressed static assets and no secret leakage. Record the deployment URL in a local handoff, not source code.
-- [ ] **Step 6: Commit** `feat: connect Next web to Axum content service`.
+- [ ] **Step 1: Write failing auth tests** for email/password, Google provider config, secure cookies, and JWT/JWKS availability; write a migration test that app schema does not own Neon Auth tables.
+- [ ] **Step 2: Configure Neon integration on the already-verified Vercel Preview branch.** Enable Neon Managed Auth for the development/preview branch and configure the Google OAuth provider using owner-supplied credentials; never write secrets into repository files.
+- [ ] **Step 3: Add `.env.example` names `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET`, `DATABASE_URL`, Google OAuth client values and `RUST_CONTENT_API_ORIGIN`. Implement Neon Auth server/client handlers using documented `@neon/auth/next/server` and `@neon/auth/next` entry points. Use Drizzle for application tables only; validate env on the server and never expose database credentials in client bundles.
+- [ ] **Step 4: Add an application-owned profile migration with opaque `user_id` text; do not migrate the `neon_auth` schema. Run the initial Drizzle migration only after verifying it targets the application schema/branch.
+- [ ] **Step 5: Write failing local proxy tests** for `/api/content/latest` and invalid content ID through Next→Axum; expected RED before proxy/route namespace changes.
+- [ ] **Step 6: Implement Next rewrites/proxy and Axum content route namespace without duplicating MangaDex logic in Next.
+- [ ] **Step 7: Run auth config tests, application migration tests, JWT/JWKS verifier fixture, content proxy smoke, lint, typecheck and build. Verify Preview does not leak secrets.
+- [ ] **Step 8: Commit** `feat: connect Neon auth and Axum content service`.
 
 ---
 
