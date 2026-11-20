@@ -182,7 +182,7 @@ async fn main() {
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3100);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
-    println!("TruyệnViệt (Rust/Leptos) listening on http://localhost:{port}");
+    println!("KasLyyDex (Rust/Leptos) listening on http://localhost:{port}");
     axum::serve(listener, app).await.expect("serve");
 }
 

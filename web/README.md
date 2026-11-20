@@ -1,4 +1,4 @@
-# TruyệnViệt — web đọc manga
+# KasLyyDex — web đọc manga
 
 Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org) (free, không cần key).
 

@@ -17,8 +17,8 @@ const oswald = Oswald({
 
 export const metadata: Metadata = {
   title: {
-    default: "TruyệnViệt — Đọc manga online miễn phí",
-    template: "%s | TruyệnViệt",
+    default: "KasLyyDex — Đọc manga online miễn phí",
+    template: "%s | KasLyyDex",
   },
   description:
     "Đọc manga bản dịch tiếng Việt và tiếng Anh miễn phí, không quảng cáo. Dữ liệu từ MangaDex.",
@@ -31,7 +31,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <Header />
         <div className="flex-1">{children}</div>
         <footer className="border-t border-line py-6 text-center text-xs text-muted">
-          TruyệnViệt — demo đọc truyện phi thương mại. Dữ liệu &amp; ảnh từ{" "}
+          KasLyyDex — demo đọc truyện phi thương mại. Dữ liệu &amp; ảnh từ{" "}
           <a href="https://mangadex.org" target="_blank" rel="noopener noreferrer" className="underline hover:text-paper">
             MangaDex
           </a>

@@ -44,7 +44,7 @@ export default function Header() {
     <header className="sticky top-0 z-40 border-b border-line bg-ink/90 backdrop-blur">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
         <Link href="/" className="font-display text-2xl font-semibold uppercase tracking-wide text-paper">
-          Truyện<span className="text-vermillion">Việt</span>
+          KasLyy<span className="text-vermillion">Dex</span>
         </Link>
         <div className="order-3 w-full sm:order-2 sm:w-auto sm:flex-1">
           <Suspense fallback={<div className="h-9 w-full max-w-md rounded-full bg-panel" />}>

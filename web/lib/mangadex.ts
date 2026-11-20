@@ -4,7 +4,7 @@ import type { Chapter, MangaSummary } from "./types";
 
 const API = "https://api.mangadex.org";
 // MangaDex requires an identifying User-Agent for API calls
-const UA = "TruyenvietReader/1.0 (educational demo)";
+const UA = "KasLyyDexReader/1.0 (educational demo)";
 
 type RawManga = {
   id: string;

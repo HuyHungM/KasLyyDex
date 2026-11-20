@@ -1,18 +1,18 @@
-# TruyệnViệt — web đọc manga (Rust)
+# KasLyyDex — web đọc manga (Rust)
 
 Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org) (free, không cần key).
 
-## Kiến trúc (2 giai đoạn)
+## Kiến trúc hiện tại
 
 - **Giai đoạn 1 (hiện tại): web** — frontend **Leptos 0.8 CSR → WebAssembly**, backend **Axum** mỏng serve API + SPA.
-- **Giai đoạn 2 (chờ confirm): native Windows + Android** — UI **Slint** (`crates/app`, đã dựng sẵn khung UI), dùng chung crate `core`.
+- **Phase 3/4 (deferred): Android + GPUI** — `crates/app` giữ lại prototype Slint, chưa thuộc workspace.
 
 ```
 crates/core    # dùng chung: MangaDex client (reqwest + DNS 1.1.1.1), cache RAM moka, cache ảnh đĩa
 crates/server  # Axum: /api/* + proxy ảnh + serve static (giai đoạn 1)
 crates/ui      # Leptos CSR + trunk (giai đoạn 1)
-crates/app     # Slint (giai đoạn 2 — chưa vào workspace)
-legacy-next    # bản Next.js 16 đầu tiên (tham khảo)
+crates/app     # Slint prototype (deferred — chưa vào workspace)
+web            # Next.js 16 baseline
 ```
 
 ## Chạy bản web
@@ -47,8 +47,6 @@ Biến môi trường: `PORT` (3100), `DIST_DIR` (`crates/ui/dist`), `CACHE_DIR`
 - **Static**: HTML no-cache, asset immutable; nén brotli/gzip mọi response
 - **Reader**: prefetch URL chapter kế tiếp khi đang đọc; ảnh lazy-load + `decoding=async`
 
-## Giai đoạn 2 (Slint native + Android)
+## Phase 3–4 (deferred)
 
-`crates/app/ui/app.slint` đã có UI đầy đủ (home/search/manga/reader, dark theme). Khi được confirm:
-thêm `crates/app` vào workspace, viết `main.rs` nối Slint ↔ `core` (tokio thread + `upgrade_in_event_loop`),
-build Windows (winit/femtovg) và Android (slint android backend + cargo-apk/gradle).
+Android and GPUI are deferred. `crates/app/ui/app.slint` remains a Slint prototype outside the workspace; this task does not connect or change it.

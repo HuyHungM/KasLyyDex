@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     const up = await undiciFetch(url.toString(), {
       dispatcher: agent,
       redirect: "error", // never follow redirects into arbitrary hosts (SSRF)
-      headers: { "User-Agent": "TruyenvietReader/1.0 (educational demo)" },
+      headers: { "User-Agent": "KasLyyDexReader/1.0 (educational demo)" },
     });
     if (!up.ok || !up.body) return new Response("Upstream error", { status: 502 });
     return new Response(up.body as unknown as BodyInit, {

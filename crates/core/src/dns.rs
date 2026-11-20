@@ -27,7 +27,7 @@ impl PublicDns {
     pub fn client() -> reqwest::Client {
         reqwest::Client::builder()
             .dns_resolver(Arc::new(Self::new()))
-            .user_agent("TruyenvietReader/1.0 (educational demo)")
+            .user_agent("KasLyyDexReader/1.0 (educational demo)")
             .pool_max_idle_per_host(32)
             .build()
             .expect("reqwest client")
