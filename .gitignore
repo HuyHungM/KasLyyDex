@@ -12,3 +12,4 @@ legacy-next/.next
 /dist
 /build-*.txt
 /task*-*.log
+/.worktrees
