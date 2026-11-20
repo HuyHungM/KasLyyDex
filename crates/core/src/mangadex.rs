@@ -113,7 +113,7 @@ impl Md {
                 let j = md.get(&format!("/manga?limit=18{LIST_PARAMS}&{query}")).await?;
                 let ordered: Vec<_> = groups.into_iter().filter_map(|(id, chapters)| {
                     Some(LatestMangaDto {
-                        manga: summary(items(&j).iter().find(|m| m["id"] == id)?),
+                        manga: summary(items(&j).iter().find(|m| m["id"] == id)?)?,
                         chapters,
                     })
                 }).collect();
@@ -127,17 +127,7 @@ impl Md {
         self.tags
             .try_get_with((), async {
                 let data = self.get("/manga/tag").await?;
-                let tags = items(&data)
-                    .iter()
-                    .map(|tag| TagDto {
-                        id: tag["id"].as_str().unwrap_or_default().to_owned(),
-                        name: pick(&tag["attributes"]["name"]),
-                        group: tag["attributes"]["group"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_owned(),
-                    })
-                    .collect();
+                let tags = items(&data).iter().filter_map(tag_dto).collect();
                 Ok(Arc::new(tags))
             })
             .await
@@ -159,7 +149,13 @@ impl Md {
                 let j = md.get(&path).await?;
                 let (mut results, chapters) =
                     futures::join!(md.with_stats(&j), md.search_chapters(&j));
-                for (result, manga) in results.iter_mut().zip(items(&j)) {
+                for result in &mut results {
+                    let Some(manga) = items(&j)
+                        .iter()
+                        .find(|manga| manga["id"].as_str() == Some(result.id.as_str()))
+                    else {
+                        continue;
+                    };
                     if let Some(id) = manga["attributes"]["latestUploadedChapter"].as_str() {
                         if let Some(chapter) = items(&chapters).iter().find(|c| c["id"] == id) {
                             result.latest_chapter =
@@ -224,7 +220,7 @@ impl Md {
             .unwrap_or_default();
         items(data)
             .iter()
-            .map(|m| summary_with_stats(m, &stats))
+            .filter_map(|m| summary_with_stats(m, &stats))
             .collect()
     }
 
@@ -236,10 +232,10 @@ impl Md {
                 let path = format!("/manga/{id}?{LIST_PARAMS}");
                 let (manga, stats) =
                     futures::join!(md.get(&path), md.stats(std::iter::once(id.as_str())));
-                Ok(Arc::new(summary_with_stats(
-                    &manga?["data"],
-                    &stats.unwrap_or_default(),
-                )))
+                let manga = manga?;
+                let summary = summary_with_stats(&manga["data"], &stats.unwrap_or_default())
+                    .ok_or_else(|| "MangaDex returned manga without a valid id.".to_owned())?;
+                Ok(Arc::new(summary))
             })
             .await
             .map_err(|e: Arc<Err>| (*e).clone())
@@ -278,36 +274,14 @@ impl Md {
         let mut seen = std::collections::HashSet::new();
         let mut out: Vec<ChapterDto> = Vec::new();
         for c in raw {
-            let a = &c["attributes"];
-            let key = a["chapter"].as_str().unwrap_or("oneshot").to_string();
+            let Some(chapter) = chapter_dto(&c, lang) else {
+                continue;
+            };
+            let key = chapter.chapter.as_deref().unwrap_or("oneshot").to_owned();
             if !seen.insert(key) {
                 continue; // first scanlation wins
             }
-            let group = c["relationships"]
-                .as_array()
-                .map(|rs| {
-                    rs.iter()
-                        .filter(|r| r["type"] == "scanlation_group")
-                        .filter_map(|r| r["attributes"]["name"].as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            out.push(ChapterDto {
-                id: c["id"].as_str().unwrap_or_default().into(),
-                chapter: a["chapter"].as_str().map(str::to_owned),
-                volume: a["volume"].as_str().map(str::to_owned),
-                title: a["title"].as_str().unwrap_or_default().to_owned(),
-                lang: a["translatedLanguage"].as_str().unwrap_or(lang).to_owned(),
-                pages: a["pages"].as_u64().unwrap_or(0),
-                external_url: a["externalUrl"].as_str().map(str::to_owned),
-                publish_at: a["readableAt"]
-                    .as_str()
-                    .or(a["publishAt"].as_str())
-                    .unwrap_or_default()
-                    .to_owned(),
-                group,
-            });
+            out.push(chapter);
         }
         out.sort_by(|a, b| {
             let num = |v: &ChapterDto| {
@@ -363,7 +337,54 @@ fn pick(map: &Value) -> String {
         .to_string()
 }
 
-fn summary(m: &Value) -> MangaSummaryDto {
+fn tag_dto(tag: &Value) -> Option<TagDto> {
+    let id = tag["id"].as_str().filter(|id| !id.trim().is_empty())?;
+    Some(TagDto {
+        id: id.to_owned(),
+        name: pick(&tag["attributes"]["name"]),
+        group: tag["attributes"]["group"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    })
+}
+
+fn chapter_dto(chapter: &Value, lang: &str) -> Option<ChapterDto> {
+    let id = chapter["id"].as_str().filter(|id| !id.trim().is_empty())?;
+    let attributes = &chapter["attributes"];
+    let group = chapter["relationships"]
+        .as_array()
+        .map(|relationships| {
+            relationships
+                .iter()
+                .filter(|relationship| relationship["type"] == "scanlation_group")
+                .filter_map(|relationship| relationship["attributes"]["name"].as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    Some(ChapterDto {
+        id: id.into(),
+        chapter: attributes["chapter"].as_str().map(str::to_owned),
+        volume: attributes["volume"].as_str().map(str::to_owned),
+        title: attributes["title"].as_str().unwrap_or_default().to_owned(),
+        lang: attributes["translatedLanguage"]
+            .as_str()
+            .unwrap_or(lang)
+            .to_owned(),
+        pages: attributes["pages"].as_u64().unwrap_or(0),
+        external_url: attributes["externalUrl"].as_str().map(str::to_owned),
+        publish_at: attributes["readableAt"]
+            .as_str()
+            .or(attributes["publishAt"].as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        group,
+    })
+}
+
+fn summary(m: &Value) -> Option<MangaSummaryDto> {
+    let id = m["id"].as_str().filter(|id| !id.trim().is_empty())?;
     let a = &m["attributes"];
     let rels = m["relationships"].as_array().cloned().unwrap_or_default();
     let cover = rels
@@ -383,8 +404,8 @@ fn summary(m: &Value) -> MangaSummaryDto {
             .and_then(|alts| alts.iter().map(pick).find(|t| !t.is_empty()))
             .unwrap_or_else(|| "Không rõ".into());
     }
-    MangaSummaryDto {
-        id: m["id"].as_str().unwrap_or_default().into(),
+    Some(MangaSummaryDto {
+        id: id.into(),
         title,
         cover_file: cover,
         status: a["status"].as_str().unwrap_or_default().to_owned(),
@@ -403,7 +424,12 @@ fn summary(m: &Value) -> MangaSummaryDto {
             .as_array()
             .map(|ts| {
                 ts.iter()
-                    .filter_map(|t| t["id"].as_str().map(str::to_owned))
+                    .filter_map(|t| {
+                        t["id"]
+                            .as_str()
+                            .filter(|id| !id.trim().is_empty())
+                            .map(str::to_owned)
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
@@ -416,7 +442,7 @@ fn summary(m: &Value) -> MangaSummaryDto {
         rating: None,
         follows: None,
         latest_chapter: None,
-    }
+    })
 }
 
 fn items(data: &Value) -> &[Value] {
@@ -427,17 +453,17 @@ fn items(data: &Value) -> &[Value] {
 }
 
 fn summaries(j: &Value) -> Vec<MangaSummaryDto> {
-    items(j).iter().map(summary).collect()
+    items(j).iter().filter_map(summary).collect()
 }
 
-fn summary_with_stats(manga: &Value, stats: &Value) -> MangaSummaryDto {
-    let mut item = summary(manga);
+fn summary_with_stats(manga: &Value, stats: &Value) -> Option<MangaSummaryDto> {
+    let mut item = summary(manga)?;
     if let Some(id) = manga["id"].as_str() {
         let stats = &stats["statistics"][id];
         item.rating = stats["rating"]["bayesian"].as_f64();
         item.follows = stats["follows"].as_u64();
     }
-    item
+    Some(item)
 }
 
 pub fn sort_param(sort: &str) -> Option<&'static str> {
@@ -495,7 +521,7 @@ fn latest_groups(feed: &Value) -> Vec<(&str, Vec<LatestChapterDto>)> {
     let mut groups: Vec<(&str, Vec<LatestChapterDto>)> = Vec::new();
     for chapter in items(feed) {
         let attributes = &chapter["attributes"];
-        let Some(id) = chapter["id"].as_str() else {
+        let Some(id) = chapter["id"].as_str().filter(|id| !id.trim().is_empty()) else {
             continue;
         };
         if attributes["pages"].as_u64().unwrap_or(0) == 0 || !attributes["externalUrl"].is_null() {
@@ -588,7 +614,7 @@ mod tests {
         let stats = json!({"statistics": {"manga-id": {
             "rating": {"bayesian": 8.5}, "follows": 42
         }}});
-        let encoded = serde_json::to_value(summary_with_stats(&manga, &stats)).unwrap();
+        let encoded = serde_json::to_value(summary_with_stats(&manga, &stats).unwrap()).unwrap();
         assert_eq!(encoded["id"], "manga-id");
         assert_eq!(encoded["title"], "Title");
         assert_eq!(encoded["cover_file"], "cover.jpg");
@@ -597,6 +623,93 @@ mod tests {
         assert_eq!(encoded["tag_ids"], json!(["tag-id"]));
         assert_eq!(encoded["rating"], 8.5);
         assert_eq!(encoded["follows"], 42);
+    }
+
+    #[test]
+    fn tag_conversion_rejects_missing_non_string_and_empty_ids() {
+        for record in [
+            json!({}),
+            json!({"id": 7}),
+            json!({"id": ""}),
+            json!({"id": "   "}),
+        ] {
+            assert!(tag_dto(&record).is_none());
+        }
+    }
+
+    #[test]
+    fn chapter_conversion_rejects_missing_non_string_and_empty_ids() {
+        for record in [
+            json!({}),
+            json!({"id": 7}),
+            json!({"id": ""}),
+            json!({"id": "   "}),
+        ] {
+            assert!(chapter_dto(&record, "vi").is_none());
+        }
+    }
+
+    #[test]
+    fn latest_chapter_conversion_never_emits_empty_ids() {
+        let attributes = json!({
+            "pages": 1,
+            "externalUrl": null,
+            "translatedLanguage": "vi"
+        });
+        let relationship = json!([{"type": "manga", "id": "manga-id"}]);
+        let chapter = |id: Value| {
+            json!({
+                "id": id,
+                "attributes": attributes,
+                "relationships": relationship
+            })
+        };
+        let mut missing_id = chapter(Value::Null);
+        missing_id.as_object_mut().unwrap().remove("id");
+        let feed = json!({
+            "data": [missing_id, chapter(json!(7)), chapter(json!("")), chapter(json!("   "))]
+        });
+
+        let groups = latest_groups(&feed);
+
+        assert!(groups
+            .iter()
+            .flat_map(|(_, chapters)| chapters)
+            .all(|chapter| !chapter.id.as_str().trim().is_empty()));
+    }
+
+    #[test]
+    fn manga_summary_conversion_rejects_missing_non_string_and_empty_ids() {
+        for record in [
+            json!({}),
+            json!({"id": 7}),
+            json!({"id": ""}),
+            json!({"id": "   "}),
+        ] {
+            assert!(summary(&record).is_none());
+        }
+    }
+
+    #[test]
+    fn manga_summary_skips_empty_tag_ids_but_keeps_tag_names() {
+        let manga = json!({
+            "id": "manga-id",
+            "attributes": {
+                "title": {"en": "Title"},
+                "tags": [
+                    {"id": "tag-a", "attributes": {"name": {"en": "Action"}}},
+                    {"id": "", "attributes": {"name": {"en": "Empty"}}},
+                    {"id": "   ", "attributes": {"name": {"en": "Blank"}}},
+                    {"id": 7, "attributes": {"name": {"en": "Non-string"}}}
+                ]
+            }
+        });
+        let encoded = serde_json::to_value(summary(&manga).unwrap()).unwrap();
+        assert_eq!(encoded["tag_ids"], json!(["tag-a"]));
+        assert_eq!(
+            encoded["tags"],
+            json!(["Action", "Empty", "Blank", "Non-string"])
+        );
     }
 
     #[test]

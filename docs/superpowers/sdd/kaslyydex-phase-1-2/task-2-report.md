@@ -51,3 +51,53 @@ formatted; the changed-package check above passes.
 - `crates/core/Cargo.toml`, `crates/core/src/{dns.rs,mangadex.rs}`
 - `crates/server/Cargo.toml`, `crates/server/src/main.rs`
 - `docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-report.md`
+
+## Fix follow-up: reject upstream records without usable IDs
+
+Addressed the review finding on low-severity fabricated IDs in
+`crates/core/src/mangadex.rs`.
+
+### Changes
+
+- Tags are converted through `tag_dto`, which skips records whose `id` is
+  missing, non-string, empty, or whitespace-only.
+- Chapters are converted through `chapter_dto`; the feed skips such records
+  instead of emitting `""`. `latest_groups` applies the same check so a blank
+  chapter id cannot enter a latest-manga payload.
+- Manga summaries go through `summary() -> Option<_>`; `summaries`,
+  `with_stats`, `latest` and `manga` propagate the rejection. A single-manga
+  lookup now returns an error rather than fabricating an empty id.
+- Nested tag ids in summaries skip blank upstream values while tag names and
+  every existing JSON field/key remain unchanged.
+- Search results are matched by manga id instead of positional `zip`, so a
+  skipped summary cannot shift `latest_chapter` onto the wrong result.
+
+### RED evidence
+
+With only the ID validation lines temporarily reverted to the previous
+`unwrap_or_default()` behaviour, `cargo test -p core mangadex::tests` reported
+`FAILED. 3 passed; 5 failed`:
+
+```text
+tag_conversion_rejects_missing_non_string_and_empty_ids ... FAILED
+chapter_conversion_rejects_missing_non_string_and_empty_ids ... FAILED
+manga_summary_conversion_rejects_missing_non_string_and_empty_ids ... FAILED
+latest_chapter_conversion_never_emits_empty_ids ... FAILED
+manga_summary_skips_empty_tag_ids_but_keeps_tag_names ... FAILED
+  left: Array [String("tag-a"), String(""), String("   ")]
+ right: Array [String("tag-a")]
+```
+
+### GREEN evidence
+
+- `cargo test -p core`: 9 passed, 0 failed.
+- `cargo test --workspace`: 36 passed, 0 failed across all binaries; 0 doc tests.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed, no warnings.
+- `cargo fmt --check -p domain -p contracts -p reader-core -p server`: passed.
+- `cargo fmt --check -p core`: only the known pre-existing diffs in
+  `crates/core/src/imgcache.rs` and `crates/core/src/lib.rs`; `mangadex.rs` is
+  clean and those unrelated files were not reformatted.
+- `git diff --check`: passed (only the existing LF/CRLF notice for
+  `mangadex.rs`).
+
+No auth, Neon, Next.js, WASM or native implementation was added.
