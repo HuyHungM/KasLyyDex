@@ -138,6 +138,9 @@ export const notificationCursors = pgTable("notification_cursors", {
   mangaId: text("manga_id").notNull(),
   language: text("language").notNull(),
   lastPublish: bigint("last_publish", { mode: "number" }).notNull(),
+  // Composite cursor component: legacy rows keep '' and are re-evaluated for
+  // chapters sharing the stored publish time; event keys dedupe the repeat.
+  lastChapterId: text("last_chapter_id").notNull().default(""),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [primaryKey({ columns: [table.userId, table.mangaId, table.language] })]);
 

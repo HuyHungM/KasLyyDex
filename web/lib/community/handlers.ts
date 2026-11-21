@@ -73,6 +73,11 @@ export function createCommunityApi(deps: CommunityDeps) {
         if (!(options.optional && error instanceof AuthConfigurationError)) throw error;
       }
       if (!user) {
+        if (options.moderator) {
+          // Moderator entry points do not distinguish anonymous from reader:
+          // neither has the stored role.
+          return privateJson(errorEnvelope("FORBIDDEN", "Moderator permission is required."), 403);
+        }
         if (!options.optional) {
           return privateJson(errorEnvelope("UNAUTHENTICATED", "Sign in to continue."), 401);
         }

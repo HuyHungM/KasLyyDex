@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: "Thông báo" };
 export default function NotificationsPage() {
   return (
     <main className="wrap">
-      <NotificationCenter />
+      <NotificationCenter autoRefresh />
     </main>
   );
 }

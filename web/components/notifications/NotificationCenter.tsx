@@ -1,15 +1,17 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { NotificationDto, NotificationListDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
 import { refreshChapterNotifications } from "@/lib/community/client";
 
-type Props = { compact?: boolean };
+type Props = { compact?: boolean; autoRefresh?: boolean };
 
-export default function NotificationCenter({ compact = false }: Props) {
+export default function NotificationCenter({ compact = false, autoRefresh = false }: Props) {
   const { session } = useAccountSession();
+  const pathname = usePathname();
   const identityKey = session.user?.id ?? "guest";
   const signedIn = session.status === "authenticated";
   const [open, setOpen] = useState(false);
@@ -29,15 +31,39 @@ export default function NotificationCenter({ compact = false }: Props) {
     reloadRef.current = inbox.reload;
   }, [inbox.reload]);
 
+  const openedRefreshRef = useRef(false);
   useEffect(() => {
-    if (!signedIn) return;
+    // Only the notification page entry checks chapters. The globally mounted
+    // header badge just reads the inbox and never calls the content service.
+    if (!signedIn || !autoRefresh) return;
     let alive = true;
-    // Demand-driven refresh: no scheduler or background worker is claimed.
     void refreshChapterNotifications()
       .then(() => { if (alive) reloadRef.current(); })
       .catch(() => undefined);
     return () => { alive = false; };
-  }, [identityKey, signedIn]);
+  }, [identityKey, signedIn, autoRefresh]);
+
+  async function refreshOnExplicitOpen() {
+    if (openedRefreshRef.current) return;
+    openedRefreshRef.current = true;
+    try {
+      await refreshChapterNotifications();
+      reloadRef.current();
+    } catch {
+      // The inbox still loads existing notifications if the content check fails.
+    } finally {
+      openedRefreshRef.current = false;
+    }
+  }
+
+  function togglePanel() {
+    const next = !open;
+    setOpen(next);
+    // Library and notification pages already check on entry; no second call.
+    if (next && compact && signedIn && pathname !== "/thong-bao" && pathname !== "/tu-truyen") {
+      void refreshOnExplicitOpen();
+    }
+  }
 
   async function markRead(ids: string[]) {
     if (ids.length === 0) return;
@@ -126,7 +152,7 @@ export default function NotificationCenter({ compact = false }: Props) {
         className="notification-bell"
         aria-label={unread > 0 ? `Thông báo, ${unread} chưa đọc` : "Thông báo"}
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={togglePanel}
       >
         <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />

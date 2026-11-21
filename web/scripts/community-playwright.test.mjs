@@ -204,6 +204,14 @@ test("moderator queue calls authorized APIs and reports errors", async () => {
     }],
     nextCursor: null,
   };
+  reportList.items.push({
+    id: "report-2", commentId: SPOILER_ID, reason: "spoiler", status: "open", createdAt: Date.now() - 1000,
+    comment: {
+      id: SPOILER_ID, targetType: "manga", targetId: MANGA_ID, parentId: null,
+      userId: "google|other", authorName: "Other reader", status: "hidden", spoiler: true,
+      body: "HIDDEN_QUEUE_SECRET", createdAt: Date.now() - 1000, updatedAt: Date.now() - 1000, replies: [],
+    },
+  });
   const { context, page } = await signedInPage([
     ["**/api/v1/moderation/reports?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reportList) })],
     ["**/api/v1/moderation/comments/*", (route) => {
@@ -221,7 +229,9 @@ test("moderator queue calls authorized APIs and reports errors", async () => {
     await page.goto(`${baseUrl}/kiem-duyet`, { waitUntil: "networkidle" });
     const queue = page.locator(".moderation-card");
     await queue.getByText("bad comment").waitFor();
-    await queue.getByRole("button", { name: "Ẩn" }).click();
+    assert.ok((await queue.textContent()).includes("HIDDEN_QUEUE_SECRET"), "authorized queue shows hidden bodies");
+    assert.equal(await queue.getByRole("button", { name: "Khôi phục" }).count(), 1, "restore is only offered for hidden comments");
+    await queue.getByRole("button", { name: "Ẩn" }).first().click();
     await queue.getByText("Đã cập nhật.").waitFor();
     assert.ok(calls.some((call) => call.url.includes(`/api/v1/moderation/comments/${COMMENT_ID}`) && call.body.action === "hide" && call.method === "PATCH"));
 
@@ -229,6 +239,49 @@ test("moderator queue calls authorized APIs and reports errors", async () => {
     await queue.getByRole("button", { name: "Áp dụng" }).click();
     await queue.getByRole("alert").filter({ hasText: "Không có quyền kiểm duyệt." }).waitFor();
     assert.ok(calls.some((call) => call.url.endsWith("/api/v1/moderation/threads") && call.body.locked === true && call.body.targetId === MANGA_ID));
+  } finally {
+    await context.close();
+  }
+});
+
+test("chapter refresh only runs on library, notification entry or explicit panel open", async () => {
+  const refreshCalls = [];
+  const okRefresh = (route) => {
+    refreshCalls.push(route.request().url());
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ checked: 1, created: 0, skipped: false }) });
+  };
+  const { context, page } = await signedInPage([
+    ["**/api/v1/notifications/refresh", okRefresh],
+    ["**/api/v1/notifications?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(notifications) })],
+    ["**/api/v1/moderation/access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ moderator: false }) })],
+    ["**/api/v1/me/library", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) })],
+    ["**/api/v1/comments?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(comments) })],
+  ]);
+  try {
+    for (const path of ["/", "/search", "/tai-khoan"]) {
+      await page.goto(`${baseUrl}${path}`, { waitUntil: "networkidle" });
+    }
+    assert.equal(refreshCalls.length, 0, "unrelated authenticated pages must not fetch the content API");
+
+    async function waitForCalls(expected) {
+      const deadline = Date.now() + 8_000;
+      while (refreshCalls.length < expected && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(refreshCalls.length, expected);
+    }
+
+    await page.goto(`${baseUrl}/tu-truyen`, { waitUntil: "networkidle" });
+    await waitForCalls(1);
+
+    await page.goto(`${baseUrl}/thong-bao`, { waitUntil: "networkidle" });
+    await waitForCalls(2);
+
+    await page.goto(`${baseUrl}/manga/${MANGA_ID}`, { waitUntil: "networkidle" });
+    assert.equal(refreshCalls.length, 2);
+    await page.getByRole("button", { name: /Thông báo/ }).click();
+    await page.getByRole("dialog", { name: "Trung tâm thông báo" }).waitFor();
+    assert.equal(refreshCalls.length, 3, "explicit header panel opening checks once");
   } finally {
     await context.close();
   }

@@ -130,3 +130,53 @@ Controller-owned `progress.md`, briefs, review diffs and scratch logs were left 
 - Moderator roles are only seeded by the operator allowlist or direct DB administration; this task adds no role-management UI.
 - Task 6 deferred minors remain **final-review items, not silently fixed here**: brief stale-key paint and null-path loading in `useRemoteResource`, discarded restore GETs, unordered progress PUTs, forwarded-host origin trust, import arrays truncated without a skipped count, and AuthPanel copy claiming local test mode. Task 7 only passes the corrected identity key into existing consumers.
 - Guest reader remains functional: public comment reads tolerate an unconfigured auth environment, and guest settings/library/history paths were re-verified by the account and reader E2E suites.
+
+---
+
+## Fix round 1 — five Important review findings
+
+All five findings were implemented and covered by new failing-then-passing tests. No cloud, subagent, push or merge was used. Controller ledger/brief/review diffs remain untouched.
+
+### RED evidence (before fixes)
+
+```bash
+cd web
+node --import tsx --conditions=react-server --test scripts/community.test.mjs
+# 21 tests / 14 pass / 7 fail: composite cursor, same-timestamp boundary,
+# overlapping/failed refresh, reply-body leak, legacy scrub, moderator queue
+# hidden body, restore-from-removed.
+
+node --test scripts/community-playwright.test.mjs
+# 5 tests / 3 pass / 2 fail: restore button offered for removed comments;
+# unrelated authenticated pages triggered 3 chapter-refresh POSTs.
+```
+
+### Implemented changes
+
+1. **Composite chapter cursor — no permanent loss.** `0003_community_cursor_scrub.sql` adds `notification_cursors.last_chapter_id text NOT NULL DEFAULT ''`. The refresh orders candidates by `(publish_at, chapter_id)` and emits only candidates lexicographically after `(last_publish, last_chapter_id)`, capped at 3 per manga/language per refresh. The cursor advances **only through the last candidate actually processed**, so 7 same-timestamp chapters arrive as 3/3/1/0 across four refreshes and a later id at the same timestamp is still new. Baseline creation still stores the newest observed key and emits nothing; empty or failed upstream responses leave the cursor untouched. Legacy rows keep `''`, so equal-timestamp chapters are re-evaluated once but `(user,event_key)` uniqueness prevents duplicates. The external fetch remains inside the bounded transaction (≤20 content calls): this keeps cursor writes atomic with emitted notifications, at the tradeoff of holding a DB connection during those bounded fetches; moving the fetch out would need a two-phase reconciliation we did not invent.
+2. **Reply notifications carry no body.** `createComment()` now emits a constant neutral hint for every reply (spoiler or not), so moderation cannot uncover a stored snippet. The new migration scrubs previously persisted `comment_reply` rows whose `event_key LIKE 'reply:%'`; a test seeds a legacy row under migrations 0000–0002, applies 0003 and proves the old secret is gone. Spoiler conceal/reveal in the public UI is unchanged and re-verified in the browser.
+3. **Refresh scope.** The globally mounted header `NotificationCenter` no longer auto-refreshes; it only reads the inbox for the badge. `/thong-bao` mounts with `autoRefresh`, `/tu-truyen` keeps its single library-entry refresh, and the compact bell calls refresh only when explicitly opened on another page (once per opening, suppressed on library/notification pages). Browser test counts 0 refresh POSTs on home/search/account, 1 on library, 1 on notification entry, 1 on explicit header-panel opening.
+4. **Moderator queue body.** `listReports()` now builds a privilege-specific DTO: a hidden comment's body is exposed only after the handler's moderator check and the service's `requireModerator()`; removed bodies stay null because removal destroys them. Ordinary public/owner comment reads still return `body: null` for moderated statuses, and queue GETs return 403 for anonymous and non-moderator readers. The original report's claim that the queue could show hidden bodies is now backed by a direct test rather than code inspection.
+5. **Restore guard.** `moderateComment()` rejects `restore` unless the stored status is `hidden` and the body is intact (`409 RESTORE_NOT_ALLOWED`). Owner-deleted and moderator-removed comments cannot be resurrected; hidden→visible still works. The queue shows *Khôi phục* only for hidden comments. A SQL assertion proves there are no `visible` rows with a null body.
+
+Reviewer minors (reply reply-cap 500, self/duplicate-report quota interaction, transaction spanning HTTP, stray test argument) were deliberately left for final review; no broad refactor was attempted. A new nearby test proves public comment GET tolerates an unconfigured auth service: the injected handler returns 200 for a guest, and the built route with no auth/DB env fails at `DATABASE_NOT_CONFIGURED` (not `AUTH_NOT_CONFIGURED`) with `private, no-store`.
+
+### GREEN evidence
+
+```bash
+cd web
+node --import tsx --conditions=react-server --test scripts/community.test.mjs scripts/database.test.mjs
+# 25 tests / 25 pass / 0 fail
+npm run test:task7
+# 75 tests / 75 pass / 0 fail (includes 8 new fix regressions)
+node --test scripts/community-playwright.test.mjs
+# 5 tests / 5 pass / 0 fail
+node --test scripts/community-playwright.test.mjs scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/reader-playwright.test.mjs
+# 20 tests / 20 pass / 0 fail
+npx tsc --noEmit                 # pass
+npm run lint                     # 0 errors, 7 pre-existing no-img-element warnings
+npm run build                    # pass; 0003 migration and dynamic access route present
+git diff --cached --check        # pass before commit
+```
+
+Cargo was unchanged, so Rust tests were not rerun in this fix round. The remaining limitations are the same external gates recorded above: PGlite rather than live Neon, loopback SDK fixture rather than real provider mail/OAuth, and browser API interception rather than a local PostgreSQL wire server.

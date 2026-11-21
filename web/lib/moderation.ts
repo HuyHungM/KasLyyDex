@@ -26,6 +26,8 @@ const REPORT_WINDOW_MS = 3_600_000;
 const LIBRARY_SCAN_LIMIT = 20;
 const CHAPTERS_PER_MANGA = 3;
 const MAX_CHAPTER_AGE_MS = 5 * 60_000;
+// Neutral by construction: no reply body can survive moderation via the inbox.
+const REPLY_NOTIFICATION_BODY = "Có phản hồi mới trong bình luận. Mở bình luận để xem nội dung.";
 
 function date(ms: number): Date {
   return new Date(Number.isFinite(ms) ? ms : Date.now());
@@ -277,7 +279,7 @@ export async function createComment(
           type: "comment_reply",
           eventKey: `reply:${id}`,
           title: "Có phản hồi bình luận",
-          body: input.spoiler ? "Một phản hồi có spoiler — mở bình luận để xem." : input.body.slice(0, 180),
+          body: REPLY_NOTIFICATION_BODY,
           href: input.targetType === "chapter" ? `/read/${input.targetId}` : `/manga/${input.targetId}`,
         });
       }
@@ -383,15 +385,23 @@ export async function listReports(
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   return {
-    items: page.map((row) => ({
-      id: row.report.id,
-      commentId: row.report.commentId,
-      reason: row.report.reason,
-      status: row.report.status as ReportDto["status"],
-      createdAt: row.report.createdAt.getTime(),
-      // Moderator-only queue is the sole route that can see a moderated body.
-      comment: commentDto({ ...row.comment, authorName: row.authorName }),
-    })),
+    items: page.map((row) => {
+      // Privilege-specific DTO: only this authenticated moderator route may
+      // expose a hidden body. Removal destroyed the body, so it stays null.
+      const publicComment = commentDto({ ...row.comment, authorName: row.authorName });
+      const moderatorComment: CommentDto = {
+        ...publicComment,
+        body: row.comment.status === "removed" ? null : row.comment.body,
+      };
+      return {
+        id: row.report.id,
+        commentId: row.report.commentId,
+        reason: row.report.reason,
+        status: row.report.status as ReportDto["status"],
+        createdAt: row.report.createdAt.getTime(),
+        comment: moderatorComment,
+      };
+    }),
     nextCursor: hasMore && last ? `${last.report.createdAt.getTime()}.${last.report.id}` : null,
   };
 }
@@ -424,6 +434,10 @@ export async function moderateComment(
     await requireModerator(tx, actorId);
     const existing = await loadComment(tx, commentId);
     if (!existing) throw new ServiceError(404, "NOT_FOUND", "Comment not found.");
+    // Removing nulls the body, so only an intact hidden comment can return.
+    if (action === "restore" && (existing.status !== "hidden" || !existing.body)) {
+      throw new ServiceError(409, "RESTORE_NOT_ALLOWED", "Only a hidden comment can be restored.");
+    }
     const status: CommentStatus = action === "hide" ? "hidden" : action === "remove" ? "removed" : "visible";
     await tx.update(tables.comments).set({
       status,
@@ -579,24 +593,34 @@ export async function refreshFollowedChapters(
           .map((item) => ({ item, published: parsePublish(item.publish_at) }))
           .filter((value): value is { item: typeof value.item; published: number } =>
             value.published !== null && value.published <= now + MAX_CHAPTER_AGE_MS)
-          .sort((a, b) => a.published - b.published);
+          // Total order: publish time first, then opaque chapter id. Equal
+          // timestamps can never hide a later id behind a coarse watermark.
+          .sort((a, b) => a.published - b.published || a.item.id.localeCompare(b.item.id));
         if (candidates.length === 0) continue;
-        const newest = candidates.at(-1)!.published;
-        const existing = await tx.select().from(tables.notificationCursors).where(and(
+        const newest = candidates.at(-1)!;
+        const cursorWhere = and(
           eq(tables.notificationCursors.userId, userId),
           eq(tables.notificationCursors.mangaId, entry.mangaId),
           eq(tables.notificationCursors.language, language),
-        )).limit(1);
+        );
+        const existing = await tx.select().from(tables.notificationCursors).where(cursorWhere).limit(1);
         if (!existing[0]) {
           await tx.insert(tables.notificationCursors).values({
-            userId, mangaId: entry.mangaId, language, lastPublish: newest, updatedAt: date(now),
+            userId, mangaId: entry.mangaId, language,
+            lastPublish: newest.published, lastChapterId: newest.item.id, updatedAt: date(now),
           });
           continue;
         }
-        const cursor = existing[0].lastPublish;
-        for (const { item } of candidates
-          .filter((value) => value.published > cursor)
-          .slice(0, CHAPTERS_PER_MANGA)) {
+        const cursorPublish = existing[0].lastPublish;
+        // Legacy rows have '' (migration default): same-timestamp chapters are
+        // re-evaluated once, but event-key uniqueness prevents duplicates.
+        const cursorId = existing[0].lastChapterId ?? "";
+        const pending = candidates
+          .filter((value) => value.published > cursorPublish
+            || (value.published === cursorPublish && value.item.id > cursorId))
+          .slice(0, CHAPTERS_PER_MANGA);
+        if (pending.length === 0) continue;
+        for (const { item } of pending) {
           const emitted = await emitNotification(tx, {
             userId,
             type: "new_chapter",
@@ -607,14 +631,11 @@ export async function refreshFollowedChapters(
           });
           if (emitted) created += 1;
         }
-        if (newest > cursor) {
-          await tx.update(tables.notificationCursors).set({ lastPublish: newest, updatedAt: date(now) })
-            .where(and(
-              eq(tables.notificationCursors.userId, userId),
-              eq(tables.notificationCursors.mangaId, entry.mangaId),
-              eq(tables.notificationCursors.language, language),
-            ));
-        }
+        // Advance only through the candidates actually processed this round.
+        const last = pending.at(-1)!;
+        await tx.update(tables.notificationCursors).set({
+          lastPublish: last.published, lastChapterId: last.item.id, updatedAt: date(now),
+        }).where(cursorWhere);
       }
     }
     return { checked: followed.length, created, skipped: false };

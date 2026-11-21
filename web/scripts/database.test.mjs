@@ -12,6 +12,7 @@ const migrationUrls = [
   new URL("../drizzle/0000_application.sql", import.meta.url),
   new URL("../drizzle/0001_account_data.sql", import.meta.url),
   new URL("../drizzle/0002_comments_moderation.sql", import.meta.url),
+  new URL("../drizzle/0003_community_cursor_scrub.sql", import.meta.url),
 ];
 
 async function freshDatabase() {

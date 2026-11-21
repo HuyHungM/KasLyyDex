@@ -13,6 +13,7 @@ const community = await import("../lib/moderation.ts");
 const { createCommunityApi } = await import("../lib/community/handlers.ts");
 const validators = await import("../lib/validators.ts");
 const { identityFromSession } = await import("../lib/auth/identity.ts");
+const { AuthConfigurationError } = await import("../lib/auth/server.ts");
 const schema = await import("../lib/db/schema.ts");
 
 const DAY = 86_400_000;
@@ -21,13 +22,21 @@ const MIGRATIONS = [
   "0000_application.sql",
   "0001_account_data.sql",
   "0002_comments_moderation.sql",
+  "0003_community_cursor_scrub.sql",
 ];
+const LEGACY_MIGRATIONS = MIGRATIONS.slice(0, 3);
 
-async function migratedDb() {
+async function migratedDb(files = MIGRATIONS) {
   const pg = new PGlite();
   const db = drizzle(pg, { schema });
-  for (const file of MIGRATIONS) {
-    await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
+  for (const file of files) {
+    try {
+      await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
+    } catch (error) {
+      // During RED the fix migration does not exist yet; keep the older SQL so
+      // behaviour regressions fail on assertions rather than a setup error.
+      if (error.code !== "ENOENT") throw error;
+    }
   }
   return { pg, db };
 }
@@ -89,9 +98,11 @@ function chapter(id, chapterNumber, publishAt) {
 
 let authFixture;
 let configuredNext;
+let unconfiguredNext;
 let fixtureSession;
 
 before(async () => {
+  unconfiguredNext = await startNext();
   const { startHttpServer: http } = await import("./test-helpers.mjs");
   authFixture = await http((req, res) => {
     if (req.url?.includes("get-session")) {
@@ -127,6 +138,7 @@ before(async () => {
 
 after(async () => {
   await stop(configuredNext?.child);
+  await stop(unconfiguredNext?.child);
   await authFixture?.close();
 });
 
@@ -468,7 +480,7 @@ test("moderator actions require a stored role in both handler and service", asyn
 
     const unsigned = await api(db, null).commentModeratePatch(
       jsonRequest(`/api/v1/moderation/comments/${commentId}`, "PATCH", { action: "hide" }), { id: commentId });
-    assert.equal(unsigned.status, 401);
+    assert.equal(unsigned.status, 403, "moderator routes reject anonymous callers as forbidden");
     const reader = await api(db, author).commentModeratePatch(
       jsonRequest(`/api/v1/moderation/comments/${commentId}`, "PATCH", { action: "hide" }), { id: commentId });
     assert.equal(reader.status, 403);
@@ -603,6 +615,265 @@ test("new-chapter refresh baselines first follow, dedupes and bounds content cal
     }) });
     await bounded.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
     assert.ok(boundedCalls <= 20, `refresh must stay bounded, saw ${boundedCalls} content calls`);
+  } finally {
+    await pg.close();
+  }
+});
+
+test("chapter cursor advances through same-timestamp backlog without loss", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const reader = identity("opaque|reader");
+    await seed(db, [reader.id]);
+    await db.insert(schema.libraryEntries).values({
+      userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
+      followedAt: now - DAY, lastReadPublish: 0, revision: 1,
+    });
+    const baselinePublish = now - 10 * DAY;
+    let feed = [chapter("ch-base", "1", baselinePublish)];
+    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
+    const refresh = () => api(db, reader, { content }).notificationsRefreshPost(
+      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+
+    const first = await refresh();
+    assert.equal((await first.json()).created, 0, "first observation is a baseline only");
+    let cursorRows = await db.select().from(schema.notificationCursors);
+    assert.equal(cursorRows[0].lastChapterId, "ch-base");
+
+    feed = Array.from({ length: 7 }, (_, index) => chapter(`ch-${index + 1}`, String(index + 2), now - 60_000));
+    const counts = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await refresh();
+      counts.push((await response.json()).created);
+    }
+    assert.deepEqual(counts, [3, 3, 1, 0], "bounded batches must resume, not skip, the backlog");
+    const emitted = await db.select().from(schema.notifications);
+    assert.equal(emitted.length, 7);
+    assert.equal(new Set(emitted.map((item) => item.eventKey)).size, 7, "each chapter is notified exactly once");
+    cursorRows = await db.select().from(schema.notificationCursors);
+    assert.equal(cursorRows[0].lastChapterId, "ch-7");
+
+    feed = [...feed, chapter("ch-8", "9", now - 60_000)];
+    assert.equal((await (await refresh()).json()).created, 1, "a later id at the same timestamp is still new");
+  } finally {
+    await pg.close();
+  }
+});
+
+test("composite cursor compares chapter id when publish timestamps match", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const reader = identity("opaque|reader");
+    await seed(db, [reader.id]);
+    const published = now - 60_000;
+    await db.insert(schema.libraryEntries).values({
+      userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
+      followedAt: now - DAY, lastReadPublish: 0, revision: 1,
+    });
+    await db.insert(schema.notificationCursors).values({
+      userId: reader.id, mangaId: "m1", language: "vi", lastPublish: published, lastChapterId: "ch-2",
+    });
+    const feed = [1, 2, 3, 4, 5].map((number) => chapter(`ch-${number}`, String(number + 1), published));
+    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
+    const handle = api(db, reader, { content });
+    const response = await handle.notificationsRefreshPost(
+      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+    const body = await response.json();
+    assert.deepEqual(body, { checked: 1, created: 3, skipped: false });
+    const rows = await db.select().from(schema.notifications);
+    assert.deepEqual(rows.map((item) => item.eventKey).sort(), [
+      `chapter:${reader.id}:m1:ch-3:vi`,
+      `chapter:${reader.id}:m1:ch-4:vi`,
+      `chapter:${reader.id}:m1:ch-5:vi`,
+    ]);
+    const cursor = (await db.select().from(schema.notificationCursors))[0];
+    assert.equal(cursor.lastChapterId, "ch-5");
+  } finally {
+    await pg.close();
+  }
+});
+
+test("overlapping refreshes dedupe and failed or empty feeds do not advance cursors", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const reader = identity("opaque|reader");
+    await seed(db, [reader.id]);
+    await db.insert(schema.libraryEntries).values({
+      userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
+      followedAt: now - DAY, lastPublish: 0, revision: 1,
+    });
+    const baseline = now - 5 * DAY;
+    await db.insert(schema.notificationCursors).values({
+      userId: reader.id, mangaId: "m1", language: "vi", lastPublish: baseline, lastChapterId: "ch-0",
+    });
+    const withoutFeed = api(db, reader, { content: async () => ({ chapters: async () => ({ vi: [], en: [] }) }) });
+    const before = (await db.select().from(schema.notificationCursors))[0];
+    await withoutFeed.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+    const afterEmpty = (await db.select().from(schema.notificationCursors))[0];
+    assert.deepEqual(
+      { publish: afterEmpty.lastPublish, chapter: afterEmpty.lastChapterId },
+      { publish: before.lastPublish, chapter: before.lastChapterId },
+    );
+
+    const failing = api(db, reader, { content: async () => ({ chapters: async () => { throw new Error("upstream down"); } }) });
+    await failing.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+    const afterFailure = (await db.select().from(schema.notificationCursors))[0];
+    assert.equal(afterFailure.lastPublish, before.lastPublish);
+
+    const feed = [1, 2, 3, 4].map((number) => chapter(`ch-${number}`, String(number), now - 60_000));
+    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
+    const parallel = await Promise.all([0, 1].map(() => api(db, reader, { content }).notificationsRefreshPost(
+      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {})));
+    assert.ok(parallel.every((response) => response.status === 200));
+    const notifications = await db.select().from(schema.notifications);
+    assert.equal(notifications.length, 4, "two overlapping refreshes never duplicate a chapter");
+    assert.equal(new Set(notifications.map((item) => item.eventKey)).size, 4);
+  } finally {
+    await pg.close();
+  }
+});
+
+test("reply notifications never retain a body, before or after moderation", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const alice = identity("opaque|alice");
+    const bob = identity("opaque|bob");
+    const mod = identity("opaque|mod");
+    await seed(db, [mod.id]);
+    await db.insert(schema.userRoles).values({ userId: mod.id, role: "moderator" });
+    const root = await postComment(api(db, alice), { targetType: "manga", targetId: "m1", body: "root" });
+    const reply = await postComment(api(db, bob), {
+      targetType: "manga", targetId: "m1", parentId: root.payload.comment.id,
+      body: "SENSITIVE_REPLY_SECRET", spoiler: false,
+    });
+    assert.equal(reply.response.status, 201);
+    const readInbox = async () => (await (await api(db, alice).notificationsGet(
+      request("/api/v1/notifications?limit=20"))).json()).items;
+    const created = await readInbox();
+    assert.equal(created.length, 1);
+    assert.ok(!JSON.stringify(created).includes("SENSITIVE_REPLY_SECRET"), "reply snippets must be neutral at creation");
+    await community.moderateComment(db, mod.id, reply.payload.comment.id, "hide", now);
+    assert.ok(!JSON.stringify(await readInbox()).includes("SENSITIVE_REPLY_SECRET"));
+    await community.moderateComment(db, mod.id, reply.payload.comment.id, "remove", now);
+    assert.ok(!JSON.stringify(await readInbox()).includes("SENSITIVE_REPLY_SECRET"));
+  } finally {
+    await pg.close();
+  }
+});
+
+test("0003 migration scrubs previously persisted reply snippets", async () => {
+  const { pg, db } = await migratedDb(LEGACY_MIGRATIONS);
+  try {
+    await seed(db, ["opaque|alice"]);
+    await db.insert(schema.notifications).values({
+      id: "legacy-reply", userId: "opaque|alice", type: "comment_reply",
+      eventKey: "reply:legacy", title: "Có phản hồi bình luận", body: "LEGACY_SECRET_SNIPPET",
+    });
+    await pg.exec(await readFile(fileURLToPath(new URL(
+      "../drizzle/0003_community_cursor_scrub.sql", import.meta.url)), "utf8"));
+    const rows = await db.select().from(schema.notifications);
+    assert.equal(rows.length, 1);
+    assert.ok(!rows[0].body.includes("LEGACY_SECRET_SNIPPET"));
+  } finally {
+    await pg.close();
+  }
+});
+
+test("moderator queue exposes hidden bodies while public and owner reads redact them", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const author = identity("opaque|author");
+    const reporter = identity("opaque|reporter");
+    const mod = identity("opaque|mod");
+    await seed(db, [mod.id]);
+    await db.insert(schema.userRoles).values({ userId: mod.id, role: "moderator" });
+    const created = await postComment(api(db, author), {
+      targetType: "manga", targetId: "m1", body: "HIDDEN_QUEUE_SECRET",
+    });
+    const commentId = created.payload.comment.id;
+    assert.equal((await api(db, reporter).reportPost(
+      jsonRequest("/api/v1/reports", "POST", { commentId, reason: "spam" }), {})).status, 201);
+    await community.moderateComment(db, mod.id, commentId, "hide", now);
+
+    const queue = await (await api(db, mod).moderationReportsGet(
+      request("/api/v1/moderation/reports?limit=20"))).json();
+    assert.equal(queue.items.length, 1);
+    assert.equal(queue.items[0].comment.body, "HIDDEN_QUEUE_SECRET");
+    assert.equal((await api(db, reporter).moderationReportsGet(
+      request("/api/v1/moderation/reports?limit=20"))).status, 403);
+    assert.equal((await api(db, null).moderationReportsGet(
+      request("/api/v1/moderation/reports?limit=20"))).status, 403);
+
+    const publicBody = await (await api(db, null).commentsGet(
+      request("/api/v1/comments?targetType=manga&targetId=m1"))).json();
+    assert.equal(publicBody.items.length, 0);
+    const ownerBody = await (await api(db, author).commentsGet(
+      request("/api/v1/comments?targetType=manga&targetId=m1"))).json();
+    assert.equal(ownerBody.items[0].body, null);
+    assert.ok(!JSON.stringify(ownerBody).includes("HIDDEN_QUEUE_SECRET"));
+  } finally {
+    await pg.close();
+  }
+});
+
+test("only hidden comments can be restored; removed comments stay gone", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const author = identity("opaque|author");
+    const mod = identity("opaque|mod");
+    await seed(db, [mod.id]);
+    await db.insert(schema.userRoles).values({ userId: mod.id, role: "moderator" });
+    const handle = api(db, author);
+    const make = async (body) => (await postComment(handle, {
+      targetType: "manga", targetId: "m1", body,
+    })).payload.comment.id;
+
+    const ownerRemoved = await make("owner removed");
+    assert.equal((await handle.commentDelete(
+      request(`/api/v1/comments/${ownerRemoved}`, { method: "DELETE" }), { id: ownerRemoved })).status, 200);
+    const badRestore = await api(db, mod).commentModeratePatch(
+      jsonRequest(`/api/v1/moderation/comments/${ownerRemoved}`, "PATCH", { action: "restore" }), { id: ownerRemoved });
+    assert.equal(badRestore.status, 409);
+    assert.equal((await badRestore.json()).error.code, "RESTORE_NOT_ALLOWED");
+
+    const modRemoved = await make("moderator removed");
+    await community.moderateComment(db, mod.id, modRemoved, "remove", now);
+    await assert.rejects(
+      community.moderateComment(db, mod.id, modRemoved, "restore", now),
+      (error) => error.code === "RESTORE_NOT_ALLOWED",
+    );
+
+    const hidden = await make("hidden then restored");
+    await community.moderateComment(db, mod.id, hidden, "hide", now);
+    const restored = await community.moderateComment(db, mod.id, hidden, "restore", now);
+    assert.equal(restored.status, "visible");
+    assert.equal(restored.body, "hidden then restored");
+    const invalid = await pg.query("SELECT 1 FROM comments WHERE status = 'visible' AND body IS NULL");
+    assert.equal(invalid.rows.length, 0, "no visible comment can have a null body");
+  } finally {
+    await pg.close();
+  }
+});
+
+test("public comment reads tolerate missing auth configuration but still need the database", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const injected = createCommunityApi({
+      db: () => db,
+      identity: async () => { throw new AuthConfigurationError("AUTH_NOT_CONFIGURED", "not configured", ["NEON_AUTH_BASE_URL"]); },
+      now: () => now,
+      allowlist: [],
+      content: async () => ({ chapters: async () => ({ vi: [], en: [] }) }),
+    });
+    const response = await injected.commentsGet(request("/api/v1/comments?targetType=manga&targetId=m1"));
+    assert.equal(response.status, 200, "guest reads are not blocked by an unconfigured auth service");
+    assert.equal((await response.json()).items.length, 0);
+
+    const route = await fetch(`${unconfiguredNext.baseUrl}/api/v1/comments?targetType=manga&targetId=m1`);
+    assert.equal(route.status, 503);
+    const body = await route.json();
+    assert.equal(body.error.code, "DATABASE_NOT_CONFIGURED", "the route reaches the DB boundary, not an auth failure");
+    assert.equal(route.headers.get("cache-control"), "private, no-store");
   } finally {
     await pg.close();
   }

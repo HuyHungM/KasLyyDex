@@ -69,7 +69,9 @@ export default function ModerationQueue() {
             <div className="comment-actions">
               <button type="button" className="btn" disabled={busy} onClick={() => moderate(report, "hide")}>Ẩn</button>
               <button type="button" className="btn" disabled={busy} onClick={() => moderate(report, "remove")}>Xóa</button>
-              <button type="button" className="btn" disabled={busy} onClick={() => moderate(report, "restore")}>Khôi phục</button>
+              {report.comment?.status === "hidden" ? (
+                <button type="button" className="btn" disabled={busy} onClick={() => moderate(report, "restore")}>Khôi phục</button>
+              ) : null}
               <button type="button" className="link-btn" disabled={busy} onClick={() => void act(`/api/v1/moderation/reports/${encodeURIComponent(report.id)}`, "PATCH", { action: "resolve" })}>Đóng</button>
               <button type="button" className="link-btn" disabled={busy} onClick={() => void act(`/api/v1/moderation/reports/${encodeURIComponent(report.id)}`, "PATCH", { action: "dismiss" })}>Bỏ qua</button>
             </div>
