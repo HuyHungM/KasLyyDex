@@ -9,6 +9,7 @@ export type AccountProfileDto = {
   avatarUrl: string | null;
   level: number;
   totalXp: number;
+  title: string;
 };
 
 export type LibraryEntryDto = {
@@ -119,6 +120,19 @@ export type ChapterDto = {
   external_url: string | null;
   publish_at: string;
   group: string;
+};
+
+/// Single-chapter authority from Axum/MangaDex entity metadata. The public
+/// chapter lists are capped at 2000 and cannot establish ownership alone.
+export type ChapterMetadataDto = {
+  id: string;
+  manga_id: string;
+  lang: string;
+  pages: number;
+  external_url: string | null;
+  unavailable: boolean;
+  chapter: string | null;
+  title: string;
 };
 
 export type PagesResponse = { pages: string[] };
@@ -275,6 +289,7 @@ export type ContentClient = {
   search(params: SearchParams, signal?: AbortSignal): Promise<SearchResponse>;
   manga(id: string, signal?: AbortSignal): Promise<MangaSummaryDto>;
   chapters(id: string, signal?: AbortSignal): Promise<ChaptersResponse>;
+  chapterMetadata(id: string, signal?: AbortSignal): Promise<ChapterMetadataDto>;
   notificationFeed(id: string, params: NotificationFeedParams, signal?: AbortSignal): Promise<ChapterFeedPageDto>;
   pages(chapterId: string, signal?: AbortSignal): Promise<PagesResponse>;
 };
@@ -308,6 +323,7 @@ export function createContentClient(origin = "/api/content"): ContentClient {
       contentPath("manga", id, "chapters"),
       signal,
     ),
+    chapterMetadata: (id, signal) => get<ChapterMetadataDto>(contentPath("chapter", id), signal),
     notificationFeed: (id, params, signal) => {
       const query = new URLSearchParams();
       query.set("lang", params.lang);

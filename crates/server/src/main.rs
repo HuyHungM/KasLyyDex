@@ -211,6 +211,19 @@ async fn chapters(State(md): State<Md>, Path(id): Path<String>) -> Result<Respon
     Ok(json_cached(md.chapters(&id).await.map_err(bad)?, 60))
 }
 
+/// Single-chapter metadata for the BFF ticket. Capped public chapter lists
+/// cannot prove ownership past 2000 entries; this entity lookup can.
+async fn chapter_metadata(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+    if !is_uuid(&id) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "Mã chương không hợp lệ.",
+        ));
+    }
+    Ok(json_no_store(md.chapter_metadata(&id).await.map_err(bad)?))
+}
+
 async fn notification_feed(
     State(md): State<Md>,
     Path(id): Path<String>,
@@ -326,6 +339,7 @@ fn content_routes() -> Router<Md> {
             "/api/content/notifications/feed/{id}",
             get(notification_feed),
         )
+        .route("/api/content/chapter/{id}", get(chapter_metadata))
         .route("/api/content/chapter/{id}/pages", get(pages))
         .route("/api/content/img", get(img))
 }
@@ -344,6 +358,7 @@ async fn main() {
         .route("/api/rank", get(rank))
         .route("/api/manga/{id}", get(manga))
         .route("/api/manga/{id}/chapters", get(chapters))
+        .route("/api/chapter/{id}", get(chapter_metadata))
         .route("/api/chapter/{id}/pages", get(pages))
         .route("/api/img", get(img))
         .merge(content_routes())

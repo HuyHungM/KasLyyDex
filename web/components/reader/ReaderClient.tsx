@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import type { ReaderWasm } from "@/generated/reader-wasm";
 import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
 import type { ReaderSettingsDto } from "@/lib/validators";
-import { accountGet, accountMutate, useAccountSession } from "@/lib/account/client";
+import { accountGet, accountMutate, parseAccountResponse, useAccountSession } from "@/lib/account/client";
 import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
 import {
   DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
@@ -34,6 +34,52 @@ function wasmModule() {
 
 const noopSubscribe = () => () => {};
 
+type ReaderTicket = {
+  ticket: string;
+  pageCount: number;
+  requiredPages: number;
+  minimumElapsedMs: number;
+  expiresAt: number;
+};
+
+type CheckpointResult = { seenPages: number[]; complete: boolean };
+
+type CompletionResult = {
+  awarded: boolean;
+  xp: number;
+  level: number;
+  title: string;
+  chapterId: string;
+};
+
+type XpTrack = {
+  generation: number;
+  ticket: ReaderTicket | null;
+  issuedAt: number;
+  pending: Set<number>;
+  sent: Set<number>;
+  sends: number[];
+  observer: IntersectionObserver | null;
+  timer: number | null;
+  inFlight: boolean;
+  completed: boolean;
+};
+
+const checkpointIntervalMs = 3_000;
+const maxCheckpointsPerMinute = 15;
+
+async function progressionPost<T>(path: string, body: unknown, signal: AbortSignal): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  return parseAccountResponse<T>(response);
+}
+
 /// Each chapter gets a fresh keyed session: no page/settings/error/loaded state
 /// survives a client-side chapter navigation, including equal page counts.
 export default function ReaderClient(props: Props) {
@@ -49,6 +95,10 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   const prefetched = useRef("");
   const restore = useRef(new ReaderRestoreCoordinator());
   const settleUntil = useRef(0);
+  const xp = useRef<XpTrack>({
+    generation: 0, ticket: null, issuedAt: 0, pending: new Set(), sent: new Set(),
+    sends: [], observer: null, timer: null, inFlight: false, completed: false,
+  });
   const { session } = useAccountSession();
 
   const [page, setPage] = useState(0);
@@ -61,6 +111,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   const [remoteReadyKey, setRemoteReadyKey] = useState("");
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncAttempt, setSyncAttempt] = useState(0);
+  const [award, setAward] = useState<string | null>(null);
 
   const fullscreenSupported = useSyncExternalStore(
     noopSubscribe,
@@ -69,6 +120,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   );
 
   const total = pages.length;
+  const external = Boolean(chapter.external_url);
   const index = chapters.findIndex((item) => item.id === chapter.id);
   const prev = index > 0 ? chapters[index - 1] : null;
   const next = index >= 0 && index < chapters.length - 1 ? chapters[index + 1] : null;
@@ -215,6 +267,127 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
 
   useEffect(() => () => restore.current.dispose(), []);
 
+  // Account reading XP runs only after the Task 6 restore gate has settled,
+  // on the real Rust/WASM chapter, and only for a managed session. A chapter,
+  // language or account switch invalidates the generation and all timers.
+  useEffect(() => {
+    const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
+    const track = xp.current;
+    const generation = ++track.generation;
+    track.ticket = null;
+    track.pending.clear();
+    track.sent.clear();
+    track.sends = [];
+    track.completed = false;
+    queueMicrotask(() => setAward(null));
+    if (session.status !== "authenticated" || !session.user || !loaded
+      || total === 0 || external || remoteReadyKey !== key) return;
+
+    const abort = new AbortController();
+    let onVisibility: (() => void) | null = null;
+    const active = () => generation === track.generation && !abort.signal.aborted
+      && document.visibilityState === "visible" && !document.hidden;
+
+    const flush = async () => {
+      const ticket = track.ticket;
+      if (!ticket || track.inFlight || track.completed || !active() || Date.now() >= ticket.expiresAt) return;
+      const minuteAgo = Date.now() - 60_000;
+      track.sends = track.sends.filter((time) => time > minuteAgo);
+      if (track.sends.length >= maxCheckpointsPerMinute) return;
+      const batch = [...track.pending].filter((page) => !track.sent.has(page))
+        .slice(0, maxCheckpointsPerMinute - track.sends.length);
+      track.inFlight = true;
+      try {
+        if (batch.length > 0) {
+          const result = await progressionPost<CheckpointResult>("/api/v1/progress/checkpoint", {
+            ticket: ticket.ticket, pages: batch,
+          }, abort.signal);
+          if (!active()) return;
+          for (const page of batch) {
+            track.pending.delete(page);
+            track.sent.add(page);
+          }
+          for (const page of result.seenPages) track.sent.add(page);
+          track.sends.push(Date.now());
+        }
+        if (track.sent.size >= ticket.requiredPages
+          && Date.now() - track.issuedAt >= ticket.minimumElapsedMs) {
+          track.completed = true;
+          const result = await progressionPost<CompletionResult>("/api/v1/progress/complete", {
+            ticket: ticket.ticket,
+          }, abort.signal);
+          if (!active()) return;
+          setAward(result.awarded
+            ? `+${result.xp} XP · Cấp ${result.level} · ${result.title}`
+            : `Chương đã được ghi nhận · Cấp ${result.level} · ${result.title}`);
+        }
+      } catch {
+        track.completed = false; // retry with the same distinct evidence
+      } finally {
+        track.inFlight = false;
+      }
+    };
+
+    void (async () => {
+      try {
+        const ticket = await progressionPost<ReaderTicket>("/api/v1/reader-sessions", {
+          chapterId: chapter.id, mangaId: manga.id, lang,
+        }, abort.signal);
+        if (!active()) return;
+        track.ticket = ticket;
+        track.issuedAt = Date.now();
+        const root = pagesContainer.current;
+        if (root) {
+          // Only decoded, actually intersecting images in the active document
+          // become evidence. Prefetched or hidden images are never reported.
+          const observer = new IntersectionObserver((entries) => {
+            if (!active()) return;
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const image = entry.target as HTMLImageElement;
+              const page = Number(image.dataset.index) + 1;
+              if (!Number.isInteger(page) || page < 1 || page > total || track.sent.has(page)) continue;
+              void image.decode().then(() => {
+                if (!active() || image.dataset.loaded !== "true") return;
+                track.pending.add(page);
+              }).catch(() => undefined);
+            }
+          }, { threshold: 0 });
+          root.querySelectorAll<HTMLImageElement>("img[data-index]").forEach((image) => observer.observe(image));
+          track.observer = observer;
+        }
+        track.timer = window.setInterval(() => { void flush(); }, checkpointIntervalMs);
+        onVisibility = () => { if (document.visibilityState === "visible") void flush(); };
+        document.addEventListener("visibilitychange", onVisibility);
+        void flush();
+      } catch {
+        // A ticket failure never blocks reading and never grants XP.
+      }
+    })();
+
+    return () => {
+      abort.abort();
+      track.generation += 1;
+      if (track.timer !== null) {
+        window.clearInterval(track.timer);
+        track.timer = null;
+      }
+      track.observer?.disconnect();
+      track.observer = null;
+      if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
+      track.pending.clear();
+    };
+  }, [session.status, session.user, loaded, total, chapter.id, manga.id, lang, remoteReadyKey, external]);
+
+  useEffect(() => {
+    if (settings.mode !== "horizontal" || !loaded || document.hidden) return;
+    const image = pagesContainer.current?.querySelector<HTMLImageElement>(`img[data-index="${page}"]`);
+    if (!image) return;
+    void image.decode().then(() => {
+      if (!document.hidden && image.dataset.loaded === "true") xp.current.pending.add(page + 1);
+    }).catch(() => undefined);
+  }, [settings.mode, page, loaded]);
+
   useEffect(() => {
     const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
     if (session.status !== "authenticated" || !loaded || total === 0 || !restore.current.isReady(key)) return;
@@ -345,7 +518,6 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
     return () => window.cancelAnimationFrame(frame);
   }, [running, settings.mode, settings.speed]);
 
-  const external = Boolean(chapter.external_url);
   const showRetry = wasmError !== null || pageError !== null;
 
   return (
@@ -378,6 +550,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
         }}
       />
       <main className={`reader-main${settings.fit ? "" : " full-width"}`} onPointerDown={() => setRunning(false)}>
+        {award ? <div className="reader-award" role="status">{award}</div> : null}
         {syncError && session.status === "authenticated" ? (
           <div className="panel" role="alert">
             <p>{syncError}</p>

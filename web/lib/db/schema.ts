@@ -10,8 +10,10 @@ export const profiles = pgTable("profiles", {
   username: text("username"),
   displayName: text("display_name"),
   avatarUrl: text("avatar_url"),
-  // Placeholder only until Task 8 owns XP events. Never client-writable.
+  // Server-owned XP/level. Never client-writable; kept consistent with the
+  // xp_events ledger by the single completion transaction.
   totalXp: integer("total_xp").default(0).notNull(),
+  level: integer("level").default(1).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [uniqueIndex("profiles_username_key").on(table.username)]);
@@ -164,6 +166,58 @@ export const notificationPending = pgTable("notification_pending", {
   primaryKey({ columns: [table.userId, table.mangaId, table.language, table.chapterId] }),
   index("notification_pending_cohort_idx").on(table.userId, table.mangaId, table.language, table.publish),
 ]);
+
+// Task 8: server-signed reader sessions. The ticket signature binds these
+// exact values; the persisted row is checked against the caller on every use.
+export const readerSessions = pgTable("reader_sessions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+  chapterId: text("chapter_id").notNull(),
+  mangaId: text("manga_id").notNull(),
+  language: text("language").notNull(),
+  pageCount: integer("page_count").notNull(),
+  issuedAt: bigint("issued_at", { mode: "number" }).notNull(),
+  expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index("reader_sessions_user_idx").on(table.userId, table.issuedAt)]);
+
+// Distinct observed pages per session. The PK is the monotone union guard; a
+// legacy `lastPageSeen` value adds exactly one row, never a page range.
+export const readerCheckpoints = pgTable("reader_checkpoints", {
+  sessionId: text("session_id").notNull().references(() => readerSessions.id, { onDelete: "cascade" }),
+  page: integer("page").notNull(),
+  seenAt: bigint("seen_at", { mode: "number" }).notNull(),
+}, (table) => [primaryKey({ columns: [table.sessionId, table.page] })]);
+
+export const readingCompletions = pgTable("reading_completions", {
+  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+  chapterId: text("chapter_id").notNull(),
+  mangaId: text("manga_id").notNull(),
+  language: text("language").notNull(),
+  pageCount: integer("page_count").notNull(),
+  lastPageSeen: integer("last_page_seen").notNull(),
+  readerSessionId: text("reader_session_id").notNull(),
+  completedAt: bigint("completed_at", { mode: "number" }).notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.chapterId] })]);
+
+export const xpEvents = pgTable("xp_events", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+  eventType: text("event_type").notNull(),
+  chapterId: text("chapter_id").notNull(),
+  amount: integer("amount").notNull(),
+  ruleVersion: text("rule_version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [uniqueIndex("xp_events_user_type_chapter_key").on(table.userId, table.eventType, table.chapterId)]);
+
+// Deterministic cosmetic realm seed; boundaries mirror the pure TypeScript and
+// Rust shared-domain fixtures.
+export const cultivationRealms = pgTable("cultivation_realms", {
+  key: text("key").primaryKey(),
+  minLevel: integer("min_level").notNull(),
+  maxLevel: integer("max_level").notNull(),
+  name: text("name").notNull(),
+}, (table) => [check("cultivation_realms_range_check", sql`${table.minLevel} <= ${table.maxLevel}`)]);
 
 // Durable, sliding-window counters. pg_advisory_xact_lock in the service keeps
 // concurrent requests for one user/action from racing past the limit.

@@ -43,6 +43,13 @@
       "when": 1795247445528,
       "tag": "0005_notification_pending",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795249694093,
+      "tag": "0006_progression",
+      "breakpoints": true
     }
   ]
 }

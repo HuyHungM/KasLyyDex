@@ -1,6 +1,6 @@
 use contracts::{
-    ChapterDto, ChapterFeedPage, ChaptersResponse, LatestChapterDto, LatestMangaDto,
-    MangaSummaryDto, PagesResponse, SearchResponse, TagDto,
+    ChapterDto, ChapterFeedPage, ChapterMetadataDto, ChaptersResponse, LatestChapterDto,
+    LatestMangaDto, MangaSummaryDto, PagesResponse, SearchResponse, TagDto,
 };
 use moka::future::Cache;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -368,6 +368,17 @@ impl Md {
         Ok(out)
     }
 
+    /// Single chapter with its manga relationship. GET /chapter/{id} is the
+    /// documented entity endpoint; includes[]=manga expands the relationship.
+    pub async fn chapter_metadata(&self, id: &str) -> Result<ChapterMetadataDto, Err> {
+        let j = self.get(&format!("/chapter/{id}?includes[]=manga")).await?;
+        if j["result"] != "ok" || j["response"] != "entity" || j["data"]["type"] != "chapter" {
+            return Err("MangaDex trả về chương không hợp lệ.".into());
+        }
+        chapter_metadata_dto(&j["data"])
+            .ok_or_else(|| "MangaDex trả về chương thiếu thông tin.".to_owned())
+    }
+
     /// At-home URLs are short-lived: never cache. Returns same-origin proxy paths.
     pub async fn pages(&self, chapter_id: &str) -> Result<PagesResponse, Err> {
         let j = self.get(&format!("/at-home/server/{chapter_id}")).await?;
@@ -492,6 +503,36 @@ fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<
         .unwrap_or_default()
         .to_owned(),
         group,
+    })
+}
+
+fn chapter_metadata_dto(chapter: &Value) -> Option<ChapterMetadataDto> {
+    let id = chapter["id"].as_str().filter(|id| !id.trim().is_empty())?;
+    let relationships = chapter["relationships"].as_array()?;
+    let manga = relationships.iter().find(|relationship| {
+        relationship["type"] == "manga"
+            && relationship["id"]
+                .as_str()
+                .is_some_and(|id| !id.trim().is_empty())
+    })?;
+    let manga_id = manga["id"].as_str()?.to_owned();
+    let attributes = &chapter["attributes"];
+    let lang = attributes["translatedLanguage"].as_str()?;
+    if lang.trim().is_empty() {
+        return None;
+    }
+    let external = attributes["externalUrl"]
+        .as_str()
+        .filter(|url| !url.is_empty());
+    Some(ChapterMetadataDto {
+        id: id.to_owned(),
+        manga_id,
+        lang: lang.to_owned(),
+        pages: attributes["pages"].as_u64().unwrap_or(0),
+        external_url: external.map(str::to_owned),
+        unavailable: attributes["isUnavailable"].as_bool().unwrap_or(false),
+        chapter: attributes["chapter"].as_str().map(str::to_owned),
+        title: attributes["title"].as_str().unwrap_or_default().to_owned(),
     })
 }
 
@@ -694,6 +735,44 @@ mod tests {
         assert!(path.starts_with("/api/content/img?u="));
         assert!(path.contains("%2Fdata%2Fhash%2F1"));
         assert!(!path.starts_with("/api/img"));
+    }
+
+    #[test]
+    fn chapter_metadata_uses_the_real_entity_shape_and_manga_relationship() {
+        let chapter = json!({
+            "id": "391b0423-d847-456f-aff0-8b0cfc03066b",
+            "type": "chapter",
+            "attributes": {
+                "chapter": "7", "title": "Seven", "pages": 12,
+                "translatedLanguage": "vi", "externalUrl": null, "isUnavailable": false
+            },
+            "relationships": [
+                { "type": "scanlation_group", "id": "group-1" },
+                { "type": "manga", "id": "0f6f5f2c-2c50-4b2d-9d69-ccb9f0d8e1a1" }
+            ]
+        });
+        let dto = chapter_metadata_dto(&chapter).unwrap();
+        assert_eq!(dto.id, "391b0423-d847-456f-aff0-8b0cfc03066b");
+        assert_eq!(dto.manga_id, "0f6f5f2c-2c50-4b2d-9d69-ccb9f0d8e1a1");
+        assert_eq!(dto.pages, 12);
+        assert_eq!(dto.lang, "vi");
+        assert!(!dto.unavailable);
+
+        let mut orphan = chapter.clone();
+        orphan["relationships"] = json!([{ "type": "scanlation_group", "id": "group-1" }]);
+        assert!(
+            chapter_metadata_dto(&orphan).is_none(),
+            "no manga relationship is not a ticket source"
+        );
+        let mut external = chapter;
+        external["attributes"]["externalUrl"] = json!("https://example.com");
+        assert_eq!(
+            chapter_metadata_dto(&external)
+                .unwrap()
+                .external_url
+                .as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]

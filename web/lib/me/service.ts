@@ -13,6 +13,7 @@ import type {
   ReaderSettingsDto,
 } from "../validators";
 import { mergeLibrary, mergeProgress } from "../merge";
+import { levelFromXp, progressionForXp, realmForLevel } from "../progression";
 
 export class ServiceError extends Error {
   readonly status: number;
@@ -50,6 +51,7 @@ export type ProfileDto = {
   avatarUrl: string | null;
   level: number;
   totalXp: number;
+  title: string;
 };
 
 export type LibraryDto = {
@@ -93,9 +95,9 @@ function profileDto(row: typeof tables.profiles.$inferSelect): ProfileDto {
     username: row.username,
     displayName: row.displayName,
     avatarUrl: row.avatarUrl,
-    // Explicit placeholder: Task 8 owns XP events and realm titles.
-    level: 1,
+    level: levelFromXp(row.totalXp),
     totalXp: row.totalXp,
+    title: realmForLevel(levelFromXp(row.totalXp)).name,
   };
 }
 
@@ -304,8 +306,19 @@ export async function deleteProgress(
   return true;
 }
 
-export function getLevel(): { level: number; totalXp: number; source: string } {
-  return { level: 1, totalXp: 0, source: "placeholder" };
+/// Real level data from the profile XP ledger. `source` names the active rule
+/// version so future rebalancing can be versioned without rewriting history.
+export async function getLevel(db: AppDatabase, userId: string): Promise<{
+  level: number; totalXp: number; title: string; realm: string;
+  source: string; ruleVersion: string;
+}> {
+  const rows = await db.select({ totalXp: tables.profiles.totalXp })
+    .from(tables.profiles).where(eq(tables.profiles.userId, userId)).limit(1);
+  const snapshot = progressionForXp(rows[0]?.totalXp ?? 0);
+  return {
+    level: snapshot.level, totalXp: snapshot.totalXp, title: snapshot.title,
+    realm: snapshot.realm.key, source: "progression_v1", ruleVersion: snapshot.ruleVersion,
+  };
 }
 
 export async function getSettings(db: AppDatabase, userId: string): Promise<ReaderSettingsDto> {

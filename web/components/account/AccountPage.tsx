@@ -3,6 +3,7 @@
 import AuthPanel from "@/components/account/AuthPanel";
 import ProfileForm from "@/components/account/ProfileForm";
 import GuestImportPanel from "@/components/account/GuestImportPanel";
+import CultivationBadge from "@/components/profile/CultivationBadge";
 import { useAccountSession } from "@/lib/account/client";
 
 export default function AccountPage() {
@@ -12,6 +13,7 @@ export default function AccountPage() {
       <AuthPanel />
       {session.status === "authenticated" ? (
         <>
+          <CultivationBadge />
           <ProfileForm />
           <GuestImportPanel />
         </>

@@ -91,7 +91,8 @@ export function createMeApi(deps: MeDeps) {
       return privateJson({ profile });
     }, true),
 
-    levelGet: (request: Request) => withUser(request, async () => privateJson(getLevel())),
+    levelGet: (request: Request) => withUser(request, async (user) =>
+      privateJson(await getLevel(db(), user.id))),
 
     libraryGet: (request: Request) => withUser(request, async (user) => {
       const items = await listLibrary(db(), user.id);

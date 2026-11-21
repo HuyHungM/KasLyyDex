@@ -57,6 +57,8 @@ export default function ReaderPages({
         <img
           className="reader-page"
           src={pages[page] ?? ""}
+          data-index={page}
+          data-loaded="false"
           alt={`Trang ${page + 1}`}
           draggable={false}
           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
@@ -102,6 +104,7 @@ export default function ReaderPages({
           className="reader-page"
           src={src}
           data-index={index}
+          data-loaded="false"
           alt={`Trang ${index + 1}`}
           loading={index < 2 || index === page ? "eager" : "lazy"}
           decoding="async"

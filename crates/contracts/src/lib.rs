@@ -71,6 +71,22 @@ pub struct ChapterDto {
     pub group: String,
 }
 
+/// Single-chapter authority for the BFF reader ticket. Manga ownership comes
+/// from the chapter's manga relationship, not from a client-supplied list.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChapterMetadataDto {
+    pub id: String,
+    pub manga_id: String,
+    pub lang: String,
+    pub pages: u64,
+    pub external_url: Option<String>,
+    pub unavailable: bool,
+    #[serde(default)]
+    pub chapter: Option<String>,
+    #[serde(default)]
+    pub title: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PagesResponse {
     pub pages: Vec<String>,
