@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useSyncExternalStore, useState } from "react";
+import { useEffect, useSyncExternalStore, useState } from "react";
 import { coverImageUrl, type LibraryEntryDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+import { refreshChapterNotifications } from "@/lib/community/client";
 import { getLibrary, subscribe, toggleLibrary, type GuestLibraryEntry } from "@/lib/guest";
 
 const EMPTY: GuestLibraryEntry[] = [];
@@ -55,10 +56,15 @@ function EmptyLibrary() {
 
 function SyncedLibrary() {
   const { session } = useAccountSession();
+  const identityKey = session.user?.id ?? "guest";
   const remote = useRemoteResource<{ items: LibraryEntryDto[] }>(
     "/api/v1/me/library",
-    session.user?.id ?? "guest",
+    identityKey,
   );
+  useEffect(() => {
+    // Opening the synced library is an explicit on-demand chapter check.
+    void refreshChapterNotifications().catch(() => undefined);
+  }, [identityKey]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 

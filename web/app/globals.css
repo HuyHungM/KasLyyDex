@@ -369,3 +369,61 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .history-row small { color: var(--muted); }
 .history-row img { width: 42px; height: 56px; object-fit: cover; border-radius: 6px; }
 .history-row progress { width: 120px; accent-color: var(--solid); }
+
+/* Task 7: plain-text comments, moderation and in-app notifications. */
+.comment-section { display: grid; gap: 14px; margin-top: 22px; padding: 20px; }
+.comment-composer { display: grid; gap: 8px; }
+.comment-composer label { color: var(--muted); font-size: .85rem; }
+.comment-composer textarea, .comment-edit textarea {
+  width: 100%; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--text); padding: 10px 12px; font: inherit; resize: vertical;
+}
+.comment-composer textarea:focus, .comment-edit textarea:focus { outline: 2px solid var(--solid); outline-offset: 1px; }
+.comment-composer-row, .comment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.comment-composer-row .btn { margin-left: auto; }
+.comment-list { display: grid; gap: 12px; }
+.comment-thread { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+.comment { display: grid; gap: 6px; min-width: 0; }
+.comment-reply { margin-left: 18px; padding-left: 12px; border-left: 2px solid var(--line); }
+.comment-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: .85rem; }
+.comment-head time, .notification-item time { color: var(--muted); font-size: .75rem; }
+.comment-flag, .spoiler-hide {
+  border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px;
+  background: var(--hover); color: var(--accent); font-size: .75rem;
+}
+.spoiler-hide { justify-self: start; cursor: pointer; }
+.comment-body { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment-muted { margin: 0; color: var(--muted); font-style: italic; }
+.comment-edit { display: grid; gap: 8px; }
+.comment-actions .link-btn, .notification-item .comment-actions a { font-size: .82rem; }
+.report-dialog {
+  position: fixed; z-index: 30; inset: auto 12px 12px auto; max-width: min(420px, calc(100vw - 24px));
+  padding: 16px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface); box-shadow: 0 14px 40px #0005;
+}
+.notification-center { position: relative; display: inline-flex; }
+.notification-bell {
+  position: relative; display: grid; place-items: center; min-width: 40px; min-height: 40px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer;
+}
+.notification-badge {
+  position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 9px; background: var(--solid); color: var(--solid-ink, #fff);
+  font-size: .65rem; line-height: 18px; text-align: center; font-weight: 700;
+}
+.notification-panel {
+  position: absolute; z-index: 25; top: calc(100% + 8px); right: 0;
+  width: min(390px, calc(100vw - 24px)); max-height: 70dvh; overflow: auto; padding: 16px;
+  box-shadow: 0 14px 40px #0005;
+}
+.notification-page { max-width: 760px; }
+.notification-list, .moderation-list { display: grid; gap: 8px; }
+.notification-item, .moderation-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px;
+  padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+}
+.notification-item.unread { border-left: 3px solid var(--solid); }
+.notification-item p, .moderation-body { margin: 5px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.moderation-row { grid-template-columns: minmax(0, 1fr); }
+.reader-comments { padding: 18px max(12px, env(safe-area-inset-left)) calc(94px + var(--safe)); }
+.reader-comments .comment-section { max-width: 760px; margin-inline: auto; background: var(--surface); }

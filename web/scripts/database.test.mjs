@@ -11,6 +11,7 @@ const { profiles } = await import("../lib/db/schema.ts");
 const migrationUrls = [
   new URL("../drizzle/0000_application.sql", import.meta.url),
   new URL("../drizzle/0001_account_data.sql", import.meta.url),
+  new URL("../drizzle/0002_comments_moderation.sql", import.meta.url),
 ];
 
 async function freshDatabase() {
@@ -39,8 +40,14 @@ test("application migrations own account tables and never touch Neon Auth tables
     assert.deepEqual(
       tables.rows.map((row) => `${row.table_schema}.${row.table_name}`),
       [
+        "public.action_events",
         "public.chapter_progress",
+        "public.comment_reports",
+        "public.comment_threads",
+        "public.comments",
         "public.library_entries",
+        "public.notification_cursors",
+        "public.notifications",
         "public.profiles",
         "public.reader_preferences",
         "public.user_roles",
@@ -110,7 +117,7 @@ test("profiles accept opaque user ids and enforce uniqueness inside a transactio
   }
 });
 
-test("account tables enforce ownership keys, unique usernames and cascade cleanup", async () => {
+test("application tables enforce ownership keys, unique usernames and cascade cleanup", async () => {
   const { db } = await freshDatabase();
   try {
     await db.exec("INSERT INTO profiles (user_id) VALUES ('opaque-1'), ('opaque-2');");
@@ -118,6 +125,12 @@ test("account tables enforce ownership keys, unique usernames and cascade cleanu
     await db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'One', 100);");
     await db.exec("INSERT INTO reader_preferences (user_id) VALUES ('opaque-1');");
     await db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 3, 3, 10, 100);");
+    await db.exec("INSERT INTO comment_threads (target_type, target_id) VALUES ('manga', 'm1');");
+    await db.exec("INSERT INTO comments (id, user_id, target_type, target_id, body) VALUES ('c1', 'opaque-1', 'manga', 'm1', 'hello');");
+    await db.exec("INSERT INTO comment_reports (id, user_id, comment_id, reason) VALUES ('r1', 'opaque-2', 'c1', 'spam');");
+    await db.exec("INSERT INTO notifications (id, user_id, type, event_key, title, body) VALUES ('n1', 'opaque-1', 'level_up', 'level:2', 'Level', 'body');");
+    await db.exec("INSERT INTO notification_cursors (user_id, manga_id, language, last_publish) VALUES ('opaque-1', 'm1', 'vi', 100);");
+    await db.exec("INSERT INTO action_events (id, user_id, action, occurred_at) VALUES ('e1', 'opaque-1', 'comment', 100);");
 
     await assert.rejects(
       db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'Duplicate', 200);"),
@@ -134,7 +147,10 @@ test("account tables enforce ownership keys, unique usernames and cascade cleanu
     );
 
     await db.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
-    for (const table of ["user_roles", "library_entries", "reader_preferences", "chapter_progress"]) {
+    for (const table of [
+      "user_roles", "library_entries", "reader_preferences", "chapter_progress",
+      "comments", "comment_reports", "notification_cursors", "notifications", "action_events",
+    ]) {
       const rows = await db.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
       assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
     }

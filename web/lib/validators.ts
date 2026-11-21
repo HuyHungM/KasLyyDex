@@ -362,6 +362,125 @@ export function parseImportPayload(body: Record<string, unknown>, nowMs = Date.n
   return { library, history, settings, skipped, invalid: skipped };
 }
 
+// Task 7 community boundaries. IDs are opaque text, roles never arrive from a
+// request, and every collection has a hard page ceiling.
+export type CommentTargetType = "manga" | "chapter";
+
+export function parseTargetType(value: unknown): CommentTargetType {
+  if (value !== "manga" && value !== "chapter") {
+    throw new ValidationError(400, "INVALID_INPUT", "targetType must be manga or chapter.");
+  }
+  return value;
+}
+
+export function parseCommentBody(value: unknown): string {
+  if (typeof value !== "string") throw new ValidationError(400, "INVALID_INPUT", "Comment body is required.");
+  const trimmed = value.trim();
+  if (trimmed.length < 1 || trimmed.length > 2000) {
+    throw new ValidationError(400, "INVALID_INPUT", "Comment body must be 1-2000 characters.");
+  }
+  // Newlines and tabs are rendered as text; every other control byte is noise.
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(trimmed)) {
+    throw new ValidationError(400, "INVALID_INPUT", "Comment body contains unsupported characters.");
+  }
+  return trimmed;
+}
+
+export function parseCommentInput(body: Record<string, unknown>): {
+  targetType: CommentTargetType;
+  targetId: string;
+  parentId: string | null;
+  body: string;
+  spoiler: boolean;
+} {
+  assertAllowedKeys(body, ["targetType", "targetId", "parentId", "body", "spoiler"]);
+  if (body.spoiler !== undefined && typeof body.spoiler !== "boolean") {
+    throw new ValidationError(400, "INVALID_INPUT", "spoiler must be a boolean.");
+  }
+  return {
+    targetType: parseTargetType(body.targetType),
+    targetId: parseResourceId(body.targetId, "targetId"),
+    parentId: body.parentId === undefined || body.parentId === null || body.parentId === ""
+      ? null
+      : parseResourceId(body.parentId, "parentId"),
+    body: parseCommentBody(body.body),
+    spoiler: body.spoiler === true,
+  };
+}
+
+export function parseCommentPatch(body: Record<string, unknown>): { body?: string; spoiler?: boolean } {
+  assertAllowedKeys(body, ["body", "spoiler"]);
+  const patch: { body?: string; spoiler?: boolean } = {};
+  if (Object.hasOwn(body, "body")) patch.body = parseCommentBody(body.body);
+  if (Object.hasOwn(body, "spoiler")) {
+    if (typeof body.spoiler !== "boolean") throw new ValidationError(400, "INVALID_INPUT", "spoiler must be a boolean.");
+    patch.spoiler = body.spoiler;
+  }
+  if (Object.keys(patch).length === 0) throw new ValidationError(400, "INVALID_INPUT", "Nothing to update.");
+  return patch;
+}
+
+export function parseReportInput(body: Record<string, unknown>): { commentId: string; reason: string } {
+  assertAllowedKeys(body, ["commentId", "reason"]);
+  return {
+    commentId: parseResourceId(body.commentId, "commentId"),
+    reason: requiredText(body.reason, "reason", 300),
+  };
+}
+
+export function parseModerationAction(body: Record<string, unknown>): "hide" | "remove" | "restore" {
+  assertAllowedKeys(body, ["action"]);
+  if (body.action !== "hide" && body.action !== "remove" && body.action !== "restore") {
+    throw new ValidationError(400, "INVALID_INPUT", "Unknown moderation action.");
+  }
+  return body.action;
+}
+
+export function parseReportAction(body: Record<string, unknown>): "resolve" | "dismiss" {
+  assertAllowedKeys(body, ["action"]);
+  if (body.action !== "resolve" && body.action !== "dismiss") {
+    throw new ValidationError(400, "INVALID_INPUT", "Unknown report action.");
+  }
+  return body.action;
+}
+
+export function parseThreadInput(body: Record<string, unknown>): {
+  targetType: CommentTargetType;
+  targetId: string;
+  locked: boolean;
+} {
+  assertAllowedKeys(body, ["targetType", "targetId", "locked"]);
+  if (typeof body.locked !== "boolean") throw new ValidationError(400, "INVALID_INPUT", "locked must be a boolean.");
+  return { targetType: parseTargetType(body.targetType), targetId: parseResourceId(body.targetId, "targetId"), locked: body.locked };
+}
+
+export function parseLimit(raw: unknown, fallback = 20, max = 50): number {
+  if (raw === null || raw === undefined || raw === "") return fallback;
+  const value = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  return integerIn(value, 1, max, "limit");
+}
+
+export function parseCursor(raw: unknown): { time: number; id: string } | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (typeof raw !== "string") throw new ValidationError(400, "INVALID_INPUT", "Invalid cursor.");
+  const dot = raw.indexOf(".");
+  if (dot < 1) throw new ValidationError(400, "INVALID_INPUT", "Invalid cursor.");
+  const time = Number(raw.slice(0, dot));
+  const id = raw.slice(dot + 1);
+  if (!Number.isSafeInteger(time) || time < 0 || id.length < 1 || id.length > MAX_ID || /[/?#]/.test(id)) {
+    throw new ValidationError(400, "INVALID_INPUT", "Invalid cursor.");
+  }
+  return { time, id };
+}
+
+export function parseIds(value: unknown, max = 100): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) {
+    throw new ValidationError(400, "INVALID_INPUT", `Provide 1-${max} ids.`);
+  }
+  const ids = value.map((item) => parseResourceId(item, "id"));
+  return [...new Set(ids)];
+}
+
 /// Explicit operator configuration only. A client never sends a role, and an
 /// unverified email can never bootstrap one.
 export function roleFromVerifiedAllowlist(

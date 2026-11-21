@@ -3,6 +3,7 @@
 import Link from "next/link";
 import ThemeToggle from "@/components/theme-toggle";
 import { NavIcon } from "@/components/site-shell";
+import NotificationCenter from "@/components/notifications/NotificationCenter";
 
 export default function SiteHeader() {
   return (
@@ -27,6 +28,7 @@ export default function SiteHeader() {
             aria-label="Tìm truyện"
           />
         </form>
+        <NotificationCenter compact />
         <ThemeToggle />
       </div>
     </header>

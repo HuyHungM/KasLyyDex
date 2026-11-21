@@ -14,6 +14,7 @@ import {
 } from "@/lib/guest";
 import ReaderPages from "./ReaderPages";
 import ReaderToolbar from "./ReaderToolbar";
+import CommentSection from "@/components/comments/CommentSection";
 
 type Props = {
   manga: MangaSummaryDto;
@@ -452,6 +453,9 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
           )}
         </div>
       </nav>
+      <div className="reader-comments">
+        <CommentSection targetType="chapter" targetId={chapter.id} label="Bình luận chương" />
+      </div>
     </div>
   );
 }

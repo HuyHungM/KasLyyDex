@@ -9,6 +9,7 @@ import { chapterLabel, filterUrl, statusText, tagLabel } from "@/lib/format";
 import ChapterList from "@/components/chapter-list";
 import MangaActions from "@/components/manga-actions";
 import { SectionTitle } from "@/components/manga-card";
+import CommentSection from "@/components/comments/CommentSection";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -80,6 +81,7 @@ async function MangaContent({ params }: Props) {
         <SectionTitle>Danh sách chapter</SectionTitle>
         <ChapterList mangaId={manga.id} chapters={chapters} />
       </section>
+      <CommentSection targetType="manga" targetId={manga.id} />
     </main>
   );
 }

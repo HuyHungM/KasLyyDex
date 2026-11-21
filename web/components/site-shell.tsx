@@ -10,6 +10,7 @@ const LINKS = [
   { href: "/the-loai", label: "Thể loại", icon: "genres" },
   { href: "/bxh", label: "Xếp hạng", icon: "rank" },
   { href: "/tu-truyen", label: "Tủ truyện", icon: "bookmark" },
+  { href: "/thong-bao", label: "Thông báo", icon: "bell" },
   { href: "/tai-khoan", label: "Tài khoản", icon: "user" },
 ];
 
@@ -24,6 +25,7 @@ export function NavIcon({ name }: { name: string }) {
     moon: "M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10Z",
     book: "M12 5v15M3 4h4a5 5 0 0 1 5 3 5 5 0 0 1 5-3h4v14h-4a6 6 0 0 0-5 2 6 6 0 0 0-5-2H3z",
     user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0",
+    bell: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4",
   };
   return (
     <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

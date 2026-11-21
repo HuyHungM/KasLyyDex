@@ -123,6 +123,60 @@ export type ChapterDto = {
 
 export type PagesResponse = { pages: string[] };
 
+// Task 7 browser-safe community DTOs. Bodies are plain text; hidden/removed
+// bodies are null outside the authenticated moderator queue.
+export type CommentStatus = "visible" | "hidden" | "removed";
+
+export type CommentDto = {
+  id: string;
+  targetType: "manga" | "chapter";
+  targetId: string;
+  parentId: string | null;
+  userId: string;
+  authorName: string;
+  body: string | null;
+  spoiler: boolean;
+  status: CommentStatus;
+  createdAt: number;
+  updatedAt: number;
+  replies: CommentDto[];
+};
+
+export type CommentListDto = { items: CommentDto[]; nextCursor: string | null };
+
+export type ReportDto = {
+  id: string;
+  commentId: string;
+  reason: string;
+  status: "open" | "resolved" | "dismissed";
+  createdAt: number;
+  comment: CommentDto | null;
+};
+
+export type ReportListDto = { items: ReportDto[]; nextCursor: string | null };
+
+export type NotificationDto = {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  href: string | null;
+  readAt: number | null;
+  createdAt: number;
+};
+
+export type NotificationListDto = {
+  items: NotificationDto[];
+  unreadCount: number;
+  nextCursor: string | null;
+};
+
+export type ThreadDto = {
+  targetType: "manga" | "chapter";
+  targetId: string;
+  locked: boolean;
+};
+
 export type ContentEndpoint =
   | "latest"
   | "popular"
