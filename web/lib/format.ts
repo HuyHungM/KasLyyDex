@@ -1,4 +1,9 @@
 // Pure presentation helpers shared by Server and Client Components.
+import { sourceLabel } from "@/lib/contracts";
+
+export function titleWithSource(title: string, source?: string): string {
+  return `${title} (${sourceLabel(source)})`;
+}
 
 export function statusText(status: string): string {
   return (

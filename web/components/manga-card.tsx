@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { coverImageUrl, type MangaSummaryDto } from "@/lib/contracts";
-import { chapterName, filterUrl, statusText, tagLabel } from "@/lib/format";
+import { chapterName, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
 
 export function MangaCard({ manga, rank }: { manga: MangaSummaryDto; rank?: number }) {
   const cover = coverImageUrl(manga, 256);
@@ -14,7 +14,7 @@ export function MangaCard({ manga, rank }: { manga: MangaSummaryDto; rank?: numb
         )}
         {rank !== undefined && <span className="rank-num">{rank}</span>}
       </div>
-      <h3 className="card-title">{manga.title}</h3>
+      <h3 className="card-title">{titleWithSource(manga.title, manga.source)}</h3>
       <p className="card-year">
         {manga.rating && manga.rating > 0 ? `★ ${manga.rating.toFixed(1)} · ` : ""}
         {manga.latest_chapter

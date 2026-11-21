@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ChapterDto } from "@/lib/contracts";
+import { sourceLabel, type ChapterDto } from "@/lib/contracts";
 import { chapterLabel } from "@/lib/format";
 import type { ReaderSettings } from "@/lib/guest";
 
@@ -24,10 +24,12 @@ export default function ReaderToolbar({
   mangaId, mangaTitle, chapterId, chapters, settings, running,
   onSettings, onPause, onToggleRun, onFullscreen, onSelectChapter, fullscreenSupported,
 }: Props) {
+  const current = chapters.find((item) => item.id === chapterId);
+  const sourceSuffix = current?.source && current.source !== "mangadex" ? ` (${sourceLabel(current.source)})` : "";
   return (
     <header className="reader-bar">
       <div className="reader-bar-inner">
-        <Link href={`/manga/${mangaId}`} className="back-link">← {mangaTitle}</Link>
+        <Link href={`/manga/${mangaId}`} className="back-link">← {mangaTitle}{sourceSuffix}</Link>
         <select
           className="chapter-select"
           aria-label="Chọn chương"

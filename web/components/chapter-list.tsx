@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { useState, useSyncExternalStore } from "react";
-import type { ChaptersResponse, ChapterDto } from "@/lib/contracts";
+import { sourceLabel, type ChaptersResponse, type ChapterDto } from "@/lib/contracts";
 import { chapterLabel, fmtDate } from "@/lib/format";
 import { getHistory, subscribe, type GuestHistory } from "@/lib/guest";
 
 const NO_HISTORY: GuestHistory[] = [];
+
+const sourceSuffix = (chapter: ChapterDto) =>
+  chapter.source && chapter.source !== "mangadex" ? ` (${sourceLabel(chapter.source)})` : "";
 
 export default function ChapterList({ mangaId, chapters }: { mangaId: string; chapters: ChaptersResponse }) {
   const langs = (["vi", "en"] as const).filter((lang) => chapters[lang].length > 0);
@@ -47,13 +50,13 @@ export default function ChapterList({ mangaId, chapters }: { mangaId: string; ch
               {chapter.external_url ? (
                 <a href={chapter.external_url} target="_blank" rel="noopener noreferrer" className="chapter-row">
                   <span className="ch-num">{chapterLabel(chapter.chapter)}</span>
-                  <span className="ch-title">{chapter.title || "Đọc tại nguồn ngoài"} ↗</span>
+                  <span className="ch-title">{chapter.title || "Đọc tại nguồn ngoài"}{sourceSuffix(chapter)} ↗</span>
                   <span className="ch-date">{fmtDate(chapter.publish_at)}</span>
                 </a>
               ) : (
                 <Link href={href} className="chapter-row">
                   <span className={`ch-num${read ? " read" : ""}`}>{chapterLabel(chapter.chapter)}{read ? " ✓" : ""}</span>
-                  <span className={`ch-title${read ? " read" : ""}`}>{chapter.title || chapter.group || "—"}</span>
+                  <span className={`ch-title${read ? " read" : ""}`}>{chapter.title || chapter.group || "—"}{sourceSuffix(chapter)}</span>
                   <span className="ch-date">{fmtDate(chapter.publish_at)}</span>
                 </Link>
               )}
