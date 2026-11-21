@@ -290,3 +290,38 @@ test("reader page images keep a page-shaped skeleton, then fade in after load/de
     await context.close();
   }
 });
+
+test("broken reader images are released from the skeleton gate on error, without faking decode", async () => {
+  contentDelay = 0;
+  for (const mode of ["vertical", "horizontal"]) {
+    const { context, page } = await openPage();
+    if (mode === "horizontal") {
+      await context.addInitScript(() => {
+        localStorage.setItem("truyenviet:reader", JSON.stringify({ mode: "horizontal", fit: false, bg: "light", speed: 2 }));
+      });
+    }
+    await page.route("**/api/content/img*", (route) => route.abort("failed"));
+    await page.goto(`${app.baseUrl}/read/${CHAPTER_ID}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "domcontentloaded" });
+    const selector = mode === "horizontal" ? '.reader-paged .reader-page[data-index="0"]' : '.reader-page[data-index="0"]';
+    const image = page.locator(selector);
+    await image.waitFor();
+    await page.waitForFunction(
+      (sel) => document.querySelector(sel)?.getAttribute("data-loaded") === "true",
+      selector,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(400); // let the release animation settle
+    const state = await image.evaluate((element) => ({
+      loaded: element.getAttribute("data-loaded"),
+      opacity: getComputedStyle(element).opacity,
+      background: getComputedStyle(element).backgroundColor,
+      naturalWidth: element.naturalWidth,
+    }));
+    assert.equal(state.loaded, "true", "onError must release the fade gate");
+    assert.equal(state.naturalWidth, 0, "a broken image must not be reported as decoded");
+    assert.equal(state.opacity, "1", "broken image must be visible, not stuck at opacity 0");
+    assert.equal(state.background, "rgba(0, 0, 0, 0)", "error must not keep the permanent skeleton frame");
+    await page.unroute("**/api/content/img*");
+    await context.close();
+  }
+});

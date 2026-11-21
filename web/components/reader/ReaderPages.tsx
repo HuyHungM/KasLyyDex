@@ -63,6 +63,7 @@ export default function ReaderPages({
           alt={`Trang ${page + 1}`}
           draggable={false}
           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+          onError={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
           onPointerDown={(event) => {
             if (!event.isPrimary) {
               pointerStart.current = null;
@@ -110,6 +111,7 @@ export default function ReaderPages({
           loading={index < 2 || index === page ? "eager" : "lazy"}
           decoding="async"
           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+          onError={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
         />
       ))}
     </div>
