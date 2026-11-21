@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReaderWasm } from "@/generated/reader-wasm";
-import type { ChapterDto, MangaSummaryDto } from "@/lib/contracts";
+import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
+import type { ReaderSettingsDto } from "@/lib/validators";
+import { accountGet, accountMutate, useAccountSession } from "@/lib/account/client";
 import {
   DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
@@ -43,7 +45,9 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   const wasm = useRef<ReaderWasm | null>(null);
   const savedChapter = useRef("");
   const prefetched = useRef("");
+  const settledRemote = useRef("");
   const settleUntil = useRef(0);
+  const { session } = useAccountSession();
 
   const [page, setPage] = useState(0);
   const [progress, setProgress] = useState(0);
@@ -166,6 +170,46 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
     saveProgress(chapter.id, state.pageIndex() + 1, state.totalPages());
   }, [loaded, page, total, chapter.id, manga.id]);
 
+  // Authenticated reading re-applies server settings and position through the
+  // same Rust state machine; guests keep the local-only path untouched.
+  useEffect(() => {
+    const key = `${chapter.id}|${lang}`;
+    if (session.status !== "authenticated" || !loaded || total === 0 || settledRemote.current === key) return;
+    settledRemote.current = key;
+    void Promise.all([
+      accountGet<ReaderSettingsDto>("/api/v1/me/settings"),
+      accountGet<{ items: ProgressEntryDto[] }>("/api/v1/me/progress"),
+    ]).then(([prefs, history]) => {
+      const state = wasm.current;
+      if (!state) return;
+      state.applySettingsJson(JSON.stringify(prefs));
+      const match = history.items.find((item) => item.mangaId === manga.id && item.chapterId === chapter.id && item.lang === lang);
+      if (match) {
+        const target = Math.min(Math.max(match.page - 1, 0), state.totalPages() - 1);
+        if (target > state.pageIndex()) {
+          state.setPage(target);
+          settleUntil.current = Date.now() + 800;
+        }
+      }
+      syncFromWasm();
+    }).catch(() => undefined);
+  }, [session.status, loaded, total, chapter.id, manga.id, lang, syncFromWasm]);
+
+  useEffect(() => {
+    if (session.status !== "authenticated" || !loaded || total === 0) return;
+    const state = wasm.current;
+    if (!state) return;
+    void accountMutate(`/api/v1/me/progress/${encodeURIComponent(chapter.id)}`, "PUT", {
+      mangaId: manga.id,
+      lang,
+      page: state.pageIndex() + 1,
+      total: state.totalPages(),
+      chapter: chapter.chapter,
+      title: chapter.title,
+      coverFile: manga.cover_file,
+    }).catch(() => undefined);
+  }, [session.status, loaded, page, total, chapter, manga, lang]);
+
   // One-off restoration scroll on chapter load and when returning to vertical
   // mode. It is deliberately independent from the observer and from `page`, so
   // normal scrolling (and auto-scroll) is never snapped back.
@@ -222,11 +266,15 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
     }
     syncFromWasm();
     try {
-      saveSettings(normalizeSettings(JSON.parse(state.settingsJson())));
+      const current = normalizeSettings(JSON.parse(state.settingsJson()));
+      saveSettings(current);
+      if (session.status === "authenticated") {
+        void accountMutate("/api/v1/me/settings", "PUT", current).catch(() => undefined);
+      }
     } catch {
       // Settings are cosmetic; a corrupt snapshot must not stop reading.
     }
-  }, [syncFromWasm]);
+  }, [syncFromWasm, session.status]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

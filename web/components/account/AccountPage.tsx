@@ -1,0 +1,21 @@
+"use client";
+
+import AuthPanel from "@/components/account/AuthPanel";
+import ProfileForm from "@/components/account/ProfileForm";
+import GuestImportPanel from "@/components/account/GuestImportPanel";
+import { useAccountSession } from "@/lib/account/client";
+
+export default function AccountPage() {
+  const { session } = useAccountSession();
+  return (
+    <div className="account-grid">
+      <AuthPanel />
+      {session.status === "authenticated" ? (
+        <>
+          <ProfileForm />
+          <GuestImportPanel />
+        </>
+      ) : null}
+    </div>
+  );
+}

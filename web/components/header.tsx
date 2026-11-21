@@ -55,6 +55,9 @@ export default function Header() {
           <Link href="/" className="transition hover:text-paper">
             Trang chủ
           </Link>
+          <Link href="/tai-khoan" className="transition hover:text-paper">
+            Tài khoản
+          </Link>
           <a
             href="https://mangadex.org"
             target="_blank"

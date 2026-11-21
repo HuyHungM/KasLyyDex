@@ -1,5 +1,51 @@
 // Browser-safe contracts shared by the Next BFF and later native clients.
 
+// Account DTOs are browser-safe: no email, role or privileged state leaks into
+// public content components.
+export type AccountProfileDto = {
+  id: string;
+  username: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  level: number;
+  totalXp: number;
+};
+
+export type LibraryEntryDto = {
+  mangaId: string;
+  title: string;
+  coverFile: string | null;
+  lang: string;
+  status: string;
+  followedAt: number;
+  lastChapterId: string | null;
+  lastReadPublish: number;
+  revision: number;
+};
+
+export type ProgressEntryDto = {
+  mangaId: string;
+  chapterId: string;
+  lang: string;
+  chapter: string | null;
+  title: string | null;
+  coverFile: string | null;
+  page: number;
+  total: number;
+  maxPage: number;
+  lastReadAt: number;
+  revision: number;
+};
+
+export type ImportSummaryDto = {
+  libraryInserted: number;
+  libraryUpdated: number;
+  progressInserted: number;
+  progressUpdated: number;
+  skipped: number;
+  settingsApplied: boolean;
+};
+
 export type ApiErrorEnvelope = {
   error: {
     code: string;
