@@ -37,14 +37,14 @@ export type GuestLibraryEntry = {
 export type ReaderSettings = {
   mode: "vertical" | "horizontal";
   fit: boolean;
-  bg: "light" | "sepia" | "dark";
+  bg: "auto" | "light" | "sepia" | "dark";
   speed: number;
 };
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
   mode: "vertical",
   fit: true,
-  bg: "light",
+  bg: "auto",
   speed: 3,
 };
 
@@ -240,7 +240,7 @@ export function normalizeSettings(value: unknown): ReaderSettings {
   return {
     mode: mode === "horizontal" ? "horizontal" : "vertical",
     fit: typeof raw.fit === "boolean" ? raw.fit : DEFAULT_SETTINGS.fit,
-    bg: bg === "sepia" || bg === "dark" ? bg : "light",
+    bg: bg === "auto" || bg === "light" || bg === "sepia" || bg === "dark" ? bg : DEFAULT_SETTINGS.bg,
     speed,
   };
 }

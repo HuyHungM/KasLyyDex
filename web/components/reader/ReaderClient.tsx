@@ -10,7 +10,7 @@ import type { ReaderSettingsDto } from "@/lib/validators";
 import { accountGet, accountMutate, parseAccountResponse, useAccountSession } from "@/lib/account/client";
 import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
 import {
-  DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
+  getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
 } from "@/lib/guest";
 import ReaderPages from "./ReaderPages";
@@ -104,7 +104,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
 
   const [page, setPage] = useState(0);
   const [progress, setProgress] = useState(0);
-  const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<ReaderSettings>(() => getSettings());
   const [wasmError, setWasmError] = useState<string | null>(null);
   const [wasmAttempt, setWasmAttempt] = useState(0);
   const [loaded, setLoaded] = useState(false);

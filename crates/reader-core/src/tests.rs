@@ -55,11 +55,11 @@ fn reader_settings_preserve_horizontal_and_vertical_wire_values() {
     };
     assert_eq!(
         serde_json::to_string(&horizontal).unwrap(),
-        r#"{"mode":"horizontal","fit":true,"bg":"light","speed":3}"#
+        r#"{"mode":"horizontal","fit":true,"bg":"auto","speed":3}"#
     );
     assert_eq!(
         serde_json::to_string(&vertical).unwrap(),
-        r#"{"mode":"vertical","fit":true,"bg":"light","speed":3}"#
+        r#"{"mode":"vertical","fit":true,"bg":"auto","speed":3}"#
     );
     assert_eq!(
         serde_json::from_str::<ReaderSettings>(
@@ -69,6 +69,7 @@ fn reader_settings_preserve_horizontal_and_vertical_wire_values() {
         .mode,
         ReaderMode::Horizontal
     );
+    assert_eq!(ReaderBackground::Auto.as_str(), "auto");
     assert_eq!(ReaderBackground::Dark.as_str(), "dark");
     let mut reader = ReaderState::with_settings(1, horizontal.clone()).unwrap();
     assert_eq!(reader.settings().mode, ReaderMode::Horizontal);

@@ -68,6 +68,7 @@ impl ReaderMode {
 #[serde(rename_all = "lowercase")]
 pub enum ReaderBackground {
     #[default]
+    Auto,
     Light,
     Sepia,
     Dark,
@@ -76,6 +77,7 @@ pub enum ReaderBackground {
 impl ReaderBackground {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Light => "light",
             Self::Sepia => "sepia",
             Self::Dark => "dark",
@@ -108,7 +110,7 @@ impl Default for ReaderSettings {
         Self {
             mode: ReaderMode::Vertical,
             fit: default_fit(),
-            bg: ReaderBackground::Light,
+            bg: ReaderBackground::Auto,
             speed: default_speed(),
         }
     }
@@ -226,6 +228,24 @@ impl CultivationRealm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reader_background_accepts_auto_and_roundtrips_wire_values() {
+        for (background, wire) in [
+            (ReaderBackground::Auto, "auto"),
+            (ReaderBackground::Light, "light"),
+            (ReaderBackground::Sepia, "sepia"),
+            (ReaderBackground::Dark, "dark"),
+        ] {
+            assert_eq!(background.as_str(), wire);
+            assert_eq!(serde_json::to_string(&background).unwrap(), format!("\"{wire}\""));
+            assert_eq!(
+                serde_json::from_str::<ReaderBackground>(&format!("\"{wire}\"")).unwrap(),
+                background
+            );
+        }
+        assert_eq!(ReaderSettings::default().bg, ReaderBackground::Auto);
+    }
 
     #[test]
     fn cultivation_level_and_realm_boundaries_are_validated() {

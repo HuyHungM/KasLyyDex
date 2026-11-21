@@ -309,21 +309,13 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
   .ch-date { grid-column: auto; }
 }
 
-/* Trình đọc có bảng màu riêng để giữ lựa chọn của người đọc. */
+/* Trình đọc mặc định (auto) dùng bảng màu của site; chế độ thủ công tự ghi đè. */
 .reader {
-  color-scheme: light;
-  --reader-bg: #f5f4ee;
-  --surface: #fcfbf7;
-  --text: #25271e;
-  --muted: #5e6355;
-  --line: #dcded3;
-  --hover: #eceee4;
-  --solid: #455e13;
-  --solid-ink: #fff;
-  --accent: #455e13;
-  min-height: 100dvh; padding-bottom: calc(70px + var(--safe)); background: var(--reader-bg); color: var(--text);
+  min-height: 100dvh; padding-bottom: calc(70px + var(--safe)); background: var(--reader-bg, var(--bg)); color: var(--text);
 }
-.reader[data-bg="sepia"] { --reader-bg: #f1e7d2; --surface: #fbf4e4; --line: #d8c9ae; }
+.reader[data-bg="auto"] { --reader-bg: var(--bg); }
+.reader[data-bg="light"] { color-scheme: light; --reader-bg: #f5f4ee; --surface: #fcfbf7; --text: #25271e; --muted: #5e6355; --line: #dcded3; --hover: #eceee4; --solid: #455e13; --solid-ink: #fff; --accent: #455e13; }
+.reader[data-bg="sepia"] { color-scheme: light; --reader-bg: #f1e7d2; --surface: #fbf4e4; --text: #25271e; --muted: #5e6355; --line: #d8c9ae; --hover: #eceee4; --solid: #455e13; --solid-ink: #fff; --accent: #455e13; }
 .reader[data-bg="dark"] { color-scheme: dark; --reader-bg: #101113; --surface: #18191c; --text: #f5f4ef; --muted: #a8a9a3; --line: #343638; --hover: #232528; --accent: #dcf885; --solid: #dcf885; --solid-ink: #202a0a; }
 .reader:fullscreen { width: 100%; height: 100%; overflow: auto; }
 .reader-bar { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line); background: var(--surface); }

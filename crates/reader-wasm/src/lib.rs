@@ -43,6 +43,7 @@ fn parse_mode(mode: &str) -> Result<ReaderMode, String> {
 
 fn parse_background(bg: &str) -> Result<ReaderBackground, String> {
     match bg {
+        "auto" => Ok(ReaderBackground::Auto),
         "light" => Ok(ReaderBackground::Light),
         "sepia" => Ok(ReaderBackground::Sepia),
         "dark" => Ok(ReaderBackground::Dark),
@@ -169,6 +170,8 @@ mod tests {
         assert!(try_set_mode(&mut state, "diagonal").is_err());
         try_set_background(&mut state, "sepia").unwrap();
         assert_eq!(state.settings().bg, ReaderBackground::Sepia);
+        try_set_background(&mut state, "auto").unwrap();
+        assert_eq!(state.settings().bg, ReaderBackground::Auto);
         assert!(try_set_background(&mut state, "neon").is_err());
     }
 
@@ -179,7 +182,7 @@ mod tests {
         let json = serde_json::to_string(state.settings()).unwrap();
         assert_eq!(
             json,
-            r#"{"mode":"horizontal","fit":true,"bg":"light","speed":3}"#
+            r#"{"mode":"horizontal","fit":true,"bg":"auto","speed":3}"#
         );
         let restored: ReaderSettings = serde_json::from_str(&json).unwrap();
         state.set_settings(restored);

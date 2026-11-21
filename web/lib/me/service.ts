@@ -324,7 +324,7 @@ export async function getLevel(db: AppDatabase, userId: string): Promise<{
 export async function getSettings(db: AppDatabase, userId: string): Promise<ReaderSettingsDto> {
   const rows = await db.select().from(tables.readerPreferences)
     .where(eq(tables.readerPreferences.userId, userId)).limit(1);
-  if (rows.length === 0) return { mode: "vertical", fit: true, bg: "light", speed: 3 };
+  if (rows.length === 0) return { mode: "vertical", fit: true, bg: "auto", speed: 3 };
   return { mode: rows[0].mode as ReaderSettingsDto["mode"], fit: rows[0].fit, bg: rows[0].bg as ReaderSettingsDto["bg"], speed: rows[0].speed };
 }
 

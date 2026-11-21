@@ -51,6 +51,7 @@ function SettingsFields({
           ariaLabel="Nền"
           value={bg}
           options={[
+            { value: "auto", label: "Tự động theo giao diện" },
             { value: "light", label: "Sáng" },
             { value: "sepia", label: "Ngà" },
             { value: "dark", label: "Tối" },

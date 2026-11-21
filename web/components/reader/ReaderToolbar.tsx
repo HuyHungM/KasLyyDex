@@ -57,6 +57,7 @@ export default function ReaderToolbar({
                 ariaLabel="Nền đọc"
                 value={settings.bg}
                 options={[
+                  { value: "auto", label: "Tự động theo giao diện" },
                   { value: "light", label: "Sáng" },
                   { value: "sepia", label: "Giấy ấm" },
                   { value: "dark", label: "Tối" },

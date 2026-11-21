@@ -4,14 +4,14 @@
 export type ReaderSettingsDto = {
   mode: "vertical" | "horizontal";
   fit: boolean;
-  bg: "light" | "sepia" | "dark";
+  bg: "auto" | "light" | "sepia" | "dark";
   speed: number;
 };
 
 export const DEFAULT_READER_SETTINGS: ReaderSettingsDto = {
   mode: "vertical",
   fit: true,
-  bg: "light",
+  bg: "auto",
   speed: 3,
 };
 
@@ -267,7 +267,7 @@ export function parseSettingsInput(body: Record<string, unknown>): ReaderSetting
   if (mode !== "vertical" && mode !== "horizontal") {
     throw new ValidationError(400, "INVALID_INPUT", "Unknown reader mode.");
   }
-  if (bg !== "light" && bg !== "sepia" && bg !== "dark") {
+  if (bg !== "auto" && bg !== "light" && bg !== "sepia" && bg !== "dark") {
     throw new ValidationError(400, "INVALID_INPUT", "Unknown reader background.");
   }
   if (body.fit !== undefined && typeof body.fit !== "boolean") {
