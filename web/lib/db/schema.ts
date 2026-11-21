@@ -175,6 +175,10 @@ export const readerSessions = pgTable("reader_sessions", {
   chapterId: text("chapter_id").notNull(),
   mangaId: text("manga_id").notNull(),
   language: text("language").notNull(),
+  // Provider that owns this chapter's pages. The signed ticket binds it and the
+  // persisted row is compared against the claim on every use. Additive default
+  // keeps legacy MangaDex rows valid without a backfill.
+  source: text("source").notNull().default("mangadex"),
   pageCount: integer("page_count").notNull(),
   issuedAt: bigint("issued_at", { mode: "number" }).notNull(),
   expiresAt: bigint("expires_at", { mode: "number" }).notNull(),

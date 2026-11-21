@@ -14,7 +14,9 @@ import { logErrorEvent, withObservedRoute } from "./observability";
 import { errorToResponse, privateJson } from "./me/handlers";
 import { ServiceError, ensureProfile } from "./me/service";
 import { emitNotification } from "./moderation";
-import { parseLanguage, parseResourceId, readJson, requireOrigin, ValidationError } from "./validators";
+import { parseLanguage, parseResourceId, parseContentId, parseContentSource, readJson, requireOrigin, ValidationError } from "./validators";
+import type { ContentSource } from "./validators";
+import { sourceLabel } from "./contracts";
 import {
   CHECKPOINT_LIMIT, MAX_PAGE_COUNT, PROGRESSION_RULE_VERSION,
   READER_TICKET_TTL_SECONDS, XP_PER_CHAPTER, levelFromXp, minimumElapsedMs,
@@ -60,6 +62,7 @@ export type TicketClaims = {
   cid: string;
   mid: string;
   lang: string;
+  source: ContentSource;
   pages: number;
   iat: number;
   exp: number;
@@ -68,7 +71,7 @@ export type TicketClaims = {
 export async function signTicket(secret: string, claims: TicketClaims): Promise<string> {
   return new SignJWT({
     sid: claims.sid, sub: claims.sub, cid: claims.cid, mid: claims.mid,
-    lang: claims.lang, pages: claims.pages,
+    lang: claims.lang, source: claims.source, pages: claims.pages,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt(claims.iat)
@@ -107,9 +110,14 @@ export async function verifyTicket(token: string, secret: string, nowMs: number)
   };
   const claims: TicketClaims = {
     sid: text("sid", 200), sub: text("sub", 200), cid: text("cid", 200),
-    mid: text("mid", 200), lang: text("lang", 20), pages: integer("pages"),
-    iat: integer("iat"), exp: integer("exp"),
+    mid: text("mid", 200), lang: text("lang", 20), source: text("source", 20) as ContentSource,
+    pages: integer("pages"), iat: integer("iat"), exp: integer("exp"),
   };
+  try {
+    parseContentSource(claims.source);
+  } catch {
+    throw new ServiceError(401, "INVALID_TICKET", "Reader session ticket is invalid.");
+  }
   if (claims.pages < 1 || claims.pages > MAX_PAGE_COUNT
     || claims.exp - claims.iat !== READER_TICKET_TTL_SECONDS || claims.exp * 1000 <= nowMs) {
     throw new ServiceError(401, "INVALID_TICKET", "Reader session ticket is invalid or expired.");
@@ -174,6 +182,7 @@ async function loadSession(
   if (!session) throw new ServiceError(401, "INVALID_TICKET", "Reader session no longer exists.");
   if (session.chapterId !== claims.cid || session.mangaId !== claims.mid
     || session.language !== claims.lang || session.pageCount !== claims.pages
+    || session.source !== claims.source
     || session.issuedAt !== claims.iat * 1000 || session.expiresAt !== claims.exp * 1000) {
     throw new ServiceError(401, "INVALID_TICKET", "Ticket does not match the persisted session.");
   }
@@ -226,13 +235,27 @@ export function createProgressionApi(deps: ProgressionDeps) {
     /// list, never from a client percentage or page count.
     sessionPost: (request: Request) => withUser(request, async (user) => {
       const body = await readJson(request, 2048);
-      assertKeys(body, ["chapterId", "mangaId", "lang"]);
-      const chapterId = parseResourceId(body.chapterId, "chapterId");
+      assertKeys(body, ["chapterId", "mangaId", "lang", "source", "source_label"]);
+      const { id: chapterId, source } = parseContentId(body.chapterId, "chapterId");
       const mangaId = parseResourceId(body.mangaId, "mangaId");
-      if (!CONTENT_ID.test(chapterId) || !CONTENT_ID.test(mangaId)) {
-        throw new ValidationError(400, "INVALID_INPUT", "Content ids must be MangaDex UUIDs.");
+      if (!CONTENT_ID.test(mangaId)) {
+        throw new ValidationError(400, "INVALID_INPUT", "mangaId must be a MangaDex UUID.");
       }
       const lang = parseLanguage(body.lang);
+      // `source`/`source_label` are optional on the wire for legacy MangaDex
+      // clients; when present they must be canonical and agree with the id.
+      if (body.source !== undefined || body.source_label !== undefined) {
+        if (body.source === undefined || body.source_label === undefined) {
+          throw new ValidationError(400, "INVALID_INPUT", "source and source_label must be sent together.");
+        }
+        const claimed = parseContentSource(body.source);
+        if (claimed !== source) {
+          throw new ServiceError(409, "CONTENT_MISMATCH", "Chapter source does not match its id.");
+        }
+        if (body.source_label !== sourceLabel(source)) {
+          throw new ValidationError(400, "INVALID_INPUT", "source_label is not the canonical label.");
+        }
+      }
       const now = deps.now();
       const db = deps.db();
       await ensureProfile(db, user, { now, allowlist: deps.allowlist ?? [] });
@@ -274,18 +297,19 @@ export function createProgressionApi(deps: ProgressionDeps) {
       // Align to whole seconds so the JWT iat/exp match the persisted row.
       const issuedAt = Math.floor(now / 1000) * 1000;
       const session = {
-        id: randomUUID(), userId: user.id, chapterId, mangaId, language: lang,
+        id: randomUUID(), userId: user.id, chapterId, mangaId, language: lang, source,
         pageCount: metadata.pages, issuedAt,
         expiresAt: issuedAt + READER_TICKET_TTL_SECONDS * 1000,
       };
       await db.insert(tables.readerSessions).values({ ...session, createdAt: date(now) });
       const ticket = await signTicket(deps.secret(), {
-        sid: session.id, sub: user.id, cid: chapterId, mid: mangaId, lang,
+        sid: session.id, sub: user.id, cid: chapterId, mid: mangaId, lang, source,
         pages: session.pageCount,
         iat: Math.floor(session.issuedAt / 1000), exp: Math.floor(session.expiresAt / 1000),
       });
       return privateJson({
-        ticket, sessionId: session.id, chapterId, mangaId, lang,
+        ticket, sessionId: session.id, chapterId, mangaId, lang, source,
+        source_label: sourceLabel(source),
         pageCount: session.pageCount, expiresAt: session.expiresAt,
         requiredPages: requiredPages(session.pageCount),
         minimumElapsedMs: minimumElapsedMs(session.pageCount),

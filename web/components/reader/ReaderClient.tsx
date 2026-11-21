@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReaderWasm } from "@/generated/reader-wasm";
 import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
+import { sourceLabel } from "@/lib/contracts";
 import type { ReaderSettingsDto } from "@/lib/validators";
 import { accountGet, accountMutate, parseAccountResponse, useAccountSession } from "@/lib/account/client";
 import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
@@ -272,6 +273,9 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   // language or account switch invalidates the generation and all timers.
   useEffect(() => {
     const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
+    // Trust the DTO's source, but never let it contradict the authoritative id
+    // prefix (a legacy DTO may omit `source`).
+    const chapterSource = chapter.source === "comick" || chapter.id.startsWith("comick:") ? "comick" : "mangadex";
     const track = xp.current;
     const generation = ++track.generation;
     track.ticket = null;
@@ -332,6 +336,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
       try {
         const ticket = await progressionPost<ReaderTicket>("/api/v1/reader-sessions", {
           chapterId: chapter.id, mangaId: manga.id, lang,
+          source: chapterSource, source_label: sourceLabel(chapterSource),
         }, abort.signal);
         if (!active()) return;
         track.ticket = ticket;
@@ -377,7 +382,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
       if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
       track.pending.clear();
     };
-  }, [session.status, session.user, loaded, total, chapter.id, manga.id, lang, remoteReadyKey, external]);
+  }, [session.status, session.user, loaded, total, chapter.id, chapter.source, manga.id, lang, remoteReadyKey, external]);
 
   useEffect(() => {
     if (settings.mode !== "horizontal" || !loaded || document.hidden) return;

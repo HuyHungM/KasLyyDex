@@ -16,6 +16,7 @@ const migrationUrls = [
   new URL("../drizzle/0004_notification_feed_cursor.sql", import.meta.url),
   new URL("../drizzle/0005_notification_pending.sql", import.meta.url),
   new URL("../drizzle/0006_progression.sql", import.meta.url),
+  new URL("../drizzle/0007_reader_session_source.sql", import.meta.url),
 ];
 
 async function freshDatabase() {

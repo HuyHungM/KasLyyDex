@@ -142,6 +142,31 @@ export function parseResourceId(value: unknown, field = "id"): string {
   return requiredText(value, field, MAX_ID);
 }
 
+export const CONTENT_SOURCES = ["mangadex", "comick"] as const;
+export type ContentSource = (typeof CONTENT_SOURCES)[number];
+
+const CONTENT_ID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const COMICK_ID_PREFIX = "comick:";
+
+/// A content id is either a MangaDex UUID or `comick:<opaque>`. The provider
+/// prefix is the only source authority; a provider is never inferred from
+/// upstream metadata.
+export function parseContentId(value: unknown, field = "id"): { id: string; source: ContentSource } {
+  const id = parseResourceId(value, field);
+  if (CONTENT_ID_UUID.test(id)) return { id, source: "mangadex" };
+  const opaque = id.startsWith(COMICK_ID_PREFIX) ? id.slice(COMICK_ID_PREFIX.length) : "";
+  if (opaque && !/[\s\u0000-\u001f\u007f/?#]/.test(opaque)) return { id, source: "comick" };
+  throw new ValidationError(400, "INVALID_INPUT", `${field} must be a MangaDex UUID or comick:<id>.`);
+}
+
+/// Only the two exact provider ids are accepted; anything else is rejected.
+export function parseContentSource(value: unknown): ContentSource {
+  if (value !== "mangadex" && value !== "comick") {
+    throw new ValidationError(400, "INVALID_INPUT", "Unknown content source.");
+  }
+  return value;
+}
+
 export function normalizeUsername(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();

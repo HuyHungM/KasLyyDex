@@ -27,6 +27,7 @@ const migrationFiles = [
   "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
   "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
   "0005_notification_pending.sql", "0006_progression.sql",
+  "0007_reader_session_source.sql",
 ];
 
 async function migratedDb() {
