@@ -503,6 +503,8 @@ fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<
         .unwrap_or_default()
         .to_owned(),
         group,
+        source: "mangadex".to_owned(),
+        source_label: "MangaDex".to_owned(),
     })
 }
 
@@ -595,6 +597,8 @@ fn summary(m: &Value) -> Option<MangaSummaryDto> {
         rating: None,
         follows: None,
         latest_chapter: None,
+        source: "mangadex".to_owned(),
+        source_label: "MangaDex".to_owned(),
     })
 }
 

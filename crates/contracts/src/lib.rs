@@ -54,6 +54,10 @@ pub struct MangaSummaryDto {
     pub follows: Option<u64>,
     #[serde(default)]
     pub latest_chapter: Option<String>,
+    #[serde(default = "default_source")]
+    pub source: String,
+    #[serde(default = "default_source_label")]
+    pub source_label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,6 +73,26 @@ pub struct ChapterDto {
     pub external_url: Option<String>,
     pub publish_at: String,
     pub group: String,
+    #[serde(default = "default_source")]
+    pub source: String,
+    #[serde(default = "default_source_label")]
+    pub source_label: String,
+}
+
+fn default_source() -> String {
+    "mangadex".to_owned()
+}
+
+fn default_source_label() -> String {
+    "MangaDex".to_owned()
+}
+
+/// Display label for a source id; unknown sources keep the primary label.
+pub fn source_label(source: &str) -> &'static str {
+    match source {
+        "comick" => "Comick",
+        _ => "MangaDex",
+    }
 }
 
 /// Single-chapter authority for the BFF reader ticket. Manga ownership comes
@@ -236,6 +260,8 @@ mod tests {
             external_url: None,
             publish_at: String::new(),
             group: String::new(),
+            source: "mangadex".into(),
+            source_label: "MangaDex".into(),
         };
         let chapters = serde_json::to_value(chapter).unwrap();
         for field in [
@@ -295,5 +321,61 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn manga_summary_defaults_source_to_mangadex() {
+        let legacy = json!({
+            "id": "manga-id",
+            "title": "Title",
+            "cover_file": null,
+            "status": "ongoing",
+            "year": 2024,
+            "description": "Description",
+            "tags": ["Action"],
+            "author": "Author",
+            "artist": "Artist"
+        });
+        let manga: MangaSummaryDto = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(manga.source, "mangadex");
+        assert_eq!(manga.source_label, "MangaDex");
+
+        let mut comick = legacy;
+        comick["source"] = json!("comick");
+        comick["source_label"] = json!("Comick");
+        let manga: MangaSummaryDto = serde_json::from_value(comick).unwrap();
+        assert_eq!(manga.source, "comick");
+        assert_eq!(manga.source_label, "Comick");
+    }
+
+    #[test]
+    fn chapter_defaults_source_to_mangadex() {
+        let legacy = json!({
+            "id": "chapter-id",
+            "chapter": "1",
+            "volume": null,
+            "title": "Title",
+            "lang": "vi",
+            "pages": 12,
+            "external_url": null,
+            "publish_at": "2026-11-20T00:00:00Z",
+            "group": "Group"
+        });
+        let chapter: ChapterDto = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(chapter.source, "mangadex");
+        assert_eq!(chapter.source_label, "MangaDex");
+
+        let mut comick = legacy;
+        comick["source"] = json!("comick");
+        let chapter: ChapterDto = serde_json::from_value(comick).unwrap();
+        assert_eq!(chapter.source, "comick");
+        assert_eq!(source_label(&chapter.source), "Comick");
+    }
+
+    #[test]
+    fn source_label_maps_known_sources() {
+        assert_eq!(source_label("mangadex"), "MangaDex");
+        assert_eq!(source_label("comick"), "Comick");
+        assert_eq!(source_label("unknown"), "MangaDex");
     }
 }

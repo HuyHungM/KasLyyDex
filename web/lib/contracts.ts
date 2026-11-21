@@ -91,6 +91,8 @@ export type MangaSummaryDto = {
   rating: number | null;
   follows: number | null;
   latest_chapter: string | null;
+  source?: string;
+  source_label?: string;
 };
 
 export type LatestChapterSummaryDto = {
@@ -120,7 +122,14 @@ export type ChapterDto = {
   external_url: string | null;
   publish_at: string;
   group: string;
+  source?: string;
+  source_label?: string;
+  readable?: boolean;
 };
+
+export function sourceLabel(source?: string): string {
+  return source === "comick" ? "Comick" : "MangaDex";
+}
 
 /// Single-chapter authority from Axum/MangaDex entity metadata. The public
 /// chapter lists are capped at 2000 and cannot establish ownership alone.
