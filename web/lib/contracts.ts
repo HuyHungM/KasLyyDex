@@ -123,6 +123,24 @@ export type ChapterDto = {
 
 export type PagesResponse = { pages: string[] };
 
+/// Bounded continuation page for chapter notifications. `partial` is true when
+/// MangaDex's 10,000 offset limit prevents reaching older candidates.
+export type ChapterFeedPageDto = {
+  items: ChapterDto[];
+  total: number;
+  offset: number;
+  limit: number;
+  next_offset: number | null;
+  partial: boolean;
+};
+
+export type NotificationFeedParams = {
+  lang: "vi" | "en";
+  since?: string | null;
+  offset?: number;
+  limit?: number;
+};
+
 // Task 7 browser-safe community DTOs. Bodies are plain text; hidden/removed
 // bodies are null outside the authenticated moderator queue.
 export type CommentStatus = "visible" | "hidden" | "removed";
@@ -185,6 +203,7 @@ export type ContentEndpoint =
   | "search"
   | "manga"
   | "chapter"
+  | "notifications"
   | "img";
 
 export function contentPath(endpoint: ContentEndpoint, ...segments: string[]): string {
@@ -256,6 +275,7 @@ export type ContentClient = {
   search(params: SearchParams, signal?: AbortSignal): Promise<SearchResponse>;
   manga(id: string, signal?: AbortSignal): Promise<MangaSummaryDto>;
   chapters(id: string, signal?: AbortSignal): Promise<ChaptersResponse>;
+  notificationFeed(id: string, params: NotificationFeedParams, signal?: AbortSignal): Promise<ChapterFeedPageDto>;
   pages(chapterId: string, signal?: AbortSignal): Promise<PagesResponse>;
 };
 
@@ -288,6 +308,18 @@ export function createContentClient(origin = "/api/content"): ContentClient {
       contentPath("manga", id, "chapters"),
       signal,
     ),
+    notificationFeed: (id, params, signal) => {
+      const query = new URLSearchParams();
+      query.set("lang", params.lang);
+      if (params.since) query.set("since", params.since);
+      if (params.offset !== undefined) query.set("offset", String(params.offset));
+      if (params.limit !== undefined) query.set("limit", String(params.limit));
+      const encoded = query.toString();
+      return get<ChapterFeedPageDto>(
+        `${contentPath("notifications", "feed", id)}${encoded ? `?${encoded}` : ""}`,
+        signal,
+      );
+    },
     pages: async (chapterId, signal) => {
       const result = await get<PagesResponse>(contentPath("chapter", chapterId, "pages"), signal);
       return { pages: normalizePageUrls(result.pages ?? []) };

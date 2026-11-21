@@ -23,6 +23,7 @@ const MIGRATIONS = [
   "0001_account_data.sql",
   "0002_comments_moderation.sql",
   "0003_community_cursor_scrub.sql",
+  "0004_notification_feed_cursor.sql",
 ];
 const LEGACY_MIGRATIONS = MIGRATIONS.slice(0, 3);
 
@@ -68,13 +69,33 @@ function jsonRequest(path, method, body, origin = "http://localhost") {
   }, origin);
 }
 
+function feedPage(items, params = {}) {
+  return {
+    items,
+    total: items.length,
+    offset: params.offset ?? 0,
+    limit: params.limit ?? 100,
+    next_offset: null,
+    partial: false,
+  };
+}
+
+function notificationContent(itemsOrGetter) {
+  return async () => ({
+    notificationFeed: async (_id, params) => {
+      const items = typeof itemsOrGetter === "function" ? itemsOrGetter() : itemsOrGetter;
+      return feedPage(params.lang === "vi" ? items : [], params);
+    },
+  });
+}
+
 function api(db, user = null, overrides = {}) {
   return createCommunityApi({
     db: () => db,
     identity: async () => user,
     now: () => now,
     allowlist: overrides.allowlist ?? [],
-    content: overrides.content ?? (async () => ({ chapters: async () => ({ vi: [], en: [] }) })),
+    content: overrides.content ?? notificationContent([]),
   });
 }
 
@@ -571,9 +592,9 @@ test("new-chapter refresh baselines first follow, dedupes and bounds content cal
     const fresh = chapter("ch-new", "2", now - 60_000);
     let calls = 0;
     const content = {
-      chapters: async () => {
+      notificationFeed: async (_id, params) => {
         calls += 1;
-        return { vi: [old, fresh], en: [] };
+        return feedPage(params.lang === "vi" ? [old, fresh] : [], params);
       },
     };
     const first = await api(db, reader, { content: async () => content }).notificationsRefreshPost(
@@ -588,11 +609,12 @@ test("new-chapter refresh baselines first follow, dedupes and bounds content cal
     const later = now + 60_000;
     const secondHandle = createCommunityApi({
       db: () => db, identity: async () => reader, now: () => later, allowlist: [],
-      content: async () => ({ chapters: async () => ({ vi: [old, fresh], en: [] }) }),
+      content: async () => ({ notificationFeed: async (_id, params) => feedPage(params.lang === "vi" ? [old, fresh] : [], params) }),
     });
-    // The new chapter is older than the baseline clock, so move the cursor back
-    // to simulate a follow before that chapter existed.
-    await db.update(schema.notificationCursors).set({ lastPublish: now - 2 * DAY });
+    // Move the composite continuation back to simulate a follow before that chapter existed.
+    await db.update(schema.notificationCursors).set({
+      lastPublish: now - 2 * DAY, scanPublish: now - 2 * DAY, scanOffset: 0,
+    });
     const second = await secondHandle.notificationsRefreshPost(
       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
     assert.equal(second.status, 200);
@@ -611,10 +633,15 @@ test("new-chapter refresh baselines first follow, dedupes and bounds content cal
     }
     let boundedCalls = 0;
     const bounded = api(db, reader, { content: async () => ({
-      chapters: async () => { boundedCalls += 1; return { vi: [], en: [] }; },
+      notificationFeed: async (_id, params) => {
+        boundedCalls += 1;
+        return feedPage([], params);
+      },
     }) });
-    await bounded.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
-    assert.ok(boundedCalls <= 20, `refresh must stay bounded, saw ${boundedCalls} content calls`);
+    const boundedBody = await (await bounded.notificationsRefreshPost(
+      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {})).json();
+    assert.equal(boundedBody.checked, 20, "library scan stays bounded at 20 manga");
+    assert.ok(boundedCalls <= 40, `refresh must stay bounded at 20 manga x 2 languages, saw ${boundedCalls}`);
   } finally {
     await pg.close();
   }
@@ -631,7 +658,7 @@ test("chapter cursor advances through same-timestamp backlog without loss", asyn
     });
     const baselinePublish = now - 10 * DAY;
     let feed = [chapter("ch-base", "1", baselinePublish)];
-    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
+    const content = notificationContent(() => feed);
     const refresh = () => api(db, reader, { content }).notificationsRefreshPost(
       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
 
@@ -674,12 +701,12 @@ test("composite cursor compares chapter id when publish timestamps match", async
       userId: reader.id, mangaId: "m1", language: "vi", lastPublish: published, lastChapterId: "ch-2",
     });
     const feed = [1, 2, 3, 4, 5].map((number) => chapter(`ch-${number}`, String(number + 1), published));
-    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
+    const content = notificationContent(feed);
     const handle = api(db, reader, { content });
     const response = await handle.notificationsRefreshPost(
       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
     const body = await response.json();
-    assert.deepEqual(body, { checked: 1, created: 3, skipped: false });
+    assert.deepEqual(body, { checked: 1, created: 3, skipped: false, partial: false });
     const rows = await db.select().from(schema.notifications);
     assert.deepEqual(rows.map((item) => item.eventKey).sort(), [
       `chapter:${reader.id}:m1:ch-3:vi`,
@@ -706,7 +733,7 @@ test("overlapping refreshes dedupe and failed or empty feeds do not advance curs
     await db.insert(schema.notificationCursors).values({
       userId: reader.id, mangaId: "m1", language: "vi", lastPublish: baseline, lastChapterId: "ch-0",
     });
-    const withoutFeed = api(db, reader, { content: async () => ({ chapters: async () => ({ vi: [], en: [] }) }) });
+    const withoutFeed = api(db, reader, { content: notificationContent([]) });
     const before = (await db.select().from(schema.notificationCursors))[0];
     await withoutFeed.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
     const afterEmpty = (await db.select().from(schema.notificationCursors))[0];
@@ -715,13 +742,13 @@ test("overlapping refreshes dedupe and failed or empty feeds do not advance curs
       { publish: before.lastPublish, chapter: before.lastChapterId },
     );
 
-    const failing = api(db, reader, { content: async () => ({ chapters: async () => { throw new Error("upstream down"); } }) });
+    const failing = api(db, reader, { content: async () => ({ notificationFeed: async () => { throw new Error("upstream down"); } }) });
     await failing.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
     const afterFailure = (await db.select().from(schema.notificationCursors))[0];
     assert.equal(afterFailure.lastPublish, before.lastPublish);
 
     const feed = [1, 2, 3, 4].map((number) => chapter(`ch-${number}`, String(number), now - 60_000));
-    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
+    const content = notificationContent(feed);
     const parallel = await Promise.all([0, 1].map(() => api(db, reader, { content }).notificationsRefreshPost(
       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {})));
     assert.ok(parallel.every((response) => response.status === 200));
@@ -863,7 +890,7 @@ test("public comment reads tolerate missing auth configuration but still need th
       identity: async () => { throw new AuthConfigurationError("AUTH_NOT_CONFIGURED", "not configured", ["NEON_AUTH_BASE_URL"]); },
       now: () => now,
       allowlist: [],
-      content: async () => ({ chapters: async () => ({ vi: [], en: [] }) }),
+      content: notificationContent([]),
     });
     const response = await injected.commentsGet(request("/api/v1/comments?targetType=manga&targetId=m1"));
     assert.equal(response.status, 200, "guest reads are not blocked by an unconfigured auth service");

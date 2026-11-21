@@ -32,6 +32,15 @@ fn json_cached<T: Serialize>(v: T, secs: u32) -> Response {
     res
 }
 
+fn json_no_store<T: Serialize>(v: T) -> Response {
+    let mut res = Json(v).into_response();
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    res
+}
+
 async fn popular(State(md): State<Md>) -> Result<Response, Err> {
     Ok(json_cached(md.popular().await.map_err(bad)?, 60))
 }
@@ -107,6 +116,60 @@ fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
     })
 }
 
+#[derive(Debug)]
+struct NotificationFeedQuery {
+    lang: String,
+    since: Option<String>,
+    offset: u32,
+    limit: u32,
+}
+
+fn parse_notification_feed_query(q: HashMap<String, String>) -> Result<NotificationFeedQuery, Err> {
+    let invalid = || {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "Tham số feed thông báo không hợp lệ.",
+        )
+    };
+    let lang = q.get("lang").map(String::as_str).unwrap_or("vi");
+    if !matches!(lang, "vi" | "en") {
+        return Err(invalid());
+    }
+    let limit = q
+        .get("limit")
+        .map(|raw| raw.parse::<u32>().ok())
+        .unwrap_or(Some(500))
+        .filter(|value| *value >= 1 && *value <= 500)
+        .ok_or_else(invalid)?;
+    let offset = q
+        .get("offset")
+        .map(|raw| raw.parse::<u32>().ok())
+        .unwrap_or(Some(0))
+        .filter(|value| value.saturating_add(limit) <= 10_000)
+        .ok_or_else(invalid)?;
+    let since = match q.get("since").map(|value| value.trim()) {
+        None | Some("") => None,
+        Some(raw) => {
+            let value = raw.to_owned();
+            if value.len() > 30
+                || !value
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || "-:.TZ".contains(c))
+            {
+                return Err(invalid());
+            }
+            Some(value)
+        }
+    };
+    Ok(NotificationFeedQuery {
+        lang: lang.to_owned(),
+        since,
+        offset,
+        limit,
+    })
+}
+
 async fn tags(State(md): State<Md>) -> Result<Response, Err> {
     Ok(json_cached(md.tags().await.map_err(bad)?, 86_400))
 }
@@ -146,6 +209,32 @@ async fn chapters(State(md): State<Md>, Path(id): Path<String>) -> Result<Respon
         ));
     }
     Ok(json_cached(md.chapters(&id).await.map_err(bad)?, 60))
+}
+
+async fn notification_feed(
+    State(md): State<Md>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, Err> {
+    if !is_uuid(&id) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "Mã truyện không hợp lệ.",
+        ));
+    }
+    let query = parse_notification_feed_query(q)?;
+    let page = md
+        .notification_feed(
+            &id,
+            &query.lang,
+            query.since.as_deref(),
+            query.offset,
+            query.limit,
+        )
+        .await
+        .map_err(bad)?;
+    Ok(json_no_store(page))
 }
 
 async fn pages(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
@@ -233,6 +322,10 @@ fn content_routes() -> Router<Md> {
         .route("/api/content/rank", get(rank))
         .route("/api/content/manga/{id}", get(manga))
         .route("/api/content/manga/{id}/chapters", get(chapters))
+        .route(
+            "/api/content/notifications/feed/{id}",
+            get(notification_feed),
+        )
         .route("/api/content/chapter/{id}/pages", get(pages))
         .route("/api/content/img", get(img))
 }
@@ -304,6 +397,40 @@ mod tests {
         assert_eq!(query.tags, [id]);
         assert_eq!(query.sort, "rating");
         assert!(query.q.is_empty());
+    }
+
+    #[test]
+    fn notification_feed_query_bounds_language_limit_offset_and_since() {
+        let parsed = parse_notification_feed_query(HashMap::from([
+            ("lang".into(), "vi".into()),
+            ("limit".into(), "100".into()),
+            ("offset".into(), "300".into()),
+            ("since".into(), "2026-07-01T00:00:00Z".into()),
+        ]))
+        .unwrap();
+        assert_eq!(parsed.lang, "vi");
+        assert_eq!(parsed.limit, 100);
+        assert_eq!(parsed.offset, 300);
+        assert_eq!(parsed.since.as_deref(), Some("2026-07-01T00:00:00Z"));
+
+        for (name, value) in [
+            ("lang", "fr"),
+            ("limit", "0"),
+            ("limit", "501"),
+            ("offset", "9901"),
+            ("since", "2026-07-01T00:00:00Z; DROP TABLE x"),
+        ] {
+            assert_eq!(
+                parse_notification_feed_query(HashMap::from([
+                    ("limit".into(), "100".into()),
+                    (name.into(), value.into()),
+                ]))
+                .unwrap_err()
+                .0,
+                StatusCode::BAD_REQUEST,
+                "{name}={value}"
+            );
+        }
     }
 
     #[tokio::test]

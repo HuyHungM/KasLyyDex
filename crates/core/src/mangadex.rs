@@ -1,6 +1,6 @@
 use contracts::{
-    ChapterDto, ChaptersResponse, LatestChapterDto, LatestMangaDto, MangaSummaryDto, PagesResponse,
-    SearchResponse, TagDto,
+    ChapterDto, ChapterFeedPage, ChaptersResponse, LatestChapterDto, LatestMangaDto,
+    MangaSummaryDto, PagesResponse, SearchResponse, TagDto,
 };
 use moka::future::Cache;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -10,6 +10,9 @@ use std::time::Duration;
 
 const API: &str = "https://api.mangadex.org";
 const LIST_PARAMS: &str = "&includes[]=cover_art&includes[]=author&contentRating[]=safe&contentRating[]=suggestive&hasAvailableChapters=true";
+/// MangaDex rejects offset + limit above 10,000 for collection endpoints.
+const UPSTREAM_OFFSET_LIMIT: u32 = 10_000;
+const NOTIFICATION_FEED_MAX: u32 = 500;
 
 #[derive(Clone)]
 pub struct Md {
@@ -263,6 +266,65 @@ impl Md {
             .map_err(|e: Arc<Err>| (*e).clone())
     }
 
+    /// Notification-only feed. Publish-time ordering plus an explicit offset
+    /// continuation reaches chapters past the public list's 2000-item cap.
+    /// `since` is an exclusive ISO publishAt lower bound; `None` asks for the
+    /// newest available publications (first-observation baseline).
+    pub async fn notification_feed(
+        &self,
+        id: &str,
+        lang: &str,
+        since: Option<&str>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<ChapterFeedPage, Err> {
+        if !matches!(lang, "vi" | "en")
+            || limit == 0
+            || limit > NOTIFICATION_FEED_MAX
+            || offset.saturating_add(limit) > UPSTREAM_OFFSET_LIMIT
+            || since.is_some_and(|value| {
+                value.len() > 30
+                    || !value
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || "-:.TZ".contains(c))
+            })
+        {
+            return Err("Tham số feed thông báo không hợp lệ.".into());
+        }
+        let j = self
+            .get(&notification_feed_path(id, lang, since, offset, limit))
+            .await?;
+        let total = j["total"].as_u64().unwrap_or(0);
+        let raw = j["data"].as_array().cloned().unwrap_or_default();
+        let mut items: Vec<ChapterDto> = raw
+            .iter()
+            .filter_map(|chapter| chapter_dto_publish(chapter, lang))
+            .collect();
+        // Upstream does not guarantee id order inside one publish timestamp.
+        items.sort_by(|a, b| {
+            a.publish_at
+                .cmp(&b.publish_at)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        let next_offset = if offset.saturating_add(limit) < UPSTREAM_OFFSET_LIMIT
+            && (offset as u64) + (items.len() as u64) < total
+        {
+            Some(offset + limit)
+        } else {
+            None
+        };
+        let partial = total > UPSTREAM_OFFSET_LIMIT as u64
+            && (offset as u64) + (limit as u64) >= UPSTREAM_OFFSET_LIMIT as u64;
+        Ok(ChapterFeedPage {
+            items,
+            total,
+            offset,
+            limit,
+            next_offset,
+            partial,
+        })
+    }
+
     async fn feed(&self, id: &str, lang: &str) -> Result<Vec<ChapterDto>, Err> {
         let mut raw: Vec<Value> = Vec::new();
         let mut offset = 0u32;
@@ -367,7 +429,33 @@ fn tag_dto(tag: &Value) -> Option<TagDto> {
     })
 }
 
+fn notification_feed_path(
+    id: &str,
+    lang: &str,
+    since: Option<&str>,
+    offset: u32,
+    limit: u32,
+) -> String {
+    let order = if since.is_some() { "asc" } else { "desc" };
+    let mut path = format!(
+        "/chapter?limit={limit}&offset={offset}&manga={id}&translatedLanguage[]={lang}&order[publishAt]={order}"
+    );
+    if let Some(since) = since {
+        let encoded = utf8_percent_encode(since, NON_ALPHANUMERIC);
+        path.push_str(&format!("&publishAtSince={encoded}"));
+    }
+    path
+}
+
 fn chapter_dto(chapter: &Value, lang: &str) -> Option<ChapterDto> {
+    chapter_dto_impl(chapter, lang, false)
+}
+
+fn chapter_dto_publish(chapter: &Value, lang: &str) -> Option<ChapterDto> {
+    chapter_dto_impl(chapter, lang, true)
+}
+
+fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<ChapterDto> {
     let id = chapter["id"].as_str().filter(|id| !id.trim().is_empty())?;
     let attributes = &chapter["attributes"];
     let group = chapter["relationships"]
@@ -392,11 +480,17 @@ fn chapter_dto(chapter: &Value, lang: &str) -> Option<ChapterDto> {
             .to_owned(),
         pages: attributes["pages"].as_u64().unwrap_or(0),
         external_url: attributes["externalUrl"].as_str().map(str::to_owned),
-        publish_at: attributes["readableAt"]
-            .as_str()
-            .or(attributes["publishAt"].as_str())
-            .unwrap_or_default()
-            .to_owned(),
+        publish_at: if publish_first {
+            attributes["publishAt"]
+                .as_str()
+                .or(attributes["readableAt"].as_str())
+        } else {
+            attributes["readableAt"]
+                .as_str()
+                .or(attributes["publishAt"].as_str())
+        }
+        .unwrap_or_default()
+        .to_owned(),
         group,
     })
 }
@@ -757,6 +851,43 @@ mod tests {
         assert_eq!(
             encoded["tags"],
             json!(["Action", "Empty", "Blank", "Non-string"])
+        );
+    }
+
+    #[test]
+    fn notification_feed_path_uses_publish_order_and_encoded_continuation() {
+        let baseline = notification_feed_path("m1", "vi", None, 0, 100);
+        assert_eq!(
+            baseline,
+            "/chapter?limit=100&offset=0&manga=m1&translatedLanguage[]=vi&order[publishAt]=desc"
+        );
+        let resumed = notification_feed_path("m1", "en", Some("2026-07-01T00:00:00Z"), 300, 100);
+        assert_eq!(
+            resumed,
+            "/chapter?limit=100&offset=300&manga=m1&translatedLanguage[]=en&order[publishAt]=asc&publishAtSince=2026%2D07%2D01T00%3A00%3A00Z"
+        );
+    }
+
+    #[test]
+    fn notification_feed_dto_uses_publish_at_not_readable_at() {
+        let chapter = json!({
+            "id": "c1",
+            "attributes": {
+                "publishAt": "2026-07-01T00:00:00Z",
+                "readableAt": "2026-07-02T00:00:00Z",
+                "translatedLanguage": "vi",
+                "pages": 1
+            },
+            "relationships": []
+        });
+        assert_eq!(
+            chapter_dto_publish(&chapter, "vi").unwrap().publish_at,
+            "2026-07-01T00:00:00Z"
+        );
+        assert_eq!(
+            chapter_dto(&chapter, "vi").unwrap().publish_at,
+            "2026-07-02T00:00:00Z",
+            "the public list keeps its readableAt contract"
         );
     }
 

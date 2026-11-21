@@ -82,6 +82,18 @@ pub struct ChaptersResponse {
     pub en: Vec<ChapterDto>,
 }
 
+/// Bounded, continuation-based feed used only by chapter notifications. Unlike
+/// the public chapter list, every published chapter is addressable by offset.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChapterFeedPage {
+    pub items: Vec<ChapterDto>,
+    pub total: u64,
+    pub offset: u32,
+    pub limit: u32,
+    pub next_offset: Option<u32>,
+    pub partial: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchResponse {
     pub results: Vec<MangaSummaryDto>,
@@ -228,6 +240,29 @@ mod tests {
         })
         .unwrap();
         assert_eq!(pages, json!({ "pages": ["/api/content/img?u=x"] }));
+    }
+
+    #[test]
+    fn notification_feed_page_keeps_continuation_and_partial_flags() {
+        let page = ChapterFeedPage {
+            items: vec![],
+            total: 12_345,
+            offset: 9_900,
+            limit: 500,
+            next_offset: Some(10_400),
+            partial: true,
+        };
+        assert_eq!(
+            serde_json::to_value(page).unwrap(),
+            json!({
+                "items": [],
+                "total": 12345,
+                "offset": 9900,
+                "limit": 500,
+                "next_offset": 10400,
+                "partial": true
+            })
+        );
     }
 
     #[test]

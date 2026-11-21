@@ -25,6 +25,8 @@ const REPORT_LIMIT = 10;
 const REPORT_WINDOW_MS = 3_600_000;
 const LIBRARY_SCAN_LIMIT = 20;
 const CHAPTERS_PER_MANGA = 3;
+const NOTIFICATION_FEED_LIMIT = 100;
+const UPSTREAM_OFFSET_LIMIT = 10_000;
 const MAX_CHAPTER_AGE_MS = 5 * 60_000;
 // Neutral by construction: no reply body can survive moderation via the inbox.
 const REPLY_NOTIFICATION_BODY = "Có phản hồi mới trong bình luận. Mở bình luận để xem nội dung.";
@@ -557,20 +559,35 @@ function parsePublish(value: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+type FeedCandidate = { id: string; published: number };
+
+// Raw string comparison, not localeCompare: the continuation is persisted and
+// must not depend on ICU/locale behaviour between workers.
+function compareCandidates(a: FeedCandidate, b: FeedCandidate): number {
+  if (a.published !== b.published) return a.published - b.published;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+function capOffset(offset: number): number {
+  return Math.min(Math.max(0, offset), UPSTREAM_OFFSET_LIMIT - NOTIFICATION_FEED_LIMIT);
+}
+
 /// On-demand only: no background worker is started or implied. The first
-/// observed publish time for a followed manga is a baseline, never a batch of
-/// historic "new chapter" notifications.
+/// observation baselines the newest published chapter; later refreshes drain
+/// older unseen candidates through a bounded MangaDex continuation.
 export async function refreshFollowedChapters(
   db: Db,
   userId: string,
   content: ContentClient,
   now: number,
-): Promise<{ checked: number; created: number; skipped: boolean }> {
+): Promise<{ checked: number; created: number; skipped: boolean; partial: boolean }> {
   return db.transaction(async (tx) => {
     const acquired = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${'chapter-refresh:' + userId})) as acquired`);
     const result = acquired as unknown as { rows?: Array<{ acquired: boolean }> };
     const rows = result.rows ?? [];
-    if (rows[0]?.acquired === false) return { checked: 0, created: 0, skipped: true };
+    if (rows[0]?.acquired === false) {
+      return { checked: 0, created: 0, skipped: true, partial: false };
+    }
 
     const followed = await tx.select({
       mangaId: tables.libraryEntries.mangaId,
@@ -581,63 +598,120 @@ export async function refreshFollowedChapters(
       .limit(LIBRARY_SCAN_LIMIT);
 
     let created = 0;
+    let partial = false;
     for (const entry of followed) {
-      let chapters;
-      try {
-        chapters = await content.chapters(entry.mangaId);
-      } catch {
-        continue;
-      }
       for (const language of ["vi", "en"] as const) {
-        const candidates = (chapters[language] ?? [])
-          .map((item) => ({ item, published: parsePublish(item.publish_at) }))
-          .filter((value): value is { item: typeof value.item; published: number } =>
-            value.published !== null && value.published <= now + MAX_CHAPTER_AGE_MS)
-          // Total order: publish time first, then opaque chapter id. Equal
-          // timestamps can never hide a later id behind a coarse watermark.
-          .sort((a, b) => a.published - b.published || a.item.id.localeCompare(b.item.id));
-        if (candidates.length === 0) continue;
-        const newest = candidates.at(-1)!;
         const cursorWhere = and(
           eq(tables.notificationCursors.userId, userId),
           eq(tables.notificationCursors.mangaId, entry.mangaId),
           eq(tables.notificationCursors.language, language),
         );
-        const existing = await tx.select().from(tables.notificationCursors).where(cursorWhere).limit(1);
-        if (!existing[0]) {
+        const existing = (await tx.select().from(tables.notificationCursors).where(cursorWhere).limit(1))[0];
+
+        if (!existing) {
+          let page;
+          try {
+            // Descending publication order reaches the latest chapter even in a
+            // catalog far past the old 2000-item list cap.
+            page = await content.notificationFeed(entry.mangaId, {
+              lang: language, offset: 0, limit: NOTIFICATION_FEED_LIMIT,
+            });
+          } catch {
+            continue;
+          }
+          if (page.partial) partial = true;
+          const fresh = page.items
+            .map((item) => ({ id: item.id, published: parsePublish(item.publish_at) }))
+            .filter((value): value is FeedCandidate => value.published !== null
+              && value.published <= now + MAX_CHAPTER_AGE_MS)
+            .sort(compareCandidates)
+            .at(-1);
+          if (!fresh) continue;
           await tx.insert(tables.notificationCursors).values({
             userId, mangaId: entry.mangaId, language,
-            lastPublish: newest.published, lastChapterId: newest.item.id, updatedAt: date(now),
+            lastPublish: fresh.published, lastChapterId: fresh.id,
+            scanPublish: fresh.published, scanOffset: 0, updatedAt: date(now),
           });
           continue;
         }
-        const cursorPublish = existing[0].lastPublish;
-        // Legacy rows have '' (migration default): same-timestamp chapters are
-        // re-evaluated once, but event-key uniqueness prevents duplicates.
-        const cursorId = existing[0].lastChapterId ?? "";
-        const pending = candidates
-          .filter((value) => value.published > cursorPublish
-            || (value.published === cursorPublish && value.item.id > cursorId))
-          .slice(0, CHAPTERS_PER_MANGA);
-        if (pending.length === 0) continue;
-        for (const { item } of pending) {
+
+        const offset = capOffset(existing.scanOffset);
+        const since = new Date(existing.scanPublish).toISOString();
+        let page;
+        try {
+          page = await content.notificationFeed(entry.mangaId, {
+            lang: language, since, offset, limit: NOTIFICATION_FEED_LIMIT,
+          });
+        } catch {
+          // An upstream failure never moves the persisted continuation.
+          continue;
+        }
+        if (page.partial || (page.total > UPSTREAM_OFFSET_LIMIT
+          && offset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT)) partial = true;
+
+        const decorated = page.items.map((item) => {
+          const published = parsePublish(item.publish_at);
+          const valid = published !== null && published <= now + MAX_CHAPTER_AGE_MS;
+          return valid
+            ? { id: item.id, published: published!, valid: true as const }
+            : { id: item.id, published: published ?? 0, valid: false as const };
+        });
+        const cursor: FeedCandidate = { id: existing.lastChapterId ?? "", published: existing.lastPublish };
+        const candidates = decorated
+          .filter((value): value is FeedCandidate & { valid: true } =>
+            value.valid && compareCandidates(value, cursor) > 0)
+          .sort(compareCandidates);
+        if (candidates.length === 0) {
+          // Only skip rows that cannot become notifications (invalid/duplicate).
+          if (page.items.length > 0) {
+            await tx.update(tables.notificationCursors).set({
+              scanOffset: capOffset(offset + page.items.length), updatedAt: date(now),
+            }).where(cursorWhere);
+          }
+          continue;
+        }
+
+        const pending = candidates.slice(0, CHAPTERS_PER_MANGA);
+        for (const candidate of pending) {
           const emitted = await emitNotification(tx, {
             userId,
             type: "new_chapter",
-            eventKey: `chapter:${userId}:${entry.mangaId}:${item.id}:${language}`,
+            eventKey: `chapter:${userId}:${entry.mangaId}:${candidate.id}:${language}`,
             title: "Chương mới",
-            body: `${entry.title} — ${item.chapter ?? "chương mới"} (${language})`,
-            href: `/read/${item.id}?manga=${encodeURIComponent(entry.mangaId)}&lang=${language}`,
+            body: `${entry.title} — ${candidate.id} (${language})`,
+            href: `/read/${candidate.id}?manga=${encodeURIComponent(entry.mangaId)}&lang=${language}`,
           });
           if (emitted) created += 1;
         }
-        // Advance only through the candidates actually processed this round.
+
         const last = pending.at(-1)!;
-        await tx.update(tables.notificationCursors).set({
-          lastPublish: last.published, lastChapterId: last.item.id, updatedAt: date(now),
-        }).where(cursorWhere);
+        const consumed = decorated.filter((value) => !value.valid || compareCandidates(value, last) <= 0).length;
+        const nextOffset = capOffset(offset + Math.max(1, consumed));
+        const remainingTies = candidates
+          .slice(candidates.indexOf(last) + 1)
+          .some((value) => value.published === last.published);
+        const lastPageItem = page.items.at(-1);
+        const endsAtLastPublish = page.items.length === page.limit
+          && parsePublish(lastPageItem?.publish_at ?? "") === last.published;
+        if (!remainingTies && !endsAtLastPublish) {
+          // No same-time rows remain in reach: start a fresh since bound.
+          await tx.update(tables.notificationCursors).set({
+            lastPublish: last.published, lastChapterId: last.id,
+            scanPublish: last.published, scanOffset: 0, updatedAt: date(now),
+          }).where(cursorWhere);
+        } else {
+          // Keep the old since bound and skip only what this page consumed, so
+          // same-timestamp rows split across pages are not jumped over.
+          if (nextOffset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT && page.total > UPSTREAM_OFFSET_LIMIT) {
+            partial = true;
+          }
+          await tx.update(tables.notificationCursors).set({
+            lastPublish: last.published, lastChapterId: last.id,
+            scanOffset: nextOffset, updatedAt: date(now),
+          }).where(cursorWhere);
+        }
       }
     }
-    return { checked: followed.length, created, skipped: false };
+    return { checked: followed.length, created, skipped: false, partial };
   });
 }

@@ -180,3 +180,64 @@ git diff --cached --check        # pass before commit
 ```
 
 Cargo was unchanged, so Rust tests were not rerun in this fix round. The remaining limitations are the same external gates recorded above: PGlite rather than live Neon, loopback SDK fixture rather than real provider mail/OAuth, and browser API interception rather than a local PostgreSQL wire server.
+
+---
+
+## Fix round 2 — notification feed past the 2000-chapter cap
+
+Controller ruled the inherited 2000-chapter catalog cap an in-scope defect. Round 1 approval of the other five fixes is unchanged; this round only replaces the notification source path.
+
+### API facts checked before implementation
+
+Current official MangaDex docs were queried through Context7 library `/websites/api_mangadex` (pagination, limitations, chapter search/feed, enumerations):
+
+- Collections use `limit`/`offset` and report `total`; `offset + limit` is capped at **10,000**, and feed endpoints allow up to 500 per page.
+- Chapter search supports `manga`, `translatedLanguage[]`, `publishAtSince`, `order[publishAt]` and offset pagination; feeds exclude future publications by default.
+- Chapter order options cover publication dates, but there is **no documented upstream id ordering**. The implementation therefore does not send `order[id]`; equal publish timestamps are handled locally and with a persisted offset continuation.
+
+### RED evidence
+
+```bash
+cd web
+cargo build --manifest-path ../Cargo.toml -p server
+node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs
+# 5 tests / 1 pass / 4 fail before the fix: ordinary capped listing was the
+# only assertion that already held; baseline, post-baseline, backlog and
+# cursor-consistency cases failed (no notification route/client/continuation).
+```
+
+The first fixture assertion was corrected during RED setup to count only the Vietnamese legacy feed requests; the four behavioural failures remained.
+
+### Implemented scope
+
+- **Rust/Axum:** added `contracts::ChapterFeedPage` and `Md::notification_feed()` in `crates/core`, plus `GET /api/content/notifications/feed/{id}?lang=vi|en&since=<ISO>&offset=<n>&limit=<n>` in the content namespace only. The handler validates UUID, language, limit (1–500), offset (offset+limit ≤ 10,000) and since characters, and returns `private, no-store`. Upstream uses `/chapter` with `manga`, `translatedLanguage[]`, `order[publishAt]=desc` for baseline or `asc` + `publishAtSince` for continuation. `publish_at` in this DTO comes from `publishAt`; the public `/chapters` contract still uses `readableAt` and remains capped at 2000.
+- **Typed client:** `ContentClient.notificationFeed()` and `ChapterFeedPageDto` in `lib/contracts.ts`; ordinary `chapters()` is unchanged.
+- **SQL migration `0004_notification_feed_cursor.sql`:** adds `notification_cursors.scan_publish` and `scan_offset`, backfilling `scan_publish = last_publish` for existing rows.
+- **Refresh algorithm:** first observation queries descending publication order and stores the newest key as a silent baseline. Later refreshes request one bounded 100-item page per manga/language, emit at most 3 new chapters, and advance the cursor only through consumed rows. Same-timestamp rows are ordered by raw string id comparison (no `localeCompare`) and a persisted offset continues across page boundaries. An upstream failure leaves the cursor untouched. `partial: true` is returned when MangaDex's 10,000 offset wall prevents traversal.
+- Library scanning remains bounded at 20 followed manga × 2 languages = at most 40 content calls per refresh; no unrelated feature was broadened. The external fetch still runs inside the bounded DB transaction so cursor writes are atomic with emitted notifications, at the documented cost of holding a connection during those calls.
+
+### GREEN evidence
+
+```bash
+cd web
+rustfmt --check --edition 2021 crates/contracts/src/lib.rs crates/core/src/mangadex.rs crates/server/src/main.rs  # pass
+cargo test --workspace                             # pass, 0 failures
+cargo clippy --workspace --all-targets -- -D warnings  # pass
+node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs
+                                                   # 5 tests / 5 pass / 0 fail
+npm run test:task7                                 # 80 tests / 80 pass / 0 fail
+node --test scripts/community-playwright.test.mjs scripts/reader-sync-playwright.test.mjs
+                                                   # 8 tests / 8 pass / 0 fail
+npx tsc --noEmit                                   # pass
+npm run lint                                       # 0 errors, 7 pre-existing warnings
+npm run build                                      # pass
+```
+
+`notification-feed.test.mjs` starts a real locally built Axum server and a real built Next proxy, with a loopback MangaDex fixture of 2500 chapters. It asserts the legacy feed still sends `order[chapter]=asc` offsets 0/500/1000/1500, the baseline lands beyond chapter 2000, a later chapter is emitted exactly once, a 105-chapter same-timestamp backlog crossing a 100-item page edge drains exactly once across repeats, and an upstream failure does not move the cursor. PGlite tests continue to prove SQL uniqueness/dedup and cursor atomicity.
+
+### Remaining hard limits
+
+- MangaDex rejects `offset + limit > 10,000`; chapters beyond that upstream window cannot be reached by this mechanism. The API reports `partial: true` rather than claiming a complete scan. Live provider behaviour remains an external gate.
+- Upstream does not sort equal `publishAt` rows by id. The app uses local raw-id ordering plus persisted offset continuation; that is dependable for the locally verified fixture but must be re-smoke-tested against live MangaDex.
+- `cargo fmt` over the whole `core` crate would also reformat pre-existing baseline files (`imgcache.rs`, `lib.rs`), so only the three touched Rust files were `rustfmt --check`ed and the unrelated formatting drift was left alone.
+- No live Neon, Google OAuth or Vercel verification was performed; no deployment, push or merge occurred.

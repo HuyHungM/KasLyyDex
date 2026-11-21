@@ -141,6 +141,10 @@ export const notificationCursors = pgTable("notification_cursors", {
   // Composite cursor component: legacy rows keep '' and are re-evaluated for
   // chapters sharing the stored publish time; event keys dedupe the repeat.
   lastChapterId: text("last_chapter_id").notNull().default(""),
+  // Continuation state for the bounded notification feed. `scan_publish` is the
+  // exclusive since bound, `scan_offset` walks its page within one timestamp.
+  scanPublish: bigint("scan_publish", { mode: "number" }).notNull().default(0),
+  scanOffset: integer("scan_offset").notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [primaryKey({ columns: [table.userId, table.mangaId, table.language] })]);
 
