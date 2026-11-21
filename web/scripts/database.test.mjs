@@ -14,6 +14,7 @@ const migrationUrls = [
   new URL("../drizzle/0002_comments_moderation.sql", import.meta.url),
   new URL("../drizzle/0003_community_cursor_scrub.sql", import.meta.url),
   new URL("../drizzle/0004_notification_feed_cursor.sql", import.meta.url),
+  new URL("../drizzle/0005_notification_pending.sql", import.meta.url),
 ];
 
 async function freshDatabase() {
@@ -49,6 +50,7 @@ test("application migrations own account tables and never touch Neon Auth tables
         "public.comments",
         "public.library_entries",
         "public.notification_cursors",
+        "public.notification_pending",
         "public.notifications",
         "public.profiles",
         "public.reader_preferences",
@@ -132,6 +134,7 @@ test("application tables enforce ownership keys, unique usernames and cascade cl
     await db.exec("INSERT INTO comment_reports (id, user_id, comment_id, reason) VALUES ('r1', 'opaque-2', 'c1', 'spam');");
     await db.exec("INSERT INTO notifications (id, user_id, type, event_key, title, body) VALUES ('n1', 'opaque-1', 'level_up', 'level:2', 'Level', 'body');");
     await db.exec("INSERT INTO notification_cursors (user_id, manga_id, language, last_publish) VALUES ('opaque-1', 'm1', 'vi', 100);");
+    await db.exec("INSERT INTO notification_pending (user_id, manga_id, language, chapter_id, publish) VALUES ('opaque-1', 'm1', 'vi', 'c1', 100);");
     await db.exec("INSERT INTO action_events (id, user_id, action, occurred_at) VALUES ('e1', 'opaque-1', 'comment', 100);");
 
     await assert.rejects(
@@ -151,7 +154,7 @@ test("application tables enforce ownership keys, unique usernames and cascade cl
     await db.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
     for (const table of [
       "user_roles", "library_entries", "reader_preferences", "chapter_progress",
-      "comments", "comment_reports", "notification_cursors", "notifications", "action_events",
+      "comments", "comment_reports", "notification_cursors", "notification_pending", "notifications", "action_events",
     ]) {
       const rows = await db.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
       assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);

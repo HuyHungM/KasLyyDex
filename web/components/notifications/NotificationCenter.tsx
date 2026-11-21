@@ -17,6 +17,7 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [partialWarning, setPartialWarning] = useState(false);
 
   const inbox = useRemoteResource<NotificationListDto>(
     signedIn ? "/api/v1/notifications?limit=20" : null,
@@ -38,8 +39,12 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
     if (!signedIn || !autoRefresh) return;
     let alive = true;
     void refreshChapterNotifications()
-      .then(() => { if (alive) reloadRef.current(); })
-      .catch(() => undefined);
+      .then((result) => {
+        if (!alive) return;
+        setPartialWarning(result.partial === true);
+        reloadRef.current();
+      })
+      .catch(() => { if (alive) setPartialWarning(false); });
     return () => { alive = false; };
   }, [identityKey, signedIn, autoRefresh]);
 
@@ -47,10 +52,12 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
     if (openedRefreshRef.current) return;
     openedRefreshRef.current = true;
     try {
-      await refreshChapterNotifications();
+      const result = await refreshChapterNotifications();
+      setPartialWarning(result.partial === true);
       reloadRef.current();
     } catch {
       // The inbox still loads existing notifications if the content check fails.
+      setPartialWarning(false);
     } finally {
       openedRefreshRef.current = false;
     }
@@ -124,6 +131,11 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
       {error ? <p className="account-error" role="alert">{error}</p> : null}
       {inbox.error ? <p className="account-error" role="alert">{inbox.error}</p> : null}
       {inbox.loading && !inbox.data ? <p className="account-hint">Đang tải thông báo…</p> : null}
+      {partialWarning ? (
+        <p className="account-error" role="status">
+          Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.
+        </p>
+      ) : null}
       {rows(items)}
       <div className="comment-actions">
         <button type="button" className="link-btn" disabled={busy || unreadIds.length === 0} onClick={() => void markRead(unreadIds)}>

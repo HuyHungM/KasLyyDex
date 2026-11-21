@@ -24,6 +24,7 @@ const MIGRATIONS = [
   "0002_comments_moderation.sql",
   "0003_community_cursor_scrub.sql",
   "0004_notification_feed_cursor.sql",
+  "0005_notification_pending.sql",
 ];
 const LEGACY_MIGRATIONS = MIGRATIONS.slice(0, 3);
 
@@ -687,7 +688,7 @@ test("chapter cursor advances through same-timestamp backlog without loss", asyn
   }
 });
 
-test("composite cursor compares chapter id when publish timestamps match", async () => {
+test("equal publish timestamps replay through the pending queue exactly once", async () => {
   const { pg, db } = await migratedDb();
   try {
     const reader = identity("opaque|reader");
@@ -707,8 +708,13 @@ test("composite cursor compares chapter id when publish timestamps match", async
       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
     const body = await response.json();
     assert.deepEqual(body, { checked: 1, created: 3, skipped: false, partial: false });
+    const second = await handle.notificationsRefreshPost(
+      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+    assert.equal((await second.json()).created, 2);
     const rows = await db.select().from(schema.notifications);
     assert.deepEqual(rows.map((item) => item.eventKey).sort(), [
+      `chapter:${reader.id}:m1:ch-1:vi`,
+      `chapter:${reader.id}:m1:ch-2:vi`,
       `chapter:${reader.id}:m1:ch-3:vi`,
       `chapter:${reader.id}:m1:ch-4:vi`,
       `chapter:${reader.id}:m1:ch-5:vi`,

@@ -145,8 +145,25 @@ export const notificationCursors = pgTable("notification_cursors", {
   // exclusive since bound, `scan_offset` walks its page within one timestamp.
   scanPublish: bigint("scan_publish", { mode: "number" }).notNull().default(0),
   scanOffset: integer("scan_offset").notNull().default(0),
+  // A timestamp cohort being reconciled. Pending rows are the deterministic
+  // replay queue for equal publish times whose upstream order is unspecified.
+  cohortPublish: bigint("cohort_publish", { mode: "number" }),
+  cohortComplete: boolean("cohort_complete").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [primaryKey({ columns: [table.userId, table.mangaId, table.language] })]);
+
+export const notificationPending = pgTable("notification_pending", {
+  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+  mangaId: text("manga_id").notNull(),
+  language: text("language").notNull(),
+  chapterId: text("chapter_id").notNull(),
+  publish: bigint("publish", { mode: "number" }).notNull(),
+  chapter: text("chapter"),
+  title: text("title"),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.mangaId, table.language, table.chapterId] }),
+  index("notification_pending_cohort_idx").on(table.userId, table.mangaId, table.language, table.publish),
+]);
 
 // Durable, sliding-window counters. pg_advisory_xact_lock in the service keeps
 // concurrent requests for one user/action from racing past the limit.

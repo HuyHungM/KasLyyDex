@@ -29,6 +29,7 @@ let next;
 let client;
 let requests = [];
 let chapters = [];
+let offsetWall = false;
 
 function waitForTcp(port, deadlineMs = 20_000) {
   return new Promise((resolve, reject) => {
@@ -69,14 +70,16 @@ function makeChapter(index, published) {
   };
 }
 
-async function migratedDb() {
+const MIGRATIONS = [
+  "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
+  "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
+  "0005_notification_pending.sql",
+];
+
+async function migratedDb(files = MIGRATIONS) {
   const pg = new PGlite();
   const db = drizzle(pg, { schema });
-  for (const file of [
-    "0000_application.sql", "0001_account_data.sql",
-    "0002_comments_moderation.sql", "0003_community_cursor_scrub.sql",
-    "0004_notification_feed_cursor.sql",
-  ]) {
+  for (const file of files) {
     try {
       await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
     } catch (error) {
@@ -84,6 +87,38 @@ async function migratedDb() {
     }
   }
   return { pg, db };
+}
+
+async function seedReader(db, cursor = null) {
+  await db.insert(schema.profiles).values({ userId: "opaque|reader" }).onConflictDoNothing();
+  await db.insert(schema.libraryEntries).values({
+    userId: "opaque|reader", mangaId: MANGA_ID, title: "Fixture", lang: "vi", status: "reading",
+    followedAt: BASE, lastReadPublish: 0, revision: 1,
+  }).onConflictDoNothing();
+  if (cursor) await db.insert(schema.notificationCursors).values(cursor);
+}
+
+function cursorAt(publish, id = "", offset = 0) {
+  return {
+    userId: "opaque|reader", mangaId: MANGA_ID, language: "vi",
+    lastPublish: publish, lastChapterId: id, scanPublish: publish, scanOffset: offset,
+  };
+}
+
+function tied(id, publish, index) {
+  const chapter = makeChapter(index, publish);
+  return { ...chapter, id };
+}
+
+async function drain(db, limit = 60) {
+  for (let attempt = 0; attempt < limit; attempt += 1) {
+    const response = await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    const notes = await db.select().from(schema.notifications);
+    if (body.created === 0 && notes.length > 0) break;
+  }
+  return db.select().from(schema.notifications);
 }
 
 function request(path, init = {}) {
@@ -133,11 +168,13 @@ before(async () => {
       }
       let items = chapters;
       if (since) items = items.filter((item) => Date.parse(item.attributes.publishAt) > Date.parse(since));
+      // Stable sort: equal publish timestamps preserve fixture insertion order.
       items = [...items].sort((a, b) => {
         const published = Date.parse(a.attributes.publishAt) - Date.parse(b.attributes.publishAt);
         return order === "desc" ? -published : published;
       });
-      return json(res, { total: items.length, data: items.slice(offset, offset + limit) });
+      const total = offsetWall ? 12_000 : items.length;
+      return json(res, { total, data: items.slice(offset, offset + limit) });
     }
     return json(res, { total: 0, data: [] });
   });
@@ -265,6 +302,147 @@ test("same-timestamp backlog crossing a page edge drains exactly once", async ()
     chapters.splice(chapters.length - tied.length, tied.length);
   } finally {
     await pg.close();
+  }
+});
+
+test("reviewer counterexample: reverse equal-time ids are all emitted exactly once", async () => {
+  const original = chapters;
+  const tie = BASE + 145 * DAY;
+  try {
+    chapters = ["z", "y", "x", "w", "v"].map((suffix, index) => tied(`tie-${suffix}`, tie, 6000 + index));
+    const { pg, db } = await migratedDb();
+    try {
+      await seedReader(db, cursorAt(tie - 1000));
+      const notes = await drain(db, 12);
+      assert.equal(notes.length, 5, "no tied id may be lost behind a local-rank offset");
+      assert.equal(new Set(notes.map((item) => item.eventKey)).size, 5);
+      assert.match(notes[0].body, /Chương|Chapter/, "notification body stays readable, not an opaque id");
+    } finally {
+      await pg.close();
+    }
+  } finally {
+    chapters = original;
+  }
+});
+
+test("shuffled equal-time backlog crossing the page edge drains exactly once", async () => {
+  const original = chapters;
+  const tie = BASE + 146 * DAY;
+  try {
+    const ids = Array.from({ length: 105 }, (_, index) => `tie-${String(index).padStart(3, "0")}`).reverse();
+    chapters = ids.map((id, index) => tied(id, tie, 7000 + index));
+    const { pg, db } = await migratedDb();
+    try {
+      await seedReader(db, cursorAt(tie - 1000));
+      const notes = await drain(db, 80);
+      assert.equal(notes.length, 105);
+      assert.equal(new Set(notes.map((item) => item.eventKey)).size, 105, "no duplicate notifications across replayed pages");
+    } finally {
+      await pg.close();
+    }
+  } finally {
+    chapters = original;
+  }
+});
+
+test("a tied row inserted between upstream pages is reconciled, not skipped", async () => {
+  const original = chapters;
+  const tie = BASE + 147 * DAY;
+  try {
+    chapters = Array.from({ length: 102 }, (_, index) => tied(`tie-${String(index).padStart(3, "0")}`, tie, 8000 + index)).reverse();
+    const { pg, db } = await migratedDb();
+    try {
+      await seedReader(db, cursorAt(tie - 1000));
+      const first = await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
+      assert.equal((await first.json()).created, 3);
+      chapters.splice(50, 0, tied("tie-new", tie, 9999));
+      const notes = await drain(db, 80);
+      assert.equal(notes.length, 103, "a row inserted between pages must still be observed");
+      assert.ok(notes.some((item) => item.eventKey.includes("tie-new")));
+      assert.equal(new Set(notes.map((item) => item.eventKey)).size, 103);
+    } finally {
+      await pg.close();
+    }
+  } finally {
+    chapters = original;
+  }
+});
+
+test("future publish candidates stay revisitable until they are eligible", async () => {
+  const original = chapters;
+  const future = BASE + 220 * DAY;
+  try {
+    chapters = [tied("future-1", future, 9001)];
+    const { pg, db } = await migratedDb();
+    try {
+      await seedReader(db, cursorAt(future - DAY));
+      const early = await handle(db, BASE + 200 * DAY).notificationsRefreshPost(
+        jsonRequest("/api/v1/notifications/refresh", "POST", {}));
+      assert.equal((await early.json()).created, 0);
+      const cursor = (await db.select().from(schema.notificationCursors))[0];
+      assert.equal(cursor.lastPublish, future - DAY, "future rows cannot consume the cursor");
+      const later = await handle(db, future + HOUR).notificationsRefreshPost(
+        jsonRequest("/api/v1/notifications/refresh", "POST", {}));
+      assert.equal((await later.json()).created, 1);
+      const repeat = await handle(db, future + HOUR).notificationsRefreshPost(
+        jsonRequest("/api/v1/notifications/refresh", "POST", {}));
+      assert.equal((await repeat.json()).created, 0);
+    } finally {
+      await pg.close();
+    }
+  } finally {
+    chapters = original;
+  }
+});
+
+test("upstream 10,000 offset wall reports partial instead of silent success", async () => {
+  offsetWall = true;
+  try {
+    const { pg, db } = await migratedDb();
+    try {
+      await seedReader(db, cursorAt(BASE + 100 * HOUR, "", 9900));
+      const response = await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
+      const body = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(body.partial, true, "the UI must be told the scan is incomplete");
+    } finally {
+      await pg.close();
+    }
+  } finally {
+    offsetWall = false;
+  }
+});
+
+test("0005 backfill replays same-publish legacy rows without duplicate notifications", async () => {
+  const original = chapters;
+  const legacy = BASE + 148 * DAY;
+  try {
+    chapters = ["v", "w", "z"].map((suffix, index) => tied(`tie-${suffix}`, legacy, 9500 + index));
+    const { pg, db } = await migratedDb(MIGRATIONS.slice(0, 5));
+    try {
+      await seedReader(db);
+      // Legacy cursor shape: migrations through 0004 have no cohort columns.
+      await pg.exec(`INSERT INTO notification_cursors
+        (user_id, manga_id, language, last_publish, last_chapter_id, scan_publish, scan_offset)
+        VALUES ('opaque|reader', '${MANGA_ID}', 'vi', ${legacy}, 'tie-v', ${legacy}, 0)`);
+      await db.insert(schema.notifications).values({
+        id: "legacy-v", userId: "opaque|reader", type: "new_chapter",
+        eventKey: `chapter:opaque|reader:${MANGA_ID}:tie-v:vi`,
+        title: "Chương mới", body: "legacy",
+      });
+      await pg.exec(await readFile(fileURLToPath(new URL(
+        "../drizzle/0005_notification_pending.sql", import.meta.url)), "utf8"));
+      const notes = await drain(db, 10);
+      const keys = notes.map((item) => item.eventKey);
+      assert.equal(notes.length, 3);
+      assert.ok(keys.some((key) => key.endsWith(":tie-w:vi")));
+      assert.ok(keys.some((key) => key.endsWith(":tie-z:vi")));
+      assert.equal(keys.filter((key) => key.endsWith(":tie-v:vi")).length, 1, "old row is not duplicated");
+    } finally {
+      await pg.close();
+    }
+  } finally {
+    chapters = original;
   }
 });
 

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { AppDatabase } from "./db/client";
 import * as tables from "./db/schema";
 import { ServiceError } from "./me/service";
@@ -26,6 +26,7 @@ const REPORT_WINDOW_MS = 3_600_000;
 const LIBRARY_SCAN_LIMIT = 20;
 const CHAPTERS_PER_MANGA = 3;
 const NOTIFICATION_FEED_LIMIT = 100;
+const COLLECTION_PAGES_PER_REFRESH = 2;
 const UPSTREAM_OFFSET_LIMIT = 10_000;
 const MAX_CHAPTER_AGE_MS = 5 * 60_000;
 // Neutral by construction: no reply body can survive moderation via the inbox.
@@ -559,11 +560,16 @@ function parsePublish(value: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-type FeedCandidate = { id: string; published: number };
+type FeedCandidate = {
+  id: string;
+  published: number;
+  chapter: string | null;
+  title: string;
+};
 
-// Raw string comparison, not localeCompare: the continuation is persisted and
-// must not depend on ICU/locale behaviour between workers.
-function compareCandidates(a: FeedCandidate, b: FeedCandidate): number {
+// Raw string comparison, not localeCompare: the replay queue must not depend
+// on ICU/locale behaviour between workers.
+function compareCandidates(a: { id: string; published: number }, b: { id: string; published: number }): number {
   if (a.published !== b.published) return a.published - b.published;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
@@ -572,9 +578,11 @@ function capOffset(offset: number): number {
   return Math.min(Math.max(0, offset), UPSTREAM_OFFSET_LIMIT - NOTIFICATION_FEED_LIMIT);
 }
 
-/// On-demand only: no background worker is started or implied. The first
-/// observation baselines the newest published chapter; later refreshes drain
-/// older unseen candidates through a bounded MangaDex continuation.
+/// On-demand only. Equal publish timestamps are reconciled through a persisted
+/// pending queue, because upstream id order is undocumented and offset shifts
+/// make local-rank offsets unsafe. Replaying overlapping pages with SQL
+/// deduplication is intentional; completeness under adversarial live offset
+/// shifts is not claimed and is surfaced as `partial`.
 export async function refreshFollowedChapters(
   db: Db,
   userId: string,
@@ -599,6 +607,7 @@ export async function refreshFollowedChapters(
 
     let created = 0;
     let partial = false;
+
     for (const entry of followed) {
       for (const language of ["vi", "en"] as const) {
         const cursorWhere = and(
@@ -606,9 +615,16 @@ export async function refreshFollowedChapters(
           eq(tables.notificationCursors.mangaId, entry.mangaId),
           eq(tables.notificationCursors.language, language),
         );
-        const existing = (await tx.select().from(tables.notificationCursors).where(cursorWhere).limit(1))[0];
+        const pendingWhere = and(
+          eq(tables.notificationPending.userId, userId),
+          eq(tables.notificationPending.mangaId, entry.mangaId),
+          eq(tables.notificationPending.language, language),
+        );
+        const loadCursor = async () =>
+          (await tx.select().from(tables.notificationCursors).where(cursorWhere).limit(1))[0];
+        const cursor = await loadCursor();
 
-        if (!existing) {
+        if (!cursor) {
           let page;
           try {
             // Descending publication order reaches the latest chapter even in a
@@ -621,9 +637,12 @@ export async function refreshFollowedChapters(
           }
           if (page.partial) partial = true;
           const fresh = page.items
-            .map((item) => ({ id: item.id, published: parsePublish(item.publish_at) }))
-            .filter((value): value is FeedCandidate => value.published !== null
-              && value.published <= now + MAX_CHAPTER_AGE_MS)
+            .map((item) => {
+              const published = parsePublish(item.publish_at);
+              return published !== null && published <= now + MAX_CHAPTER_AGE_MS
+                ? { id: item.id, published } : null;
+            })
+            .filter((value): value is { id: string; published: number } => value !== null)
             .sort(compareCandidates)
             .at(-1);
           if (!fresh) continue;
@@ -635,12 +654,146 @@ export async function refreshFollowedChapters(
           continue;
         }
 
-        const offset = capOffset(existing.scanOffset);
-        const since = new Date(existing.scanPublish).toISOString();
+        const alreadyNotified = async (chapterId: string): Promise<boolean> => {
+          const eventKey = `chapter:${userId}:${entry.mangaId}:${chapterId}:${language}`;
+          const rows = await tx.select({ id: tables.notifications.id })
+            .from(tables.notifications)
+            .where(and(eq(tables.notifications.userId, userId), eq(tables.notifications.eventKey, eventKey)))
+            .limit(1);
+          return rows.length > 0;
+        };
+
+        // Collect one timestamp cohort into the replay queue. Upstream id order
+        // is irrelevant: every observed row is stored by chapter id (PK), and a
+        // one-page overlap reconciles rows inserted between earlier pages.
+        const collectCohort = async (
+          current: typeof cursor,
+          cohortPublish: number,
+          initialPage: Awaited<ReturnType<ContentClient["notificationFeed"]>> | null,
+        ): Promise<{ offset: number; complete: boolean; failed: boolean }> => {
+          let offset = initialPage ? initialPage.offset : capOffset(current.scanOffset - NOTIFICATION_FEED_LIMIT);
+          let complete = false;
+          let expectedTotal: number | null = null;
+          for (let used = 0; used < COLLECTION_PAGES_PER_REFRESH && !complete; used += 1) {
+            let page = initialPage;
+            if (used > 0 || !page) {
+              try {
+                page = await content.notificationFeed(entry.mangaId, {
+                  lang: language,
+                  since: new Date(current.scanPublish).toISOString(),
+                  offset,
+                  limit: NOTIFICATION_FEED_LIMIT,
+                });
+              } catch {
+                return { offset: current.scanOffset, complete: false, failed: true };
+              }
+            }
+            if (page.partial || (page.total > UPSTREAM_OFFSET_LIMIT
+              && offset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT)) partial = true;
+            if (page.offset !== offset || (expectedTotal !== null && page.total !== expectedTotal)) {
+              // Provider pagination shifted while scanning; replay will reconcile
+              // overlaps, but the scan cannot be claimed complete.
+              partial = true;
+            }
+            expectedTotal = page.total;
+
+            for (const item of page.items) {
+              const published = parsePublish(item.publish_at);
+              if (published === null || published < cohortPublish) continue;
+              if (published > cohortPublish) {
+                complete = true;
+                continue;
+              }
+              if (published > now + MAX_CHAPTER_AGE_MS) continue; // future rows stay eligible
+              if (await alreadyNotified(item.id)) continue;
+              await tx.insert(tables.notificationPending).values({
+                userId, mangaId: entry.mangaId, language,
+                chapterId: item.id, publish: published,
+                chapter: item.chapter, title: item.title,
+              }).onConflictDoNothing();
+            }
+            if (complete) break;
+            if (page.items.length === 0) {
+              complete = true;
+              break;
+            }
+            const nextOffset = capOffset(offset + page.items.length);
+            if (nextOffset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT && page.total > UPSTREAM_OFFSET_LIMIT) {
+              break; // offset wall: keep the cohort open and report partial
+            }
+            if (nextOffset <= offset) break;
+            offset = nextOffset;
+            if (offset >= page.total) {
+              complete = true;
+              break;
+            }
+          }
+          return { offset, complete, failed: false };
+        };
+
+        const drainCohort = async (cohortPublish: number) => {
+          const batch = await tx.select().from(tables.notificationPending)
+            .where(and(pendingWhere, eq(tables.notificationPending.publish, cohortPublish)))
+            .orderBy(asc(tables.notificationPending.chapterId))
+            .limit(CHAPTERS_PER_MANGA);
+          for (const row of batch) {
+            const label = row.chapter ?? row.title ?? row.chapterId;
+            const emitted = await emitNotification(tx, {
+              userId,
+              type: "new_chapter",
+              eventKey: `chapter:${userId}:${entry.mangaId}:${row.chapterId}:${language}`,
+              title: "Chương mới",
+              body: `${entry.title} — Chương ${label} (${language})`,
+              href: `/read/${row.chapterId}?manga=${encodeURIComponent(entry.mangaId)}&lang=${language}`,
+            });
+            if (emitted) created += 1;
+            await tx.delete(tables.notificationPending).where(and(
+              pendingWhere,
+              eq(tables.notificationPending.chapterId, row.chapterId),
+            ));
+          }
+          if (batch.length > 0) {
+            await tx.update(tables.notificationCursors).set({
+              lastPublish: cohortPublish,
+              lastChapterId: batch.at(-1)!.chapterId,
+              updatedAt: date(now),
+            }).where(cursorWhere);
+          }
+          const remaining = await tx.select({ id: tables.notificationPending.chapterId })
+            .from(tables.notificationPending).where(pendingWhere).limit(1);
+          const current = await loadCursor();
+          if (remaining.length === 0 && current?.cohortComplete) {
+            await tx.update(tables.notificationCursors).set({
+              scanPublish: cohortPublish,
+              cohortPublish: null,
+              cohortComplete: false,
+              scanOffset: 0,
+              updatedAt: date(now),
+            }).where(cursorWhere);
+          }
+        };
+
+        if (cursor.cohortPublish !== null) {
+          const collected = await collectCohort(cursor, cursor.cohortPublish, null);
+          if (!collected.failed) {
+            await tx.update(tables.notificationCursors).set({
+              scanOffset: collected.offset,
+              cohortComplete: collected.complete,
+              updatedAt: date(now),
+            }).where(cursorWhere);
+          }
+          await drainCohort(cursor.cohortPublish);
+          continue;
+        }
+
+        const offset = capOffset(cursor.scanOffset);
         let page;
         try {
           page = await content.notificationFeed(entry.mangaId, {
-            lang: language, since, offset, limit: NOTIFICATION_FEED_LIMIT,
+            lang: language,
+            since: new Date(cursor.scanPublish).toISOString(),
+            offset,
+            limit: NOTIFICATION_FEED_LIMIT,
           });
         } catch {
           // An upstream failure never moves the persisted continuation.
@@ -648,68 +801,42 @@ export async function refreshFollowedChapters(
         }
         if (page.partial || (page.total > UPSTREAM_OFFSET_LIMIT
           && offset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT)) partial = true;
+        const firstValid = page.items
+          .map((item) => {
+            const published = parsePublish(item.publish_at);
+            return published !== null && published <= now + MAX_CHAPTER_AGE_MS
+              ? {
+                id: item.id,
+                published,
+                chapter: item.chapter ?? null,
+                title: item.title ?? null,
+              }
+              : null;
+          })
+          .filter((value): value is FeedCandidate => value !== null)
+          .sort(compareCandidates)[0];
+        if (!firstValid) continue; // only future or invalid rows: remain revisitable
 
-        const decorated = page.items.map((item) => {
-          const published = parsePublish(item.publish_at);
-          const valid = published !== null && published <= now + MAX_CHAPTER_AGE_MS;
-          return valid
-            ? { id: item.id, published: published!, valid: true as const }
-            : { id: item.id, published: published ?? 0, valid: false as const };
-        });
-        const cursor: FeedCandidate = { id: existing.lastChapterId ?? "", published: existing.lastPublish };
-        const candidates = decorated
-          .filter((value): value is FeedCandidate & { valid: true } =>
-            value.valid && compareCandidates(value, cursor) > 0)
-          .sort(compareCandidates);
-        if (candidates.length === 0) {
-          // Only skip rows that cannot become notifications (invalid/duplicate).
-          if (page.items.length > 0) {
-            await tx.update(tables.notificationCursors).set({
-              scanOffset: capOffset(offset + page.items.length), updatedAt: date(now),
-            }).where(cursorWhere);
-          }
-          continue;
+        if (!(await alreadyNotified(firstValid.id))) {
+          await tx.insert(tables.notificationPending).values({
+            userId, mangaId: entry.mangaId, language,
+            chapterId: firstValid.id, publish: firstValid.published,
+            chapter: firstValid.chapter, title: firstValid.title,
+          }).onConflictDoNothing();
         }
-
-        const pending = candidates.slice(0, CHAPTERS_PER_MANGA);
-        for (const candidate of pending) {
-          const emitted = await emitNotification(tx, {
-            userId,
-            type: "new_chapter",
-            eventKey: `chapter:${userId}:${entry.mangaId}:${candidate.id}:${language}`,
-            title: "Chương mới",
-            body: `${entry.title} — ${candidate.id} (${language})`,
-            href: `/read/${candidate.id}?manga=${encodeURIComponent(entry.mangaId)}&lang=${language}`,
-          });
-          if (emitted) created += 1;
-        }
-
-        const last = pending.at(-1)!;
-        const consumed = decorated.filter((value) => !value.valid || compareCandidates(value, last) <= 0).length;
-        const nextOffset = capOffset(offset + Math.max(1, consumed));
-        const remainingTies = candidates
-          .slice(candidates.indexOf(last) + 1)
-          .some((value) => value.published === last.published);
-        const lastPageItem = page.items.at(-1);
-        const endsAtLastPublish = page.items.length === page.limit
-          && parsePublish(lastPageItem?.publish_at ?? "") === last.published;
-        if (!remainingTies && !endsAtLastPublish) {
-          // No same-time rows remain in reach: start a fresh since bound.
-          await tx.update(tables.notificationCursors).set({
-            lastPublish: last.published, lastChapterId: last.id,
-            scanPublish: last.published, scanOffset: 0, updatedAt: date(now),
-          }).where(cursorWhere);
-        } else {
-          // Keep the old since bound and skip only what this page consumed, so
-          // same-timestamp rows split across pages are not jumped over.
-          if (nextOffset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT && page.total > UPSTREAM_OFFSET_LIMIT) {
-            partial = true;
-          }
-          await tx.update(tables.notificationCursors).set({
-            lastPublish: last.published, lastChapterId: last.id,
-            scanOffset: nextOffset, updatedAt: date(now),
-          }).where(cursorWhere);
-        }
+        await tx.update(tables.notificationCursors).set({
+          cohortPublish: firstValid.published,
+          cohortComplete: false,
+          scanOffset: offset,
+          updatedAt: date(now),
+        }).where(cursorWhere);
+        const collected = await collectCohort(await loadCursor(), firstValid.published, page);
+        await tx.update(tables.notificationCursors).set({
+          scanOffset: collected.offset,
+          cohortComplete: collected.complete,
+          updatedAt: date(now),
+        }).where(cursorWhere);
+        await drainCohort(firstValid.published);
       }
     }
     return { checked: followed.length, created, skipped: false, partial };

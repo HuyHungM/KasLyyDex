@@ -61,12 +61,17 @@ function SyncedLibrary() {
     "/api/v1/me/library",
     identityKey,
   );
-  useEffect(() => {
-    // Opening the synced library is an explicit on-demand chapter check.
-    void refreshChapterNotifications().catch(() => undefined);
-  }, [identityKey]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [partialWarning, setPartialWarning] = useState(false);
+  useEffect(() => {
+    // Opening the synced library is an explicit on-demand chapter check.
+    let alive = true;
+    void refreshChapterNotifications()
+      .then((result) => { if (alive) setPartialWarning(result.partial === true); })
+      .catch(() => { if (alive) setPartialWarning(false); });
+    return () => { alive = false; };
+  }, [identityKey]);
 
   if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải tủ truyện…</div>;
   if (remote.error || !remote.data) {
@@ -76,6 +81,11 @@ function SyncedLibrary() {
   return (
     <>
       {error ? <p className="account-error" role="alert">{error}</p> : null}
+      {partialWarning ? (
+        <p className="account-error" role="status">
+          Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.
+        </p>
+      ) : null}
       <div className="shelf-grid">
         {remote.data.items.map((entry) => (
           <div key={entry.mangaId} className="surface shelf-card">

@@ -241,3 +241,55 @@ npm run build                                      # pass
 - Upstream does not sort equal `publishAt` rows by id. The app uses local raw-id ordering plus persisted offset continuation; that is dependable for the locally verified fixture but must be re-smoke-tested against live MangaDex.
 - `cargo fmt` over the whole `core` crate would also reformat pre-existing baseline files (`imgcache.rs`, `lib.rs`), so only the three touched Rust files were `rustfmt --check`ed and the unrelated formatting drift was left alone.
 - No live Neon, Google OAuth or Vercel verification was performed; no deployment, push or merge occurred.
+
+---
+
+## Fix round 3 — equal-publish continuation and partial visibility
+
+Round 2's offset was derived from a locally sorted candidate rank. The reviewer's reverse-id counterexample (`z,y,x,w,v` at one publish time) proved `y,z` were lost because upstream id order is undocumented. Round 3 replaces that mechanism rather than adjusting the fixture.
+
+### RED evidence
+
+```bash
+cd web
+node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs
+# 11 tests / 6 pass / 5 fail: reviewer reverse-id case, shuffled cross-page
+# backlog, tied row inserted between pages, future revisit, legacy backfill.
+
+node --test --test-name-pattern "partial chapter scan" scripts/community-playwright.test.mjs
+# 1 test / 0 pass / 1 fail: refresh returned partial:true but the UI showed no warning.
+```
+
+### Algorithm invariants now enforced
+
+- No upstream offset is computed from a local sort rank. A timestamp cohort is collected into an application-owned `notification_pending` queue keyed by `(user, manga, language, chapter_id)`; SQL PK/`alreadyNotified` checks make replay idempotent.
+- Pending rows are drained deterministically by raw string id order, 3 per refresh. A cohort is only closed when pending is empty **and** collection saw a later publish time or exhausted the feed. Same-time rows split across pages, or inserted between pages, are re-observed through a one-page overlap and enqueued again only if not already notified.
+- `scan_publish` is the exclusive fully-processed bound; `cohort_publish`/`cohort_complete`/`scan_offset` are persisted continuation state. Empty or failed upstream pages leave these values untouched; rows published after the injected `now` are never consumed.
+- `0005_notification_pending.sql` creates the queue, adds cohort columns, and rewinds legacy `scan_publish` by one second so same-time legacy rows are replayed with dedup instead of silently skipped.
+- Notification body now uses the typed `ChapterDto.chapter`/`title` (`Chương <label>`) instead of the opaque chapter id.
+- `partial` is typed through `refreshChapterNotifications()` into the notification center and synced library; both show *“Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.”* when true. MangaDex offset/total shifts and the 10,000 offset wall set `partial`; no fake readiness is claimed.
+
+### GREEN evidence
+
+```bash
+cd web
+node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs
+# 11 tests / 11 pass / 0 fail (real Axum + Next client + 2500-chapter fixture)
+node --import tsx --conditions=react-server --test scripts/community.test.mjs scripts/database.test.mjs
+# 25 tests / 25 pass / 0 fail
+node --test scripts/community-playwright.test.mjs
+# 6 tests / 6 pass / 0 fail (includes partial warning and refresh scope)
+npm run test:task7                                 # 86 tests / 86 pass / 0 fail
+npx tsc --noEmit                                   # pass
+npm run lint                                       # 0 errors, 7 pre-existing warnings
+npm run build                                      # pass
+git diff --cached --check                          # pass before commit
+```
+
+Rust was unchanged in this round; the round-2 `cargo test`, clippy and touched-file `rustfmt --check` results remain applicable.
+
+### Hard limits, stated plainly
+
+- Arbitrary shifting upstream offsets cannot be made perfectly snapshot-consistent without provider guarantees. The app detects offset/echo/total mismatches, marks `partial`, and deterministically replays overlapping pages with SQL dedup; a live adversarial shift could still delay discovery of a row until a later reconciliation.
+- MangaDex's 10,000 offset wall remains a hard provider limit; `partial: true` is surfaced to the UI instead of a success claim.
+- No live Neon, Google OAuth, Vercel or real MangaDex verification was performed; no push, deployment or merge occurred.

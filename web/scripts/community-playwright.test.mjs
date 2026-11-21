@@ -287,6 +287,24 @@ test("chapter refresh only runs on library, notification entry or explicit panel
   }
 });
 
+test("partial chapter scan shows a non-success warning in the notification center", async () => {
+  const { context, page } = await signedInPage([
+    ["**/api/v1/notifications/refresh", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ checked: 3, created: 0, skipped: false, partial: true }),
+    })],
+    ["**/api/v1/notifications?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(notifications) })],
+    ["**/api/v1/moderation/access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ moderator: false }) })],
+  ]);
+  try {
+    await page.goto(`${baseUrl}/thong-bao`, { waitUntil: "networkidle" });
+    await page.getByText(/chưa đầy đủ/).waitFor({ timeout: 10_000 });
+    assert.ok((await page.locator(".notification-page").textContent()).includes("giới hạn nhà cung cấp"));
+  } finally {
+    await context.close();
+  }
+});
+
 test("notification center shows an unread badge and marks only owned ids read", async () => {
   const reads = [];
   let unreadCount = 2;
