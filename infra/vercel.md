@@ -1,52 +1,79 @@
-# Vercel deployment — Task 3 local baseline
+# Vercel deployment — Task 4 local integration status
 
-## What exists locally
+## No deployment in this task
 
-- Next.js app directory: `web/`. Framework: Next.js 16.4.6. Build: `npm run build`.
-- Default Next.js output (no `output: "export"` or standalone override); Vercel uses its
-  native Next.js adapter.
-- `GET /api/v1/health` returns `{ ok: true, version }` with `version` read from
-  `web/package.json`. It is prerendered as a static route: no runtime env, database,
-  auth, metrics, or secret access.
-- Existing reader/catalog routes are unchanged: `/`, `/search`, `/manga/[id]`,
-  `/read/[chapterId]`, `/api/img`, `/api/pages/[chapterId]`.
+No Vercel deployment, project creation, linking, domain setup or environment-variable
+write happened during Task 4. Cloud work remains paused by owner decision. A prior
+`create_project` request returned `402 resource_creation_blocked` (team exceeded
+fair-use limits); no Vercel project was created. Do not bypass that limit with a
+temporary project, new team, or alternate account.
+
+Current Vercel documentation also states that the **first deployment of a brand-new
+project is always Production**, even when requested with `--target preview`. The
+first-deploy target and domain decision must be resolved with the owner before any
+future deployment. This document does not claim a Preview URL exists.
+
+## Local code added
+
+- `web/lib/auth/server.ts` uses the officially published `@neon/auth@0.8.2`
+  server entry point `@neon/auth/next/server` (`createNeonAuth`). Configuration is
+  lazy and server-only; missing or invalid `NEON_AUTH_BASE_URL` /
+  `NEON_AUTH_COOKIE_SECRET` returns a structured 503 from `/api/auth/*` only.
+- `web/lib/auth/client.ts` uses `@neon/auth/next` and exposes the Google social
+  sign-in call. Google provider settings themselves are owned by the Neon branch;
+  no OAuth credentials are read in the browser bundle.
+- `web/lib/db/client.ts` creates a pooled `pg` client and Drizzle instance only on
+  first use. No `DATABASE_URL` is needed for builds, public pages or health.
+- `web/lib/contracts.ts` holds browser-safe typed content contracts/client and
+  the shared error envelope.
+- `web/app/api/content/[...path]/route.ts` is the same-origin content boundary.
+  Without `RUST_CONTENT_API_ORIGIN` it returns a structured 503; it never invents
+  a fake response.
+- `web/app/api/v1/health` and `/` remain credential-free.
+
+## Environment names (values are owner-supplied, never committed)
+
+```
+NEON_AUTH_BASE_URL
+NEON_AUTH_COOKIE_SECRET
+DATABASE_URL
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+RUST_CONTENT_API_ORIGIN
+NEXT_PUBLIC_APP_URL
+```
+
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` document the owner-managed Google
+provider inputs; the current SDK adapter does not consume them in Next. Never
+prefix server secrets with `NEXT_PUBLIC_`.
 
 ## Local verification
 
-Run from `web/`:
+From `web/`:
 
 ```bash
 npm ci
-npm run test:smoke                  # build + node --test scripts/smoke.test.mjs
 npx tsc --noEmit
-npx eslint app/api/v1/health/route.ts scripts/smoke.test.mjs
-npm run lint                        # see known baseline errors below
+npm run test:task4
+npm run test:smoke
+npx eslint lib/auth lib/contracts.ts lib/db app/api/auth app/api/content drizzle.config.ts next.config.ts scripts
+npm run lint   # four pre-existing set-state-in-effect errors remain
 ```
 
-`npm run test:smoke` starts the built app with Neon/auth-related environment keys
-removed and asserts that `/` returns 200 with KasLyyDex branding and that
-`/api/v1/health` returns exactly `ok` and `version`.
+`npm run test:task4` builds Next, builds the Axum server, then runs the auth,
+PGlite migration and local Next→Axum content tests with Node's built-in runner.
+The auth and JWT/JWKS tests use local fixtures only; they do not prove a Neon
+project, Google OAuth tenant, or live token exchange works.
 
-Full `npm run lint` still reports four pre-existing `react-hooks/set-state-in-effect`
-errors in `components/chapter-list.tsx`, `components/continue-reading.tsx`,
-`components/manga-actions.tsx`, and `components/reader.tsx`. They are unrelated to
-Task 3 and were not suppressed or refactored here.
+Full `npm run lint` still reports the four pre-existing
+`react-hooks/set-state-in-effect` errors in `components/chapter-list.tsx`,
+`components/continue-reading.tsx`, `components/manga-actions.tsx` and
+`components/reader.tsx`. None were suppressed or refactored here.
 
-## Owner-owned Preview steps (not executed in this task)
+## Explicit unverified gates
 
-1. `vercel login` with the account that owns the existing project.
-2. Link the repo to that project with `vercel link` from the repository root and keep
-   Project Settings → Root Directory as `web` (or link from `web/` if that project
-   already targets `web` as its root).
-3. Confirm Framework Preset is Next.js and Build Command is `npm run build`.
-4. Keep this Preview credential-free: do **not** set `DATABASE_URL`,
-   `BETTER_AUTH_SECRET`, `NEON_*`, `GOOGLE_CLIENT_*`, or other auth/Neon values.
-5. Create a Preview with `vercel deploy` (no `--prod`). Do not promote to Production.
-6. Verify `<preview-url>/` returns 200 and shows KasLyyDex, and
-   `<preview-url>/api/v1/health` returns `{ "ok": true, "version": "..." }`.
-7. Record the Preview URL only in the ignored SDD report
-   (`docs/superpowers/sdd/kaslyydex-phase-1-2/task-3-report.md`), never in source.
-
-Task 4 depends on that verified Preview before connecting Neon Managed Auth. This
-document is extended there with Axum `/api/content/*` and `RUST_CONTENT_API_ORIGIN`
-notes.
+- Neon Managed Auth enablement on any branch.
+- Google OAuth provider configuration with owner credentials.
+- Live Neon permission and schema/migration application.
+- Real Google sign-in and live JWT/JWKS verification.
+- Any Vercel Preview or Production deployment, domain or environment wiring.

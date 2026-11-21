@@ -14,6 +14,7 @@ const LIST_PARAMS: &str = "&includes[]=cover_art&includes[]=author&contentRating
 #[derive(Clone)]
 pub struct Md {
     pub http: reqwest::Client,
+    api: String,
     popular: Cache<(), Arc<Vec<MangaSummaryDto>>>,
     latest: Cache<(), Arc<Vec<LatestMangaDto>>>,
     search: Cache<String, Arc<SearchResponse>>,
@@ -31,8 +32,16 @@ fn api_err(e: impl std::fmt::Display) -> Err {
 
 impl Md {
     pub fn new(http: reqwest::Client) -> Self {
+        // Local fixture override for the Next -> Axum topology tests. Production
+        // keeps the upstream MangaDex origin unless this is explicitly set.
+        let api = std::env::var("MANGADEX_API_ORIGIN")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| API.to_owned());
         Self {
             http,
+            api,
             popular: Cache::builder()
                 .time_to_live(Duration::from_secs(60))
                 .max_capacity(1)
@@ -67,7 +76,7 @@ impl Md {
     async fn get(&self, path: &str) -> Result<Value, Err> {
         let res = self
             .http
-            .get(format!("{API}{path}"))
+            .get(format!("{}{path}", self.api))
             .send()
             .await
             .map_err(api_err)?;
@@ -466,6 +475,15 @@ fn summary_with_stats(manga: &Value, stats: &Value) -> Option<MangaSummaryDto> {
     Some(item)
 }
 
+/// Shared identifier guard for content handlers on both API namespaces.
+pub fn is_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
 pub fn sort_param(sort: &str) -> Option<&'static str> {
     Some(match sort {
         "follows" => "order[followedCount]=desc",
@@ -566,6 +584,19 @@ fn latest_groups(feed: &Value) -> Vec<(&str, Vec<LatestChapterDto>)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn content_ids_are_uuids_and_never_opaque_auth_ids() {
+        assert!(is_uuid("391b0423-d847-456f-aff0-8b0cfc03066b"));
+        for bad in [
+            "not-a-uuid",
+            "google|opaque",
+            "",
+            "391b0423d847456faff08b0cfc03066b",
+        ] {
+            assert!(!is_uuid(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn catalog_filters_use_known_upstream_values() {

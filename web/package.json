@@ -7,22 +7,32 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:smoke": "npm run build && node --test scripts/smoke.test.mjs"
+    "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+    "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs"
   },
   "dependencies": {
+    "@neon/auth": "^0.8.2",
+    "drizzle-orm": "^0.45.4",
+    "jose": "^6.2.18",
     "next": "16.4.6",
+    "pg": "^8.23.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "server-only": "^0.0.1",
     "undici": "^8.12.4"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.17",
     "@tailwindcss/turbopack": "4.3.3",
     "@types/node": "^20",
+    "@types/pg": "^8.15.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
     "tailwindcss": "4.3.3",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

@@ -5,6 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use contracts::{ApiError, ApiErrorEnvelope};
+use manga_core::mangadex::is_uuid;
 use manga_core::Md;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -104,14 +105,6 @@ fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
         status: status.map(str::to_owned),
         sort: sort.to_owned(),
     })
-}
-
-fn is_uuid(id: &str) -> bool {
-    id.len() == 36
-        && id.bytes().enumerate().all(|(i, b)| match i {
-            8 | 13 | 18 | 23 => b == b'-',
-            _ => b.is_ascii_hexdigit(),
-        })
 }
 
 async fn tags(State(md): State<Md>) -> Result<Response, Err> {
@@ -229,6 +222,21 @@ async fn static_cache_headers(
     res
 }
 
+/// Browser-facing content namespace. Legacy /api/* paths remain registered
+/// below for existing native/UI clients; both share these handlers and state.
+fn content_routes() -> Router<Md> {
+    Router::new()
+        .route("/api/content/popular", get(popular))
+        .route("/api/content/latest", get(latest))
+        .route("/api/content/search", get(search))
+        .route("/api/content/tags", get(tags))
+        .route("/api/content/rank", get(rank))
+        .route("/api/content/manga/{id}", get(manga))
+        .route("/api/content/manga/{id}/chapters", get(chapters))
+        .route("/api/content/chapter/{id}/pages", get(pages))
+        .route("/api/content/img", get(img))
+}
+
 #[tokio::main]
 async fn main() {
     let md = Md::new(manga_core::dns::PublicDns::client());
@@ -245,6 +253,7 @@ async fn main() {
         .route("/api/manga/{id}/chapters", get(chapters))
         .route("/api/chapter/{id}/pages", get(pages))
         .route("/api/img", get(img))
+        .merge(content_routes())
         .fallback_service(spa)
         .layer(axum::middleware::from_fn(static_cache_headers))
         .layer(CompressionLayer::new())
@@ -295,6 +304,26 @@ mod tests {
         assert_eq!(query.tags, [id]);
         assert_eq!(query.sort, "rating");
         assert!(query.q.is_empty());
+    }
+
+    #[tokio::test]
+    async fn content_handlers_reject_invalid_ids_before_any_upstream_call() {
+        let md = Md::new(manga_core::dns::PublicDns::client());
+        for (result, message) in [
+            (
+                manga(State(md.clone()), Path("not-a-uuid".into())).await,
+                "manga",
+            ),
+            (
+                chapters(State(md.clone()), Path("google|opaque".into())).await,
+                "chapters",
+            ),
+            (pages(State(md), Path("short".into())).await, "pages"),
+        ] {
+            let (status, Json(body)) = result.unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+            assert_eq!(body.error.code, "VALIDATION_ERROR", "{message}");
+        }
     }
 
     #[test]
