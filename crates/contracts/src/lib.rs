@@ -77,6 +77,8 @@ pub struct ChapterDto {
     pub source: String,
     #[serde(default = "default_source_label")]
     pub source_label: String,
+    #[serde(default)]
+    pub readable: bool,
 }
 
 fn default_source() -> String {
@@ -262,6 +264,7 @@ mod tests {
             group: String::new(),
             source: "mangadex".into(),
             source_label: "MangaDex".into(),
+            readable: true,
         };
         let chapters = serde_json::to_value(chapter).unwrap();
         for field in [

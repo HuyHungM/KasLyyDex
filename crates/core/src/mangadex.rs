@@ -505,6 +505,8 @@ fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<
         group,
         source: "mangadex".to_owned(),
         source_label: "MangaDex".to_owned(),
+        readable: attributes["pages"].as_u64().unwrap_or(0) > 0
+            && attributes["externalUrl"].as_str().is_none(),
     })
 }
 
