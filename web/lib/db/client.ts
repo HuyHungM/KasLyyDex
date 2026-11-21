@@ -53,6 +53,8 @@ function connect(url: string) {
   return { pool, db: drizzle({ client: pool, schema }) };
 }
 
+export type AppDatabase = ReturnType<typeof connect>["db"];
+
 let connection: ReturnType<typeof connect> | undefined;
 
 // Pool creation stays lazy so builds and public routes need no DATABASE_URL.

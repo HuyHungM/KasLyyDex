@@ -8,16 +8,23 @@ import { getTableName } from "drizzle-orm";
 const { readDatabaseConfig } = await import("../lib/db/client.ts");
 const { profiles } = await import("../lib/db/schema.ts");
 
-const migrationUrl = new URL("../drizzle/0000_application.sql", import.meta.url);
+const migrationUrls = [
+  new URL("../drizzle/0000_application.sql", import.meta.url),
+  new URL("../drizzle/0001_account_data.sql", import.meta.url),
+];
 
 async function freshDatabase() {
   const db = new PGlite();
-  const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
-  await db.exec(sql);
+  let sql = "";
+  for (const url of migrationUrls) {
+    const next = await readFile(fileURLToPath(url), "utf8");
+    sql += `${next}\n`;
+    await db.exec(next);
+  }
   return { db, sql };
 }
 
-test("application migration owns only profiles and never touches Neon Auth tables", async () => {
+test("application migrations own account tables and never touch Neon Auth tables", async () => {
   const { db, sql } = await freshDatabase();
   try {
     assert.doesNotMatch(sql, /neon_auth/i, "Drizzle SQL must not manage Neon-owned identity tables");
@@ -31,8 +38,14 @@ test("application migration owns only profiles and never touches Neon Auth table
     `);
     assert.deepEqual(
       tables.rows.map((row) => `${row.table_schema}.${row.table_name}`),
-      ["public.profiles"],
-      "only the application profiles table may be created",
+      [
+        "public.chapter_progress",
+        "public.library_entries",
+        "public.profiles",
+        "public.reader_preferences",
+        "public.user_roles",
+      ],
+      "only application-owned account tables may be created",
     );
 
     const columns = await db.query(`
@@ -45,6 +58,10 @@ test("application migration owns only profiles and never touches Neon Auth table
       { column_name: "user_id", data_type: "text", is_nullable: "NO" },
       { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO" },
       { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
+      { column_name: "username", data_type: "text", is_nullable: "YES" },
+      { column_name: "display_name", data_type: "text", is_nullable: "YES" },
+      { column_name: "avatar_url", data_type: "text", is_nullable: "YES" },
+      { column_name: "total_xp", data_type: "integer", is_nullable: "NO" },
     ]);
 
     const pk = await db.query(`
@@ -88,6 +105,39 @@ test("profiles accept opaque user ids and enforce uniqueness inside a transactio
     );
     const rolledBack = await db.query("SELECT user_id FROM profiles WHERE user_id = $1", ["rollback-user"]);
     assert.equal(rolledBack.rows.length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("account tables enforce ownership keys, unique usernames and cascade cleanup", async () => {
+  const { db } = await freshDatabase();
+  try {
+    await db.exec("INSERT INTO profiles (user_id) VALUES ('opaque-1'), ('opaque-2');");
+    await db.exec("INSERT INTO user_roles (user_id, role) VALUES ('opaque-1', 'admin');");
+    await db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'One', 100);");
+    await db.exec("INSERT INTO reader_preferences (user_id) VALUES ('opaque-1');");
+    await db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 3, 3, 10, 100);");
+
+    await assert.rejects(
+      db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'Duplicate', 200);"),
+      /duplicate key|unique/i,
+    );
+    await assert.rejects(
+      db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 9, 9, 10, 200);"),
+      /duplicate key|unique/i,
+    );
+    await db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-1';");
+    await assert.rejects(
+      db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-2';"),
+      /duplicate key|unique/i,
+    );
+
+    await db.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
+    for (const table of ["user_roles", "library_entries", "reader_preferences", "chapter_progress"]) {
+      const rows = await db.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
+      assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
+    }
   } finally {
     await db.close();
   }
