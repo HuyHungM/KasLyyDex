@@ -49,7 +49,7 @@ function request(path, init = {}, origin = "http://localhost") {
 
 function api(db, user = identity(), overrides = {}) {
   return createMeApi({
-    db,
+    db: () => db,
     identity: async () => user,
     now: () => now,
     allowlist: overrides.allowlist ?? [],
@@ -57,14 +57,17 @@ function api(db, user = identity(), overrides = {}) {
 }
 
 let configuredNext;
+let unconfiguredNext;
+let authFixture;
 let fixtureSession;
 
 before(async () => {
+  unconfiguredNext = await startNext();
   // Loopback managed-auth fixture: the SAME SDK proxy used in production sends
   // the requests and rewrites the session cookies; no fake session is minted by
   // application code.
   const { startHttpServer } = await import("./test-helpers.mjs");
-  const fixture = await startHttpServer((req, res, body) => {
+  authFixture = await startHttpServer((req, res, body) => {
     if (req.url?.includes("get-session")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
@@ -90,9 +93,8 @@ before(async () => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, body }));
   });
-  try {
-    configuredNext = await startNext({
-      NEON_AUTH_BASE_URL: `${fixture.baseUrl}/neondb/auth`,
+  configuredNext = await startNext({
+      NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
       NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
     });
     const signIn = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
@@ -107,13 +109,37 @@ before(async () => {
     assert.equal(sessionRes.status, 200);
     fixtureSession = await sessionRes.json();
     assert.equal(fixtureSession.user.id, "google|opaque-42");
-  } finally {
-    await fixture.close();
-  }
 });
 
 after(async () => {
   await stop(configuredNext?.child);
+  await stop(unconfiguredNext?.child);
+  await authFixture?.close();
+});
+
+test("server routes fail closed when auth or database configuration is absent", async () => {
+  const noAuth = await fetch(`${unconfiguredNext.baseUrl}/api/v1/me`);
+  assert.equal(noAuth.status, 503);
+  assert.equal((await noAuth.json()).error.code, "AUTH_NOT_CONFIGURED");
+  assert.equal(noAuth.headers.get("cache-control"), "private, no-store");
+
+  const noDatabase = await fetch(`${configuredNext.baseUrl}/api/v1/me`, {
+    headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
+  });
+  assert.equal(noDatabase.status, 503);
+  assert.equal((await noDatabase.json()).error.code, "DATABASE_NOT_CONFIGURED");
+
+  const crossOrigin = await fetch(`${configuredNext.baseUrl}/api/v1/me/library/m1`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://evil.example",
+      cookie: "__Secure-neon-auth.session_token=fixture",
+    },
+    body: JSON.stringify({ title: "One", lang: "vi", status: "reading", coverFile: null }),
+  });
+  assert.equal(crossOrigin.status, 403);
+  assert.equal((await crossOrigin.json()).error.code, "ORIGIN_REJECTED");
 });
 
 test("validators reject cross-origin mutations, oversize bodies and implausible timestamps", () => {
@@ -369,7 +395,7 @@ test("requests require authentication and account reads are private no-store", a
   const { pg, db } = await migratedDb();
   try {
     const handler = createMeApi({
-      db,
+      db: () => db,
       identity: async () => null,
       now: () => now,
       allowlist: [],
