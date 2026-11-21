@@ -10,6 +10,24 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-20-kaslyydex-platform-design.md`
 
+## Execution update — owner paused cloud deployment
+
+The owner requested GitHub publication first, then continued local implementation
+using subagents with `9router/opencode`. `main` and the feature branch were pushed
+through commit `4af9f17`. Vercel deployment and Neon/OAuth provisioning remain
+paused. Complete Tasks 4–9 locally using real SDK adapters, SQL migrations and
+tests; retain live Neon, Google OAuth, Preview and Production checks as unverified
+release gates. Do not deploy, create cloud resources, merge or push further
+changes as an automatic consequence of this local execution.
+
+Use test-only PostgreSQL embedding for migration/transaction verification if a
+local PostgreSQL server is unavailable; this does not replace or certify Neon
+integration. No fake sessions, default auth secrets or in-memory production
+database fallbacks are allowed.
+
+The latest execution decisions and task-specific acceptance details live in
+`docs/superpowers/sdd/kaslyydex-phase-1-2/progress.md` and `task-N-brief.md`.
+
 ## Global Constraints
 
 - Product name: `KasLyyDex`; keep native UI work deferred to Phase 3 Android and Phase 4 GPUI.
