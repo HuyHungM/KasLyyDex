@@ -49,6 +49,40 @@ origin case returns 503.
 `cargo fmt --check` still reports pre-existing formatting differences in unrelated
 files; the two Rust files touched by Task 4 were formatted with `rustfmt --edition 2021`.
 
+## Multi-source fallback (Tasks 2–4, gated in Task 10)
+
+- MangaDex stays the primary catalog. For each chapter that is external-only or
+  unreadable, `enrich_chapters` searches Comick (`/v1.0/search/` by normalized
+  title), fetches `/v1.0/comic/{hid}/chapters` (page 1, limit 12) and rewrites
+  the chapter to a provider-prefixed `comick:{hid}` ID with proxied page URLs.
+  No match, a Comick error, or an out-of-scope chapter keeps the original
+  external link; the MangaDex response shape is unchanged and legacy `/api/*`
+  aliases behave the same.
+- `COMICK_API_ORIGIN` overrides the Comick catalog origin (default
+  `https://api.comick.dev`) and is used by `web/scripts/source-fallback.test.mjs`
+  to run the real Axum binary against loopback MangaDex/Comick fixtures — no
+  remote call, credential, or deployment. Live catalog/ToS verification of both
+  providers remains a manual release gate and is not claimed as done.
+- The image proxy allowlists the verified Comick CDN host
+  (`meo.comick.pictures`, HTTPS/443, no credentials) with raw and decoded
+  path-traversal rejection; the browser only ever receives same-origin
+  `/api/img` URLs.
+- Source labels (`MangaDex` default for legacy DTOs, `Comick` for
+  provider-prefixed chapters) come from the shared contracts and are rendered by
+  the web UI; reader tickets and progression records bind the chapter source.
+
+## Gate notes (Task 10)
+
+- `cargo fmt -p core` fixed the two known pre-existing rustfmt hunks in
+  `crates/core/src/comick.rs` (lines ~119 and ~159); `core` is now part of the
+  scoped `cargo fmt --check` set in CI. Full-workspace fmt still carries older
+  Leptos debt, so it stays out of scope.
+- The tracked-file whitespace gate runs with
+  `web/scripts/whitespace-baseline.txt` (783 pre-existing findings in committed
+  `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff`); new findings still fail.
+- `npm run test:aggregate`/`test:browser` build the Axum binary via pretest
+  before suites spawn it; CI builds it as its own step first.
+
 ## Unverified
 
 No Axum service was deployed, exposed publicly, or connected to live Neon/Google

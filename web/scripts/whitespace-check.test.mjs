@@ -40,3 +40,28 @@ test("tracked-file whitespace gate RED on seeded file, GREEN after cleanup", () 
     rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test("--baseline tolerates listed findings but still fails on new ones", () => {
+  const fixture = join(webDir, ".test-cache", `whitespace-baseline-${process.pid}`);
+  mkdirSync(fixture, { recursive: true });
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: fixture });
+    writeFileSync(join(fixture, "old.txt"), "known line \n");
+    writeFileSync(join(fixture, "new.txt"), "new line \n");
+    execFileSync("git", ["add", "."], { cwd: fixture });
+    const baseline = join(fixture, "baseline.txt");
+    writeFileSync(baseline, "# comment\nold.txt:1:trailing-whitespace\n");
+
+    const tolerated = spawnSync(process.execPath, [script, "--baseline", baseline, fixture], { encoding: "utf8" });
+    assert.equal(tolerated.status, 1, tolerated.stderr);
+    assert.match(tolerated.stderr, /new\.txt:1: trailing-whitespace/);
+    assert.match(tolerated.stderr, /1 baselined/);
+
+    writeFileSync(baseline, "old.txt:1:trailing-whitespace\nnew.txt:1:trailing-whitespace\n");
+    const passed = spawnSync(process.execPath, [script, "--baseline", baseline, fixture], { encoding: "utf8" });
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.match(passed.stdout, /0 new findings \(2 baselined\)/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});

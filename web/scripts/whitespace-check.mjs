@@ -1,6 +1,9 @@
-// Usage: node scripts/whitespace-check.mjs [repoDir]
+// Usage: node scripts/whitespace-check.mjs [--baseline <file>] [repoDir]
 // Inspects tracked files from the checkout/index, unlike `git diff --check`
 // on a clean checkout. Reports file:line without printing file contents.
+// With --baseline, findings listed in the baseline file (`file:line:rule`
+// per line, `#` comments allowed) are pre-existing and do not fail the gate;
+// any new finding still fails.
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -18,6 +21,20 @@ export function scanText(text, file = "<text>") {
     }
   }
   return findings;
+}
+
+export function findingKey(finding) {
+  return `${finding.file}:${finding.line}:${finding.rule}`;
+}
+
+export async function loadBaseline(baselineFile) {
+  const text = await readFile(baselineFile, "utf8");
+  return new Set(
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#")),
+  );
 }
 
 export async function scanRepo(repoDir) {
@@ -38,19 +55,32 @@ export async function scanRepo(repoDir) {
   return { files: files.length, findings };
 }
 
-async function main(repoDir) {
+async function main(baselineFile, repoDir) {
   const { files, findings } = await scanRepo(resolve(repoDir));
-  if (findings.length > 0) {
-    for (const finding of findings) {
+  const baseline = baselineFile ? await loadBaseline(baselineFile) : new Set();
+  const fresh = findings.filter((finding) => !baseline.has(findingKey(finding)));
+  const known = findings.length - fresh.length;
+  if (fresh.length > 0) {
+    for (const finding of fresh) {
       console.error(`${finding.file}:${finding.line}: ${finding.rule}`);
     }
-    console.error(`whitespace check failed: ${findings.length} finding(s)`);
+    console.error(`whitespace check failed: ${fresh.length} new finding(s), ${known} baselined`);
     process.exitCode = 1;
     return;
   }
-  console.log(`whitespace check passed: ${files} tracked files inspected, 0 findings`);
+  console.log(
+    `whitespace check passed: ${files} tracked files inspected, ` +
+      (known > 0 ? `0 new findings (${known} baselined)` : "0 findings"),
+  );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await main(process.argv[2] ?? fileURLToPath(new URL("../..", import.meta.url)));
+  const args = process.argv.slice(2);
+  let baselineFile;
+  if (args[0] === "--baseline") {
+    baselineFile = args[1];
+    args.splice(0, 2);
+    if (!baselineFile) throw new Error("--baseline requires a file path");
+  }
+  await main(baselineFile, args[0] ?? fileURLToPath(new URL("../..", import.meta.url)));
 }

@@ -92,3 +92,38 @@ measurements above. Full commands and counts are in
   ticket forgery never grant ownership or XP.
 - External Neon/Google/Vercel verification and live browser-to-Neon SQL remain
   manual gates; no Preview or Production deployment was verified.
+
+## Multi-source reading UX + final local gate (Task 10)
+
+Exact commands, counts and rulings are in
+`docs/superpowers/sdd/kaslyydex-multi-source-ux/task-10-report.md`.
+
+- Source fallback: MangaDex is the primary catalog; per chapter that is
+  external-only or unreadable, the Axum service searches Comick by normalized
+  title and returns proxied Comick pages when a match exists. When there is no
+  match, Comick fails, or the chapter is out of scope, the original external
+  link is kept unchanged. Source labels (`MangaDex` default, `Comick`) render
+  after titles on home/detail cards, chapter rows and the reader toolbar;
+  legacy DTOs without `source` still work.
+- `COMICK_API_ORIGIN` is a test/local-only override for the Comick catalog
+  origin (default `https://api.comick.dev`); source-fallback fixtures run fully
+  on loopback through it. No credentials are involved and live provider/ToS
+  verification is still a manual release gate — not claimed here.
+- Reader theme defaults to `auto` (follows the site theme, no flash on load);
+  manual `light`/`sepia`/`dark` persist over it. Custom dropdown replaces
+  native selects everywhere with full keyboard support (Arrow/Home/End/Enter/
+  Space/Escape/Tab) and submits unchanged values via a hidden input. Skeletons
+  match content shape and all motion is guarded by `prefers-reduced-motion`;
+  broken reader images show a retry instead of a permanent skeleton.
+- Regression gate: `web/package.json` `test:aggregate` now includes
+  `source-contracts`, `source-fallback`, `source-ui`, `source-progression`,
+  `select`, `skeleton-motion` and `reader-theme`; a dedicated `test:source`
+  runs the same seven. Pretest hooks run `cargo build -p server` before
+  aggregate/browser suites spawn the Axum binary (ordering fix; without it
+  fixture tests false-RED on the missing binary). CI runs the same order.
+- Whitespace gate is baselined: 783 pre-existing findings in committed
+  `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` are listed in
+  `web/scripts/whitespace-baseline.txt`; any new finding still fails. The two
+  pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with
+  `cargo fmt -p core` and `core` joined the scoped `cargo fmt --check` set.
+- No deployment, push, merge, or live provider verification was performed.

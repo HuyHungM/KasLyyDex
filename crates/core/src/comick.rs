@@ -119,10 +119,7 @@ fn upstream_err() -> Err {
 }
 
 fn valid_opaque(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|c| !c.is_whitespace() && !c.is_control())
+    !value.is_empty() && value.chars().all(|c| !c.is_whitespace() && !c.is_control())
 }
 
 /// Accepts a provider-prefixed ID or a bare HID for internal catalog calls.
@@ -159,10 +156,7 @@ fn title_from_value(value: &Value) -> Result<ComickTitle, Err> {
         .as_str()
         .filter(|hid| valid_opaque(hid))
         .ok_or_else(upstream_err)?;
-    let title = value["title"]
-        .as_str()
-        .ok_or_else(upstream_err)?
-        .to_owned();
+    let title = value["title"].as_str().ok_or_else(upstream_err)?.to_owned();
     let aliases = value["md_titles"]
         .as_array()
         .map(|titles| {

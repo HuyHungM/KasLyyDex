@@ -41,8 +41,10 @@ jobs:
       - name: Secret-pattern scan
         run: node web/scripts/secret-scan.mjs .
 
+      # core is included after Task 10 formatted crates/core/src/comick.rs;
+      # full-workspace fmt still carries older Leptos debt.
       - name: Rust scoped formatting
-        run: cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server
+        run: cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server -p core
 
       - name: Rust clippy (workspace, warnings are errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -94,5 +96,7 @@ jobs:
         working-directory: web
 
       # Inspects tracked checkout content, so it is not vacuous on a clean tree.
-      - name: Whitespace / conflict-marker check
-        run: node web/scripts/whitespace-check.mjs .
+      # Baseline covers committed prior-plan SDD .diff artifacts only; new findings fail.
+      - name: Whitespace / conflict-marker check (baselined)
+        run: npm run check:whitespace
+        working-directory: web

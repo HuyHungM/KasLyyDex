@@ -238,7 +238,10 @@ mod tests {
             (ReaderBackground::Dark, "dark"),
         ] {
             assert_eq!(background.as_str(), wire);
-            assert_eq!(serde_json::to_string(&background).unwrap(), format!("\"{wire}\""));
+            assert_eq!(
+                serde_json::to_string(&background).unwrap(),
+                format!("\"{wire}\"")
+            );
             assert_eq!(
                 serde_json::from_str::<ReaderBackground>(&format!("\"{wire}\"")).unwrap(),
                 background
