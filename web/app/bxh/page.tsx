@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+import { titleWithSource } from "@/lib/format";
 
 type Props = { searchParams: Promise<{ kind?: string }> };
 
@@ -38,7 +39,7 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
                 )}
               </span>
               <span className="rank-title">
-                {manga.title}
+                {titleWithSource(manga.title, manga.source)}
                 <small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small>
               </span>
               {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
