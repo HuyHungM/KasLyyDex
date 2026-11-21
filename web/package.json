@@ -4,8 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "prebuild": "npm run build:wasm",
     "build": "next build",
     "start": "next start",
+    "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
     "lint": "eslint",
     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs"

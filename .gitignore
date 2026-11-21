@@ -13,3 +13,5 @@ web/.next
 /build-*.txt
 /task*-*.log
 /.worktrees
+web/generated
+web/public/wasm
