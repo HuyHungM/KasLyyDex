@@ -114,7 +114,9 @@ Exact commands, counts and rulings are in
   native selects everywhere with full keyboard support (Arrow/Home/End/Enter/
   Space/Escape/Tab) and submits unchanged values via a hidden input. Skeletons
   match content shape and all motion is guarded by `prefers-reduced-motion`;
-  broken reader images show a retry instead of a permanent skeleton.
+  broken reader images are released from the fade gate instead of staying behind
+  a permanent skeleton. The existing retry panel covers chapter/WASM page-load
+  failures (`pageError`/`wasmError`), not individual images.
 - Regression gate: `web/package.json` `test:aggregate` now includes
   `source-contracts`, `source-fallback`, `source-ui`, `source-progression`,
   `select`, `skeleton-motion` and `reader-theme`; a dedicated `test:source`

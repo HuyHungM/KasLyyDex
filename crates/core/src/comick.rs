@@ -6,7 +6,8 @@
 //   { chapters, total, limit, checkVol2Chap1 }; default page size 12, no max.
 // - GET /chapter/{hid}/get_images — ordered image metadata array, may be [].
 // - Origin budget: 200 requests/minute/client IP.
-// - Verified CDN image host in the official spec: meo.comick.pictures (HTTPS).
+// - CDN image host listed in the official spec: meo.comick.pictures (HTTPS);
+//   live delivery and ToS remain a manual release gate (no live fetch gate here).
 // OAuth/Library endpoints are deliberately not used.
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -119,7 +120,10 @@ fn upstream_err() -> Err {
 }
 
 fn valid_opaque(value: &str) -> bool {
-    !value.is_empty() && value.chars().all(|c| !c.is_whitespace() && !c.is_control())
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| !c.is_whitespace() && !c.is_control() && !matches!(c, '/' | '?' | '#'))
 }
 
 /// Accepts a provider-prefixed ID or a bare HID for internal catalog calls.
@@ -247,6 +251,14 @@ mod tests {
     fn comick_id_requires_prefix_and_nonempty_opaque_id() {
         assert!(is_comick_chapter_id("comick:abc123"));
         for invalid in ["abc123", "comick:", "comick:bad id", ""] {
+            assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn comick_id_rejects_path_delimiters_like_ts_parse_content_id() {
+        assert!(is_comick_chapter_id("comick:abc123"));
+        for invalid in ["comick:bad/id", "comick:bad?id", "comick:bad#id"] {
             assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
         }
     }

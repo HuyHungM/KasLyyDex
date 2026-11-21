@@ -45,7 +45,9 @@ mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
   trị form GET của tìm kiếm.
 - Skeleton có hình dạng khớp nội dung thay vì khối chung; hiệu ứng chuyển động
   (chevron, fade ảnh, shimmer) nằm trong `prefers-reduced-motion`. Ảnh reader lỗi
-  được giải phóng khỏi skeleton để hiện nút thử lại.
+  được giải phóng khỏi skeleton (ảnh hỏng hiện thay vì skeleton vĩnh viễn); panel
+  thử lại hiện có chỉ xử lý lỗi tải chapter/WASM (`pageError`/`wasmError`), không
+  có nút thử lại riêng cho từng ảnh.
 
 ## Chạy local
 
