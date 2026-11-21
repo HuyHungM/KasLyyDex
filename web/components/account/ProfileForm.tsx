@@ -51,6 +51,7 @@ export default function ProfileForm() {
   const { session } = useAccountSession();
   const remote = useRemoteResource<{ profile: AccountProfileDto }>(
     session.status === "authenticated" ? "/api/v1/me" : null,
+    session.user?.id ?? "guest",
   );
 
   if (session.status !== "authenticated") return null;

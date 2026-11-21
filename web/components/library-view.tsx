@@ -54,7 +54,11 @@ function EmptyLibrary() {
 }
 
 function SyncedLibrary() {
-  const remote = useRemoteResource<{ items: LibraryEntryDto[] }>("/api/v1/me/library");
+  const { session } = useAccountSession();
+  const remote = useRemoteResource<{ items: LibraryEntryDto[] }>(
+    "/api/v1/me/library",
+    session.user?.id ?? "guest",
+  );
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 

@@ -8,6 +8,7 @@ import { errorEnvelope } from "../contracts";
 import {
   boundedClientTime,
   parseImportPayload,
+  parseLanguage,
   parseLibraryInput,
   parseProfilePatch,
   parseProgressInput,
@@ -125,7 +126,12 @@ export function createMeApi(deps: MeDeps) {
 
     progressDelete: (request: Request, params: { chapterId: string }) => withUser(request, async (user) => {
       const chapterId = parseResourceId(params.chapterId, "chapterId");
-      const deleted = await deleteProgress(db(), user.id, chapterId);
+      const query = new URL(request.url).searchParams;
+      const mangaId = parseResourceId(query.get("mangaId"), "mangaId");
+      const rawLanguage = query.get("lang");
+      if (!rawLanguage) throw new ValidationError(400, "INVALID_INPUT", "lang is required to delete progress.");
+      const language = parseLanguage(rawLanguage);
+      const deleted = await deleteProgress(db(), user.id, chapterId, mangaId, language);
       if (!deleted) return privateJson(errorEnvelope("NOT_FOUND", "Progress entry not found."), 404);
       return privateJson({ deleted: true });
     }, true),

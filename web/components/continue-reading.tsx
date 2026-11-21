@@ -38,6 +38,7 @@ export default function ContinueReading() {
   const { session } = useAccountSession();
   const remote = useRemoteResource<{ items: ProgressEntryDto[] }>(
     session.status === "authenticated" ? "/api/v1/me/progress" : null,
+    session.user?.id ?? "guest",
   );
 
   if (session.status !== "authenticated") {

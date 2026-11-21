@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useSyncExternalStore, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import { authClient } from "@/lib/auth/client";
+import { RemoteResourceController } from "@/lib/account/resource";
 
 export type AccountUser = {
   id: string;
@@ -115,8 +116,8 @@ export function useAccountSession() {
   return { session: state, refresh: refreshSession };
 }
 
-export async function accountGet<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: "same-origin", cache: "no-store" });
+export async function accountGet<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, { credentials: "same-origin", cache: "no-store", signal });
   return parseAccountResponse<T>(response);
 }
 
@@ -138,35 +139,51 @@ export type RemoteState<T> = {
   reload: () => void;
 };
 
-/// Client-side fetch without setState directly in an effect: the async loader
-/// is the only place that updates React state.
-export function useRemoteResource<T>(path: string | null): RemoteState<T> {
+/// Client-side fetch with a generation guard: a stale/key-switched response
+/// can never write into the current account's state.
+export function useRemoteResource<T>(path: string | null, identityKey = ""): RemoteState<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
-
-  const load = useCallback(async () => {
-    if (!path) return;
-    setLoading(true);
-    try {
-      setData(await accountGet<T>(path));
-      setError(null);
-    } catch (cause) {
-      setData(null);
-      setError(cause instanceof Error ? cause.message : "Không tải được dữ liệu.");
-    } finally {
-      setLoading(false);
-    }
-  }, [path]);
+  const controller = useRef(new RemoteResourceController<T>());
+  const key = `${identityKey}|${path ?? ""}`;
 
   useEffect(() => {
-    let alive = true;
+    const current = controller.current;
+    const abort = new AbortController();
+    const started = current.begin(key);
+    // setState never runs synchronously in the effect body, and every update
+    // after the await is gated by the current generation.
     void Promise.resolve().then(async () => {
-      if (alive) await load();
+      if (started.generation !== current.currentGeneration) return;
+      setData(started.snapshot.data);
+      setLoading(started.snapshot.loading);
+      setError(started.snapshot.error);
+      if (!path) return;
+      try {
+        const result = await accountGet<T>(path, abort.signal);
+        const next = current.resolve(started.generation, result);
+        if (next) {
+          setData(next.data);
+          setLoading(next.loading);
+          setError(next.error);
+        }
+      } catch (cause) {
+        if (abort.signal.aborted) return;
+        const next = current.reject(started.generation, cause instanceof Error ? cause.message : "Không tải được dữ liệu.");
+        if (next) {
+          setData(next.data);
+          setLoading(next.loading);
+          setError(next.error);
+        }
+      }
     });
-    return () => { alive = false; };
-  }, [load, revision]);
+    return () => {
+      abort.abort();
+      current.dispose();
+    };
+  }, [key, path, revision]);
 
   return { data, loading, error, reload: () => setRevision((value) => value + 1) };
 }

@@ -79,7 +79,7 @@ function integerIn(value: unknown, min: number, max: number, field: string): num
   return value;
 }
 
-function language(value: unknown): string {
+export function parseLanguage(value: unknown): string {
   if (value === undefined || value === null || value === "") return "vi";
   const parsed = plainText(value, 20) ?? "vi";
   if (!/^[A-Za-z][A-Za-z-]{1,19}$/.test(parsed)) {
@@ -199,7 +199,7 @@ export function parseLibraryInput(body: Record<string, unknown>): LibraryInput {
   assertAllowedKeys(body, ["title", "coverFile", "lang", "status"]);
   const title = requiredText(body.title, "title", 200);
   const coverFile = optionalId(body.coverFile);
-  const lang = language(body.lang);
+  const lang = parseLanguage(body.lang);
   const status = body.status === undefined ? "reading" : plainText(body.status, 20);
   if (!status || !LIBRARY_STATUSES.includes(status as LibraryStatus)) {
     throw new ValidationError(400, "INVALID_INPUT", "Unknown library status.");
@@ -220,7 +220,7 @@ export type ProgressInput = {
 export function parseProgressInput(body: Record<string, unknown>): ProgressInput {
   assertAllowedKeys(body, ["mangaId", "lang", "page", "total", "chapter", "title", "coverFile"]);
   const mangaId = parseResourceId(body.mangaId, "mangaId");
-  const lang = language(body.lang);
+  const lang = parseLanguage(body.lang);
   const total = integerIn(body.total, 1, 10_000, "total");
   const page = integerIn(body.page, 1, 10_000, "page");
   if (page > total) throw new ValidationError(400, "INVALID_INPUT", "page cannot exceed total.");

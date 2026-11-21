@@ -76,6 +76,7 @@ export default function SettingsForm() {
   const { session } = useAccountSession();
   const remote = useRemoteResource<ReaderSettingsDto>(
     session.status === "authenticated" ? "/api/v1/me/settings" : null,
+    session.user?.id ?? "guest",
   );
 
   if (session.status === "loading") return <div className="surface account-card">Đang kiểm tra phiên đăng nhập…</div>;

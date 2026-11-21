@@ -285,13 +285,22 @@ export async function listProgress(db: AppDatabase, userId: string): Promise<Pro
   return rows.map(progressDto);
 }
 
-export async function deleteProgress(db: AppDatabase, userId: string, chapterId: string): Promise<boolean> {
-  const rows = await db.select().from(tables.chapterProgress)
-    .where(and(eq(tables.chapterProgress.userId, userId), eq(tables.chapterProgress.chapterId, chapterId)))
-    .limit(1);
+export async function deleteProgress(
+  db: AppDatabase,
+  userId: string,
+  chapterId: string,
+  mangaId: string,
+  language: string,
+): Promise<boolean> {
+  const where = and(
+    eq(tables.chapterProgress.userId, userId),
+    eq(tables.chapterProgress.mangaId, mangaId),
+    eq(tables.chapterProgress.chapterId, chapterId),
+    eq(tables.chapterProgress.language, language),
+  );
+  const rows = await db.select().from(tables.chapterProgress).where(where).limit(1);
   if (rows.length === 0) return false;
-  await db.delete(tables.chapterProgress)
-    .where(and(eq(tables.chapterProgress.userId, userId), eq(tables.chapterProgress.chapterId, chapterId)));
+  await db.delete(tables.chapterProgress).where(where);
   return true;
 }
 

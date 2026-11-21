@@ -451,6 +451,39 @@ test("level is an explicit zero-XP placeholder and settings persist", async () =
   }
 });
 
+test("progress delete is scoped to the requested manga and language", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const handle = api(db);
+    for (const lang of ["vi", "en"]) {
+      await handle.progressPut(request("/api/v1/me/progress/c-shared", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mangaId: "m-shared", lang, page: 2, total: 8, chapter: "2", title: "Shared" }),
+      }), { chapterId: "c-shared" });
+    }
+    const before = await db.select().from(schema.chapterProgress);
+    assert.equal(before.length, 2);
+
+    const removed = await handle.progressDelete(
+      request("/api/v1/me/progress/c-shared?mangaId=m-shared&lang=vi", { method: "DELETE" }),
+      { chapterId: "c-shared" },
+    );
+    assert.equal(removed.status, 200);
+    const after = await db.select().from(schema.chapterProgress);
+    assert.deepEqual(after.map((row) => row.language), ["en"], "only the addressed language row may be deleted");
+
+    const ambiguous = await handle.progressDelete(
+      request("/api/v1/me/progress/c-shared", { method: "DELETE" }),
+      { chapterId: "c-shared" },
+    );
+    assert.equal(ambiguous.status, 400);
+    assert.equal((await db.select().from(schema.chapterProgress)).length, 1);
+  } finally {
+    await pg.close();
+  }
+});
+
 test("database failures do not leave partial account writes", async () => {
   const { pg, db } = await migratedDb();
   try {

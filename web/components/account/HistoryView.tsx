@@ -25,7 +25,11 @@ function LocalHistory() {
 }
 
 function SyncedHistory() {
-  const remote = useRemoteResource<{ items: ProgressEntryDto[] }>("/api/v1/me/progress");
+  const { session } = useAccountSession();
+  const remote = useRemoteResource<{ items: ProgressEntryDto[] }>(
+    "/api/v1/me/progress",
+    session.user?.id ?? "guest",
+  );
   if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải lịch sử…</div>;
   if (remote.error || !remote.data) {
     return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được lịch sử."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;

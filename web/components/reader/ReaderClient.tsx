@@ -7,6 +7,7 @@ import type { ReaderWasm } from "@/generated/reader-wasm";
 import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
 import type { ReaderSettingsDto } from "@/lib/validators";
 import { accountGet, accountMutate, useAccountSession } from "@/lib/account/client";
+import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
 import {
   DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
@@ -45,7 +46,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   const wasm = useRef<ReaderWasm | null>(null);
   const savedChapter = useRef("");
   const prefetched = useRef("");
-  const settledRemote = useRef("");
+  const restore = useRef(new ReaderRestoreCoordinator());
   const settleUntil = useRef(0);
   const { session } = useAccountSession();
 
@@ -56,6 +57,9 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   const [wasmAttempt, setWasmAttempt] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [running, setRunning] = useState(false);
+  const [remoteReadyKey, setRemoteReadyKey] = useState("");
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncAttempt, setSyncAttempt] = useState(0);
 
   const fullscreenSupported = useSyncExternalStore(
     noopSubscribe,
@@ -173,13 +177,18 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   // Authenticated reading re-applies server settings and position through the
   // same Rust state machine; guests keep the local-only path untouched.
   useEffect(() => {
-    const key = `${chapter.id}|${lang}`;
-    if (session.status !== "authenticated" || !loaded || total === 0 || settledRemote.current === key) return;
-    settledRemote.current = key;
+    const userId = session.user?.id;
+    const key = `${chapter.id}|${lang}|${userId ?? ""}`;
+    const controller = restore.current;
+    if (session.status !== "authenticated" || !userId || !loaded || total === 0) return;
+    const generation = controller.begin(key);
+    let alive = true;
     void Promise.all([
       accountGet<ReaderSettingsDto>("/api/v1/me/settings"),
       accountGet<{ items: ProgressEntryDto[] }>("/api/v1/me/progress"),
     ]).then(([prefs, history]) => {
+      // A slow response from an earlier chapter/user must never touch WASM.
+      if (!alive || controller.resolve(generation, key) !== key) return;
       const state = wasm.current;
       if (!state) return;
       state.applySettingsJson(JSON.stringify(prefs));
@@ -192,11 +201,22 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
         }
       }
       syncFromWasm();
-    }).catch(() => undefined);
-  }, [session.status, loaded, total, chapter.id, manga.id, lang, syncFromWasm]);
+      setRemoteReadyKey(key);
+    }).catch(() => {
+      if (!alive || !controller.fail(generation, key)) return;
+      setRemoteReadyKey("");
+      setSyncError("Không khôi phục được tiến độ từ tài khoản.");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [session.status, session.user?.id, loaded, total, chapter.id, manga.id, lang, syncFromWasm, syncAttempt]);
+
+  useEffect(() => () => restore.current.dispose(), []);
 
   useEffect(() => {
-    if (session.status !== "authenticated" || !loaded || total === 0) return;
+    const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
+    if (session.status !== "authenticated" || !loaded || total === 0 || !restore.current.isReady(key)) return;
     const state = wasm.current;
     if (!state) return;
     void accountMutate(`/api/v1/me/progress/${encodeURIComponent(chapter.id)}`, "PUT", {
@@ -208,7 +228,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
       title: chapter.title,
       coverFile: manga.cover_file,
     }).catch(() => undefined);
-  }, [session.status, loaded, page, total, chapter, manga, lang]);
+  }, [session.status, session.user?.id, remoteReadyKey, loaded, page, total, chapter, manga, lang]);
 
   // One-off restoration scroll on chapter load and when returning to vertical
   // mode. It is deliberately independent from the observer and from `page`, so
@@ -357,6 +377,23 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
         }}
       />
       <main className={`reader-main${settings.fit ? "" : " full-width"}`} onPointerDown={() => setRunning(false)}>
+        {syncError && session.status === "authenticated" ? (
+          <div className="panel" role="alert">
+            <p>{syncError}</p>
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => {
+                setSyncError(null);
+                setRemoteReadyKey("");
+                restore.current.dispose();
+                setSyncAttempt((attempt) => attempt + 1);
+              }}
+            >
+              Thử lại đồng bộ
+            </button>
+          </div>
+        ) : null}
         {external ? (
           <div className="panel">
             <p>Chương này được đăng ở nguồn ngoài (không có ảnh trên MangaDex).</p>
