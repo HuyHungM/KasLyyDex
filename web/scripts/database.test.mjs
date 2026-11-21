@@ -15,6 +15,7 @@ const migrationUrls = [
   new URL("../drizzle/0003_community_cursor_scrub.sql", import.meta.url),
   new URL("../drizzle/0004_notification_feed_cursor.sql", import.meta.url),
   new URL("../drizzle/0005_notification_pending.sql", import.meta.url),
+  new URL("../drizzle/0006_progression.sql", import.meta.url),
 ];
 
 async function freshDatabase() {
@@ -48,13 +49,18 @@ test("application migrations own account tables and never touch Neon Auth tables
         "public.comment_reports",
         "public.comment_threads",
         "public.comments",
+        "public.cultivation_realms",
         "public.library_entries",
         "public.notification_cursors",
         "public.notification_pending",
         "public.notifications",
         "public.profiles",
+        "public.reader_checkpoints",
         "public.reader_preferences",
+        "public.reader_sessions",
+        "public.reading_completions",
         "public.user_roles",
+        "public.xp_events",
       ],
       "only application-owned account tables may be created",
     );
@@ -73,6 +79,7 @@ test("application migrations own account tables and never touch Neon Auth tables
       { column_name: "display_name", data_type: "text", is_nullable: "YES" },
       { column_name: "avatar_url", data_type: "text", is_nullable: "YES" },
       { column_name: "total_xp", data_type: "integer", is_nullable: "NO" },
+      { column_name: "level", data_type: "integer", is_nullable: "NO" },
     ]);
 
     const pk = await db.query(`
@@ -155,10 +162,39 @@ test("application tables enforce ownership keys, unique usernames and cascade cl
     for (const table of [
       "user_roles", "library_entries", "reader_preferences", "chapter_progress",
       "comments", "comment_reports", "notification_cursors", "notification_pending", "notifications", "action_events",
+      "reader_sessions", "reading_completions", "xp_events",
     ]) {
       const rows = await db.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
       assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
     }
+  } finally {
+    await db.close();
+  }
+});
+
+test("realm seed and XP ledger uniqueness match the progression contract", async () => {
+  const { db } = await freshDatabase();
+  try {
+    const realms = await db.query("SELECT key, min_level, max_level, name FROM cultivation_realms ORDER BY min_level");
+    assert.equal(realms.rows.length, 13);
+    assert.deepEqual(realms.rows.map((row) => [row.min_level, row.max_level, row.name]), [
+      [1, 9, "Phàm Nhân"], [10, 49, "Luyện Khí"], [50, 99, "Trúc Cơ"],
+      [100, 199, "Kim Đan"], [200, 299, "Nguyên Anh"], [300, 399, "Hóa Thần"],
+      [400, 499, "Luyện Hư"], [500, 599, "Hợp Thể"], [600, 699, "Đại Thừa"],
+      [700, 799, "Độ Kiếp"], [800, 899, "Chân Tiên"], [900, 999, "Tiên Vương"],
+      [1000, 1000, "Tiên Đế"],
+    ]);
+    await db.exec("INSERT INTO profiles (user_id) VALUES ('u1');");
+    await db.exec("INSERT INTO reading_completions (user_id, chapter_id, manga_id, language, page_count, last_page_seen, reader_session_id, completed_at) VALUES ('u1','c1','m1','vi',10,10,'s1',100);");
+    await assert.rejects(
+      db.exec("INSERT INTO reading_completions (user_id, chapter_id, manga_id, language, page_count, last_page_seen, reader_session_id, completed_at) VALUES ('u1','c1','m1','en',10,10,'s2',200);"),
+      /duplicate key|unique/i,
+    );
+    await db.exec("INSERT INTO xp_events (id, user_id, event_type, chapter_id, amount, rule_version) VALUES ('x1','u1','chapter_complete','c1',100,'progression_v1');");
+    await assert.rejects(
+      db.exec("INSERT INTO xp_events (id, user_id, event_type, chapter_id, amount, rule_version) VALUES ('x2','u1','chapter_complete','c1',100,'progression_v1');"),
+      /duplicate key|unique/i,
+    );
   } finally {
     await db.close();
   }

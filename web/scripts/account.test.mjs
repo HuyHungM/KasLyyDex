@@ -23,7 +23,11 @@ let now = Date.parse("2026-06-01T12:00:00.000Z");
 async function migratedDb() {
   const pg = new PGlite();
   const db = drizzle(pg, { schema });
-  for (const file of ["0000_application.sql", "0001_account_data.sql"]) {
+  for (const file of [
+    "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
+    "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
+    "0005_notification_pending.sql", "0006_progression.sql",
+  ]) {
     const url = new URL(`../drizzle/${file}`, import.meta.url);
     await pg.exec(await readFile(fileURLToPath(url), "utf8"));
   }
@@ -428,7 +432,7 @@ test("cross-origin mutations are rejected before any database write", async () =
   }
 });
 
-test("level is an explicit zero-XP placeholder and settings persist", async () => {
+test("level reflects real profile XP and settings persist", async () => {
   const { pg, db } = await migratedDb();
   try {
     const handle = api(db);
@@ -436,7 +440,12 @@ test("level is an explicit zero-XP placeholder and settings persist", async () =
     const level = await levelRes.json();
     assert.equal(level.level, 1);
     assert.equal(level.totalXp, 0);
-    assert.equal(level.source, "placeholder");
+    assert.equal(level.source, "progression_v1");
+    assert.equal(level.title, "Phàm Nhân");
+    await db.update(schema.profiles).set({ totalXp: 400 }).where(eq(schema.profiles.userId, "opaque|reader-1"));
+    const raised = await (await handle.levelGet(request("/api/v1/me/level"))).json();
+    assert.equal(raised.level, 3);
+    assert.equal(raised.totalXp, 400);
 
     const put = await handle.settingsPut(request("/api/v1/me/settings", {
       method: "PUT",

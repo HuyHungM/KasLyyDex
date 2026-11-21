@@ -25,8 +25,10 @@ const MIGRATIONS = [
   "0003_community_cursor_scrub.sql",
   "0004_notification_feed_cursor.sql",
   "0005_notification_pending.sql",
+  "0006_progression.sql",
 ];
-const LEGACY_MIGRATIONS = MIGRATIONS.slice(0, 3);
+// Keep the pre-0003 comment schema while satisfying the current Drizzle shape.
+const LEGACY_MIGRATIONS = [...MIGRATIONS.slice(0, 3), "0006_progression.sql"];
 
 async function migratedDb(files = MIGRATIONS) {
   const pg = new PGlite();

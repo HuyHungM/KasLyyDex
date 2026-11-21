@@ -73,7 +73,7 @@ function makeChapter(index, published) {
 const MIGRATIONS = [
   "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
   "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
-  "0005_notification_pending.sql",
+  "0005_notification_pending.sql", "0006_progression.sql",
 ];
 
 async function migratedDb(files = MIGRATIONS) {
@@ -418,7 +418,7 @@ test("0005 backfill replays same-publish legacy rows without duplicate notificat
   const legacy = BASE + 148 * DAY;
   try {
     chapters = ["v", "w", "z"].map((suffix, index) => tied(`tie-${suffix}`, legacy, 9500 + index));
-    const { pg, db } = await migratedDb(MIGRATIONS.slice(0, 5));
+    const { pg, db } = await migratedDb([...MIGRATIONS.slice(0, 5), "0006_progression.sql"]);
     try {
       await seedReader(db);
       // Legacy cursor shape: migrations through 0004 have no cohort columns.
