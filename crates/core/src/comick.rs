@@ -1,0 +1,307 @@
+// Verified 2026-11-21 from the official Comick catalog OpenAPI document at
+// https://api.comick.dev/docs/json (rendered by https://api.comick.dev/docs/):
+// - GET /v1.0/search/?q=...&page=1&limit=15 — bare array; page <= 50 with
+//   limit <= 50, or page <= 5 with limit <= 300; defaults page=1, limit=15.
+// - GET /v1.0/comic/{hid}/chapters?lang=...&page=1&limit=12 — returns
+//   { chapters, total, limit, checkVol2Chap1 }; default page size 12, no max.
+// - GET /chapter/{hid}/get_images — ordered image metadata array, may be [].
+// - Origin budget: 200 requests/minute/client IP.
+// - Verified CDN image host in the official spec: meo.comick.pictures (HTTPS).
+// OAuth/Library endpoints are deliberately not used.
+
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use serde_json::Value;
+use std::time::Duration;
+
+const API: &str = "https://api.comick.dev";
+const CDN: &str = "https://meo.comick.pictures";
+const CDN_HOST: &str = "meo.comick.pictures";
+const TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const UPSTREAM_ERR: &str = "Comick catalog unavailable";
+
+type Err = String;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComickTitle {
+    pub hid: String,
+    pub title: String,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComickChapter {
+    pub id: String,
+    pub chapter: Option<String>,
+    pub lang: String,
+    pub title: String,
+    pub publish_at: String,
+    pub group: String,
+}
+
+#[derive(Clone)]
+pub struct Comick {
+    http: reqwest::Client,
+    api: String,
+}
+
+impl Default for Comick {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Comick {
+    pub fn new() -> Self {
+        let origin = std::env::var("COMICK_API_ORIGIN").unwrap_or_else(|_| API.to_owned());
+        Self::with_origin(origin)
+    }
+
+    /// Explicit origin for local upstream fixtures; production uses `new()`.
+    pub fn with_origin(origin: String) -> Self {
+        let trimmed = origin.trim().trim_end_matches('/').to_owned();
+        Self {
+            http: reqwest::Client::builder()
+                .timeout(TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .expect("comick http client"),
+            api: if trimmed.is_empty() {
+                API.to_owned()
+            } else {
+                trimmed
+            },
+        }
+    }
+
+    pub async fn search_titles(&self, query: &str) -> Result<Vec<ComickTitle>, Err> {
+        let body = self.get_json(&search_path(query)).await?;
+        let results = body.as_array().ok_or_else(upstream_err)?;
+        results.iter().map(title_from_value).collect()
+    }
+
+    pub async fn chapters(&self, hid: &str, lang: &str) -> Result<Vec<ComickChapter>, Err> {
+        let body = self.get_json(&chapters_path(hid, lang)?).await?;
+        let chapters = body["chapters"].as_array().ok_or_else(upstream_err)?;
+        chapters
+            .iter()
+            .map(|value| chapter_from_value(value, lang).ok_or_else(upstream_err))
+            .collect()
+    }
+
+    pub async fn page_urls(&self, chapter_id: &str) -> Result<Vec<String>, Err> {
+        let body = self.get_json(&images_path(chapter_id)?).await?;
+        let images = body.as_array().ok_or_else(upstream_err)?;
+        page_urls_from(images)
+    }
+
+    async fn get_json(&self, path: &str) -> Result<Value, Err> {
+        let response = self
+            .http
+            .get(format!("{}{path}", self.api))
+            .send()
+            .await
+            .map_err(|_| upstream_err())?;
+        if !response.status().is_success() {
+            return Err(upstream_err());
+        }
+        response.json::<Value>().await.map_err(|_| upstream_err())
+    }
+}
+
+/// Provider-prefixed chapter IDs used by content routes and progress records.
+pub fn is_comick_chapter_id(id: &str) -> bool {
+    id.strip_prefix("comick:").is_some_and(valid_opaque)
+}
+
+fn upstream_err() -> Err {
+    UPSTREAM_ERR.to_owned()
+}
+
+fn valid_opaque(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| !c.is_whitespace() && !c.is_control())
+}
+
+/// Accepts a provider-prefixed ID or a bare HID for internal catalog calls.
+fn request_opaque(id: &str) -> Option<&str> {
+    let raw = id.strip_prefix("comick:").unwrap_or(id);
+    valid_opaque(raw).then_some(raw)
+}
+
+fn encode(value: &str) -> String {
+    utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+}
+
+fn search_path(query: &str) -> String {
+    format!("/v1.0/search/?q={}&page=1&limit=15", encode(query))
+}
+
+fn chapters_path(hid: &str, lang: &str) -> Result<String, Err> {
+    let hid = request_opaque(hid).ok_or_else(upstream_err)?;
+    let lang = request_opaque(lang).ok_or_else(upstream_err)?;
+    Ok(format!(
+        "/v1.0/comic/{}/chapters?lang={}&page=1&limit=12",
+        encode(hid),
+        encode(lang)
+    ))
+}
+
+fn images_path(chapter_id: &str) -> Result<String, Err> {
+    let hid = request_opaque(chapter_id).ok_or_else(upstream_err)?;
+    Ok(format!("/chapter/{}/get_images", encode(hid)))
+}
+
+fn title_from_value(value: &Value) -> Result<ComickTitle, Err> {
+    let hid = value["hid"]
+        .as_str()
+        .filter(|hid| valid_opaque(hid))
+        .ok_or_else(upstream_err)?;
+    let title = value["title"]
+        .as_str()
+        .ok_or_else(upstream_err)?
+        .to_owned();
+    let aliases = value["md_titles"]
+        .as_array()
+        .map(|titles| {
+            titles
+                .iter()
+                .filter_map(|title| {
+                    title["title"]
+                        .as_str()
+                        .filter(|title| !title.trim().is_empty())
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ComickTitle {
+        hid: format!("comick:{hid}"),
+        title,
+        aliases,
+    })
+}
+
+fn string_or_number(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn chapter_from_value(value: &Value, fallback_lang: &str) -> Option<ComickChapter> {
+    let hid = value["hid"].as_str().filter(|hid| valid_opaque(hid))?;
+    let lang = value["lang"]
+        .as_str()
+        .filter(|lang| !lang.trim().is_empty())
+        .unwrap_or(fallback_lang);
+    if !valid_opaque(lang) {
+        return None;
+    }
+    Some(ComickChapter {
+        id: format!("comick:{hid}"),
+        chapter: string_or_number(&value["chapter"]),
+        lang: lang.to_owned(),
+        title: value["title"].as_str().unwrap_or_default().to_owned(),
+        publish_at: value["published_at"]
+            .as_str()
+            .or(value["publish_at"].as_str())
+            .or(value["created_at"].as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        group: value["group"]
+            .as_str()
+            .or(value["groups"][0]["title"].as_str())
+            .unwrap_or_default()
+            .to_owned(),
+    })
+}
+
+fn page_urls_from(images: &[Value]) -> Result<Vec<String>, Err> {
+    images.iter().map(image_url).collect()
+}
+
+fn image_url(image: &Value) -> Result<String, Err> {
+    if let Some(url) = image["url"].as_str().or(image["optimized"].as_str()) {
+        let parsed = reqwest::Url::parse(url).map_err(|_| upstream_err())?;
+        if parsed.scheme() != "https"
+            || parsed.host_str() != Some(CDN_HOST)
+            || parsed.port_or_known_default() != Some(443)
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(upstream_err());
+        }
+        return Ok(parsed.to_string());
+    }
+    let key = image["b2key"]
+        .as_str()
+        .filter(|key| valid_opaque(key) && !key.contains('/') && !key.contains(".."))
+        .ok_or_else(upstream_err)?;
+    Ok(format!("{CDN}/{key}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn comick_id_requires_prefix_and_nonempty_opaque_id() {
+        assert!(is_comick_chapter_id("comick:abc123"));
+        for invalid in ["abc123", "comick:", "comick:bad id", ""] {
+            assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn comick_chapter_normalizes_missing_title_and_language() {
+        let value = json!({
+            "hid": "chap-1",
+            "chapter": "7.5",
+            "lang": "vi",
+            "title": null
+        });
+        let chapter = chapter_from_value(&value, "en").expect("valid chapter");
+        assert_eq!(chapter.id, "comick:chap-1");
+        assert_eq!(chapter.chapter.as_deref(), Some("7.5"));
+        assert_eq!(chapter.lang, "vi");
+        assert_eq!(chapter.title, "");
+
+        let missing_lang = chapter_from_value(
+            &json!({ "hid": "chap-2", "chapter": 8, "lang": null, "title": "" }),
+            "en",
+        )
+        .expect("missing language uses the requested language");
+        assert_eq!(missing_lang.id, "comick:chap-2");
+        assert_eq!(missing_lang.chapter.as_deref(), Some("8"));
+        assert_eq!(missing_lang.lang, "en");
+        assert_eq!(missing_lang.title, "");
+        assert!(chapter_from_value(&json!({ "lang": "vi" }), "en").is_none());
+    }
+
+    #[test]
+    fn comick_page_urls_are_https_and_ordered() {
+        let urls = page_urls_from(&[json!({ "b2key": "a.jpg" }), json!({ "b2key": "b.jpg" })])
+            .expect("valid image metadata");
+        assert_eq!(urls, vec![format!("{CDN}/a.jpg"), format!("{CDN}/b.jpg")]);
+
+        for bad in [
+            json!({ "b2key": "a.jpg", "url": "http://meo.comick.pictures/a.jpg" }),
+            json!({ "b2key": "a.jpg", "url": "https://evil.example/a.jpg" }),
+        ] {
+            assert!(page_urls_from(&[bad]).is_err(), "accepted unsafe image URL");
+        }
+    }
+
+    #[test]
+    fn comick_search_path_encodes_query() {
+        assert_eq!(
+            search_path("solo leveling & 100%"),
+            "/v1.0/search/?q=solo%20leveling%20%26%20100%25&page=1&limit=15"
+        );
+    }
+}
