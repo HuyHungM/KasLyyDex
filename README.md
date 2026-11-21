@@ -1,52 +1,85 @@
-# KasLyyDex — web đọc manga (Rust)
+# KasLyyDex — web đọc manga (Next + Rust)
 
-Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org) (free, không cần key).
+Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org)
+thông qua dịch vụ Axum. Không cần API key MangaDex.
 
-## Kiến trúc hiện tại
-
-- **Giai đoạn 1 (hiện tại): web** — frontend **Leptos 0.8 CSR → WebAssembly**, backend **Axum** mỏng serve API + SPA.
-- **Phase 3/4 (deferred): Android + GPUI** — `crates/app` giữ lại prototype Slint, chưa thuộc workspace.
+## Kiến trúc Phase 1–2
 
 ```
-crates/core    # dùng chung: MangaDex client (reqwest + DNS 1.1.1.1), cache RAM moka, cache ảnh đĩa
-crates/server  # Axum: /api/* + proxy ảnh + serve static (giai đoạn 1)
-crates/ui      # Leptos CSR + trunk (giai đoạn 1)
-crates/app     # Slint prototype (deferred — chưa vào workspace)
-web            # Next.js 16 baseline
+web/            Next.js 16 App Router: UI, BFF, auth session, PostgreSQL/Drizzle
+crates/server   Axum: /api/content/*, proxy ảnh, cache, static legacy SPA
+crates/core     MangaDex client, DNS, RAM/disk cache (dùng bởi Axum)
+crates/domain, contracts, reader-core, reader-wasm   contracts + WASM reader
+crates/ui       legacy Leptos SPA (giữ lại, fmt baseline chưa sửa)
+crates/app      Slint prototype (deferred Phase 3/4, outside workspace)
 ```
 
-## Chạy bản web
+MangaDex chỉ được gọi từ Axum. Browser gọi same-origin `/api/content/*`; Next
+không chuyển Cookie/Authorization tới Axum. Reader WASM được build từ Rust trước
+mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
+
+## Chạy local
 
 ```bash
-cargo build --release -p server
-cd crates/ui && trunk build --release && cd ../..
-cargo run --release -p server     # http://localhost:3100
+# Rust toolchain: stable + wasm32-unknown-unknown + wasm-bindgen-cli 0.2.130
+cd web
+npm ci
+npm run build:wasm        # bắt buộc trước Next build
+npm run build:web         # next build (không chạy lại prebuild)
+npm run typecheck         # cần glue WASM + Next route types đã sinh
+npm run lint
+cd ..
+cargo build -p server
+cd web
+npm run test:aggregate    # Node/PGlite/API smoke, không cần secret
+npm run test:browser      # cần Edge local hoặc Playwright Chromium
 ```
 
-Windows: nếu toolchain mặc định là GNU và build WASM lỗi `dlltool`, dùng toolchain MSVC cho Trunk:
-`rustup target add wasm32-unknown-unknown --toolchain stable-x86_64-pc-windows-msvc` rồi
-`$env:RUSTUP_TOOLCHAIN='stable-x86_64-pc-windows-msvc'; trunk build --release`.
+Axum local: `cargo run -p server` (`PORT`, `DIST_DIR`, `CACHE_DIR`,
+`MANGADEX_API_ORIGIN` optional). Next local: `npm run dev` trong `web/`.
 
-Biến môi trường: `PORT` (3100), `DIST_DIR` (`crates/ui/dist`), `CACHE_DIR` (mặc định `%LOCALAPPDATA%/TruyenViet/cache`).
+Health endpoints:
+- `/api/v1/health` — liveness, credential-free, trả `{ok,version}` (Next) hoặc
+  `{ok,service}` (Axum).
+- `/api/v1/ready` — readiness: cấu hình, DB/upstream với timeout 1.5s; chỉ trả
+  tên biến bị thiếu, không trả giá trị. Trên Axum readiness là config-only.
 
-## Tính năng
+`node infra/healthcheck http://127.0.0.1:3000` in status codes, không in secret.
+Thêm `--liveness-only` cho môi trường chưa cấu hình DB/auth.
 
-- Trang chủ hiển thị các chương vừa cập nhật, truyện phổ biến và tiến độ đọc.
-- Trang khám phá (`/search`) có bộ lọc theo thể loại, trạng thái và cách sắp xếp. URL giữ bộ lọc khi chia sẻ hoặc chuyển trang.
-- Trang thể loại (`/the-loai`) và bảng xếp hạng (`/bxh`) sử dụng dữ liệu MangaDex.
-- Tủ truyện (`/tu-truyen`) lưu truyện theo dõi trên trình duyệt và báo chương mới khi mở tủ.
-- Trang truyện có chương tiếng Việt và tiếng Anh, mô tả, điểm đánh giá khi có dữ liệu và liên kết đến nguồn ngoài.
-- Trang đọc hỗ trợ cuộn dọc, lật ngang, vuốt, tự cuộn, chế độ toàn màn hình khi trình duyệt hỗ trợ và ba nền đọc.
-- Giao diện sáng/tối, cài đặt đọc và trang đang đọc dở được lưu trên trình duyệt.
+## Biến môi trường (không commit giá trị)
 
-## Tối ưu
+Xem `web/.env.example`:
 
-- **API** dùng bộ nhớ đệm moka và HTTP `max-age`. Danh sách, chương và tìm kiếm được giữ 60 giây, bảng xếp hạng 5 phút, chi tiết truyện 1 giờ và thể loại 24 giờ.
-- **Ảnh**: cache đĩa SHA-256 vĩnh viễn (`immutable`), proxy cùng origin — không CORS, không phụ thuộc DNS client (vài mạng sinkhole host MangaDex về 127.0.0.1; server resolve qua 1.1.1.1/8.8.8.8 bằng hickory-resolver)
-- **WASM**: profile `wasm-release` (`opt-level="z"`, LTO, `panic=abort`) + wasm-opt; asset hash tên + immutable cache
-- **Static**: HTML no-cache, asset immutable; nén brotli/gzip mọi response
-- **Reader**: prefetch URL chapter kế tiếp khi đang đọc; ảnh lazy-load + `decoding=async`
+```
+NEON_AUTH_BASE_URL
+NEON_AUTH_COOKIE_SECRET
+DATABASE_URL
+READER_TICKET_SECRET
+OPERATOR_EMAIL_ALLOWLIST (optional)
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+RUST_CONTENT_API_ORIGIN
+NEXT_PUBLIC_APP_URL
+```
 
-## Phase 3–4 (deferred)
+`READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là progression API
+fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
 
-Android and GPUI are deferred. `crates/app/ui/app.slint` remains a Slint prototype outside the workspace; this task does not connect or change it.
+## Release gates
+
+`.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+secret-pattern scan; `cargo fmt --check` scoped; clippy workspace `-D warnings`;
+`cargo test --workspace`; `npm ci`; typecheck/lint; `build:wasm` → `build:web`;
+aggregate tests; Playwright Chromium install + browser suites; `git diff --check`.
+
+Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+CI scoped vào `domain`, `contracts`, `reader-core`, `server`. Xem
+`infra/deployment.md` cho runbook, caveat first-deploy-is-production, chặn
+402 fair-use trước đây, migration/rollback Neon và các external gate chưa chạy.
+
+Observability: structured JSON logs có `correlationId`, redaction cho Cookie/
+Authorization/ticket/password/email/DATABASE_URL/upstream key; metric names
+`kaslyydex.user_requests` và `kaslyydex.user_request.duration_ms` chỉ với label
+`operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Vercel
+chưa được xác minh và paid Observability không được bật tự động.

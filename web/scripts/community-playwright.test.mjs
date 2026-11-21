@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
+import { browserExecutable } from "./browser.mjs";
 import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
 
 // Browser fixture: the SDK session is real (loopback Neon-auth fixture), while
 // community API responses are intercepted at the browser boundary. That proves
 // rendering, spoiler state, dialogs and authorized calls without a local
 // PostgreSQL wire server; SQL ownership is covered in community.test.mjs.
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = browserExecutable();
 const MANGA_ID = "manga-fixture";
 const COMMENT_ID = "comment-xss";
 const SPOILER_ID = "comment-spoiler";
@@ -82,7 +83,7 @@ async function signedInPage(routes = []) {
 }
 
 before(async () => {
-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
+  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
   contentFixture = await startHttpServer((req, res) => {
     const url = req.url ?? "";
     if (url.startsWith("/api/content/manga/") && url.endsWith("/chapters")) {

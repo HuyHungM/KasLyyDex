@@ -5,6 +5,7 @@ import { DatabaseConfigurationError, getDatabase } from "../db/client";
 import { AuthConfigurationError, getAuth } from "../auth/server";
 import { identityFromSession, type AccountIdentity } from "../auth/identity";
 import { errorEnvelope } from "../contracts";
+import { logErrorEvent, withObservedRoute } from "../observability";
 import {
   boundedClientTime,
   parseImportPayload,
@@ -39,6 +40,7 @@ export function privateJson(data: unknown, status = 200): Response {
 }
 
 export function errorToResponse(error: unknown): Response {
+  logErrorEvent(error);
   if (error instanceof ValidationError) {
     return privateJson(errorEnvelope(error.code, error.message), error.status);
   }
@@ -197,9 +199,11 @@ export async function wrapMeRoute(
   run: (api: ReturnType<typeof createMeApi>, request: Request) => Promise<Response>,
   request: Request,
 ): Promise<Response> {
-  try {
-    return await run(productionMeApi(), request);
-  } catch (error) {
-    return errorToResponse(error);
-  }
+  return withObservedRoute("account", request, async () => {
+    try {
+      return await run(productionMeApi(), request);
+    } catch (error) {
+      return errorToResponse(error);
+    }
+  });
 }

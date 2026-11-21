@@ -11,7 +11,7 @@ const nextBin = fileURLToPath(new URL("../node_modules/next/dist/bin/next", impo
 // Prove the shell never needs Neon/auth configuration to answer.
 const childEnv = { ...process.env };
 for (const key of Object.keys(childEnv)) {
-  if (/DATABASE|POSTGRES|NEON|AUTH|GOOGLE_CLIENT|RUST_CONTENT_API_ORIGIN/i.test(key)) {
+  if (/DATABASE|POSTGRES|NEON|AUTH|GOOGLE_CLIENT|RUST_CONTENT_API_ORIGIN|READER_TICKET_SECRET|OPERATOR_EMAIL_ALLOWLIST/i.test(key)) {
     delete childEnv[key];
   }
 }
@@ -86,4 +86,39 @@ test("GET /api/v1/health returns ok and version without secrets", async () => {
   assert.equal(body.ok, true);
   assert.equal(typeof body.version, "string");
   assert.ok(body.version.length > 0);
+});
+
+test("GET /api/v1/ready is separate from liveness and lists missing config names only", async () => {
+  const res = await fetch(`${baseUrl}/api/v1/ready`);
+  assert.equal(res.status, 503);
+  assert.equal(res.headers.get("cache-control"), "private, no-store");
+  const body = await res.json();
+  assert.equal(body.status, "unavailable");
+  assert.equal(body.checks.configuration, "missing");
+  for (const name of [
+    "DATABASE_URL", "NEON_AUTH_BASE_URL", "NEON_AUTH_COOKIE_SECRET",
+    "READER_TICKET_SECRET", "RUST_CONTENT_API_ORIGIN",
+  ]) {
+    assert.ok(body.missing.includes(name), name);
+  }
+  assert.doesNotMatch(JSON.stringify(body), /postgres(?:ql)?:\/\//i);
+});
+
+test("security headers apply to pages and API without external CSP sources", async () => {
+  for (const path of ["/", "/api/v1/health"]) {
+    const res = await fetch(`${baseUrl}${path}`);
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff", path);
+    assert.equal(res.headers.get("x-frame-options"), "DENY", path);
+    const csp = res.headers.get("content-security-policy") ?? "";
+    assert.match(csp, /script-src 'self'.*'wasm-unsafe-eval'/, path);
+    assert.match(csp, /img-src 'self' data: blob:/, path);
+    assert.doesNotMatch(csp, /https?:\/\//, path);
+  }
+});
+
+test("observed business routes expose a correlation id", async () => {
+  const res = await fetch(`${baseUrl}/api/v1/me`);
+  assert.equal(res.status, 503, "missing auth config stays unavailable");
+  assert.match(res.headers.get("x-correlation-id") ?? "", /^[0-9a-f-]{36}$/);
+  assert.equal(res.headers.get("cache-control"), "private, no-store");
 });

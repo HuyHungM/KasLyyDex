@@ -3,6 +3,7 @@ import "server-only";
 import { createNeonAuth, type NeonAuth } from "@neon/auth/next/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { errorEnvelope } from "../contracts";
+import { logErrorEvent } from "../observability";
 
 export type AuthConfig = {
   baseUrl: string;
@@ -59,6 +60,7 @@ export function readAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
 
 export function authErrorResponse(error: unknown): Response | null {
   if (!(error instanceof AuthConfigurationError)) return null;
+  logErrorEvent(error);
   const details: Record<string, string> = { service: "auth" };
   if (error.missing.length > 0) details.missing = error.missing.join(",");
   return Response.json(errorEnvelope(error.code, error.message, details), { status: 503 });

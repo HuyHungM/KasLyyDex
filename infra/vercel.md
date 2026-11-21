@@ -77,3 +77,18 @@ Full `npm run lint` still reports the four pre-existing
 - Live Neon permission and schema/migration application.
 - Real Google sign-in and live JWT/JWKS verification.
 - Any Vercel Preview or Production deployment, domain or environment wiring.
+
+## Task 9 release-gate note
+
+No cloud state changed in Task 9. `.github/workflows/ci.yml` runs deterministic
+local gates only: secret scan, scoped Rust fmt, workspace clippy/tests, Axum
+build, frozen npm install, typecheck/lint, `build:wasm` → `build:web`, aggregate
+Node/PGlite/API tests and Playwright browser suites. No CI job reads secrets or
+deploys; real Neon/Google/Vercel checks are manual gates in
+`infra/deployment.md`. Add `READER_TICKET_SECRET` to any future Vercel
+environment: missing/short values make progression routes fail closed with 503.
+
+`/api/v1/health` is public liveness; `/api/v1/ready` is a separate bounded
+readiness probe that returns only missing env names and status values. Structured
+logs carry correlation ids and redact credentials; `metric()` calls are no-ops
+locally, use only bounded labels and do not enable paid Observability.

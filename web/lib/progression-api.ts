@@ -10,6 +10,7 @@ import { identityFromSession, type AccountIdentity } from "./auth/identity";
 import { serverContent } from "./content-server";
 import type { ContentClient } from "./contracts";
 import { errorEnvelope } from "./contracts";
+import { logErrorEvent, withObservedRoute } from "./observability";
 import { errorToResponse, privateJson } from "./me/handlers";
 import { ServiceError, ensureProfile } from "./me/service";
 import { emitNotification } from "./moderation";
@@ -201,6 +202,7 @@ export type ProgressionDeps = {
 
 export function progressionErrorResponse(error: unknown): Response {
   if (error instanceof TicketSecretError) {
+    logErrorEvent(error);
     return privateJson(errorEnvelope(error.code, error.message, { service: "reader", missing: "READER_TICKET_SECRET" }), 503);
   }
   return errorToResponse(error);
@@ -446,11 +448,13 @@ export async function wrapProgressionRoute(
   run: (api: ProgressionApi, request: Request) => Promise<Response>,
   request: Request,
 ): Promise<Response> {
-  try {
-    return await run(productionProgressionApi(), request);
-  } catch (error) {
-    return progressionErrorResponse(error);
-  }
+  return withObservedRoute("progression", request, async () => {
+    try {
+      return await run(productionProgressionApi(), request);
+    } catch (error) {
+      return progressionErrorResponse(error);
+    }
+  });
 }
 
 export function productionProgressionApi(): ProgressionApi {

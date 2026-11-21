@@ -6,6 +6,7 @@ import { AuthConfigurationError, getAuth } from "../auth/server";
 import { identityFromSession, type AccountIdentity } from "../auth/identity";
 import type { ContentClient } from "../contracts";
 import { errorEnvelope } from "../contracts";
+import { logErrorEvent, withObservedRoute } from "../observability";
 import { serverContent } from "../content-server";
 import {
   parseCommentInput,
@@ -234,14 +235,17 @@ export async function wrapCommunityRoute(
   run: (api: CommunityApi, request: Request) => Promise<Response>,
   request: Request,
 ): Promise<Response> {
-  try {
-    return await run(productionCommunityApi(), request);
-  } catch (error) {
-    if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
-      const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
-      if (error.missing.length > 0) details.missing = error.missing.join(",");
-      return privateJson(errorEnvelope(error.code, error.message, details), 503);
+  return withObservedRoute("community", request, async () => {
+    try {
+      return await run(productionCommunityApi(), request);
+    } catch (error) {
+      if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
+        logErrorEvent(error);
+        const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
+        if (error.missing.length > 0) details.missing = error.missing.join(",");
+        return privateJson(errorEnvelope(error.code, error.message, details), 503);
+      }
+      return errorToResponse(error);
     }
-    return errorToResponse(error);
-  }
+  });
 }

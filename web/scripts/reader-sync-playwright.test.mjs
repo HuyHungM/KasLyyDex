@@ -6,10 +6,11 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
+import { browserExecutable } from "./browser.mjs";
 import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
 import { pagePng } from "./image-fixtures.mjs";
 
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = browserExecutable();
 const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CHAPTER_A = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const CHAPTER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc";
@@ -49,7 +50,7 @@ function json(res, body) {
 }
 
 before(async () => {
-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
+  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
   cacheDir = join(webDir, ".test-cache", `reader-sync-${process.pid}`);
   mkdirSync(cacheDir, { recursive: true });
   PAGES.forEach((url, index) => {

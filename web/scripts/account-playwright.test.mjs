@@ -3,9 +3,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
+import { browserExecutable } from "./browser.mjs";
 import { startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
 
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = browserExecutable();
 const SHOT_DIR = join(webDir, ".test-screenshots");
 
 let unconfigured;
@@ -15,7 +16,7 @@ let browser;
 let pageErrors = [];
 
 before(async () => {
-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
+  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
   unconfigured = await startNext();
   authFixture = await startHttpServer((req, res, body) => {

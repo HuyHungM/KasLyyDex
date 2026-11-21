@@ -55,3 +55,17 @@ No Axum service was deployed, exposed publicly, or connected to live Neon/Google
 configuration in this task. Docker was unavailable, so no PostgreSQL container was
 created; the migration test used embedded PGlite as a dev/test-only engine and did
 not touch any pre-existing database.
+
+## Task 9 hardening
+
+- `/api/v1/health` is liveness; `/api/v1/ready` is configuration-only readiness
+  (Axum owns no database). Next's readiness route probes Axum `/api/v1/ready`
+  with a bounded timeout.
+- Every response gets the same security-header set as Next. CSP permits the
+  same-origin image proxy and `'wasm-unsafe-eval'` for the legacy reader and
+  lists no third-party origins.
+- Structured JSON request logs include a generated `x-correlation-id`, method,
+  normalized path (entity ids removed, query ignored), status and duration.
+  Upstream error messages stay generic in responses and never reach clients.
+- CI builds the Axum binary before Node/API tests and rebuilds the WASM before
+  the Next build; see `.github/workflows/ci.yml`.

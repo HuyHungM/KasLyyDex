@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -8,7 +8,10 @@ use contracts::{ApiError, ApiErrorEnvelope};
 use manga_core::mangadex::is_uuid;
 use manga_core::Md;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -39,6 +42,165 @@ fn json_no_store<T: Serialize>(v: T) -> Response {
         HeaderValue::from_static("private, no-store"),
     );
     res
+}
+
+/// Static CSP for the legacy SPA and this API. The reader needs WASM; images
+/// stay same-origin through `/api/img`, so no third-party source is allowed.
+const SECURITY_HEADERS: &[(&str, &str)] = &[
+    (
+        "content-security-policy",
+        "default-src 'self'; base-uri 'self'; object-src 'none'; \
+         script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
+         worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; \
+         upgrade-insecure-requests;",
+    ),
+    ("x-content-type-options", "nosniff"),
+    ("x-frame-options", "DENY"),
+    ("referrer-policy", "strict-origin-when-cross-origin"),
+    (
+        "permissions-policy",
+        "camera=(), microphone=(), geolocation=(), browsing-topics=()",
+    ),
+    (
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains",
+    ),
+];
+
+fn apply_security_headers(response: &mut Response) {
+    for (name, value) in SECURITY_HEADERS {
+        if let (Ok(key), Ok(val)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            response.headers_mut().insert(key, val);
+        }
+    }
+}
+
+/// Logs never contain query strings, headers, bodies, credentials or raw ids.
+fn safe_path(path: &str) -> String {
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let normalized: Vec<String> = path
+        .split('/')
+        .map(|segment| {
+            if segment.len() == 36
+                && segment.chars().enumerate().all(|(i, c)| {
+                    if matches!(i, 8 | 13 | 18 | 23) {
+                        c == '-'
+                    } else {
+                        c.is_ascii_hexdigit()
+                    }
+                })
+            {
+                ":id".into()
+            } else if segment.len() > 64 {
+                "[truncated]".into()
+            } else {
+                segment.into()
+            }
+        })
+        .collect();
+    normalized.join("/").chars().take(128).collect()
+}
+
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn correlation_id() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let count = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("req-{now:x}-{count:x}")
+}
+
+fn log_json(level: &str, event: &str, fields: serde_json::Value) {
+    let entry = json!({
+        "service": "kaslyydex-axum",
+        "ts": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
+        "level": level,
+        "event": event,
+        "correlationId": "none",
+    });
+    let mut entry = entry.as_object().unwrap().clone();
+    if let Some(fields) = fields.as_object() {
+        for (key, value) in fields {
+            entry.insert(key.clone(), value.clone());
+        }
+    }
+    let line = serde_json::to_string(&json!(entry)).unwrap_or_else(|_| "{}".into());
+    if level == "info" {
+        println!("{line}");
+    } else {
+        eprintln!("{line}");
+    }
+}
+
+async fn request_logging(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let started = Instant::now();
+    let id = correlation_id();
+    let method = req.method().to_string();
+    let path = safe_path(req.uri().path());
+    let mut response = next.run(req).await;
+    let status = response.status().as_u16();
+    apply_security_headers(&mut response);
+    if let Ok(value) = HeaderValue::from_str(&id) {
+        response.headers_mut().insert("x-correlation-id", value);
+    }
+
+    let level = if status >= 500 {
+        "error"
+    } else if status >= 400 {
+        "warn"
+    } else {
+        "info"
+    };
+    log_json(
+        level,
+        "request.complete",
+        json!({
+            "correlationId": id,
+            "method": method,
+            "path": path,
+            "status": status,
+            "durationMs": started.elapsed().as_millis(),
+        }),
+    );
+    response
+}
+
+/// Liveness has no config, DB or upstream dependency and returns no secrets.
+async fn health() -> Response {
+    json_no_store(json!({ "ok": true, "service": "axum" }))
+}
+
+/// Readiness for the Axum boundary is configuration-only: it owns no database.
+/// Next's `/api/v1/ready` additionally probes this route plus application DB.
+async fn ready() -> Response {
+    let raw =
+        std::env::var("MANGADEX_API_ORIGIN").unwrap_or_else(|_| "https://api.mangadex.org".into());
+    let valid = raw
+        .parse::<axum::http::Uri>()
+        .ok()
+        .and_then(|uri| uri.scheme().cloned())
+        .is_some_and(|scheme| {
+            scheme == axum::http::uri::Scheme::HTTP || scheme == axum::http::uri::Scheme::HTTPS
+        });
+    if valid {
+        json_no_store(json!({
+            "ok": true,
+            "checks": { "configuration": "ok", "database": "not_applicable", "upstream": "configured" }
+        }))
+    } else {
+        let mut response = json_no_store(json!({
+            "ok": false,
+            "checks": { "configuration": "invalid", "database": "not_applicable", "upstream": "skipped" }
+        }));
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        response
+    }
 }
 
 async fn popular(State(md): State<Md>) -> Result<Response, Err> {
@@ -292,8 +454,13 @@ async fn img(
         .into_response())
 }
 
-fn bad(e: String) -> Err {
-    api_error(StatusCode::BAD_GATEWAY, "UPSTREAM_ERROR", e)
+/// Upstream detail stays out of the response: it can contain credentials.
+fn bad(_e: String) -> Err {
+    api_error(
+        StatusCode::BAD_GATEWAY,
+        "UPSTREAM_ERROR",
+        "Upstream content is temporarily unavailable.",
+    )
 }
 
 /// Hashed static assets are immutable; HTML and API stay revalidatable.
@@ -351,6 +518,8 @@ async fn main() {
     let spa = ServeDir::new(&dist).fallback(ServeFile::new(format!("{dist}/index.html")));
 
     let app = Router::new()
+        .route("/api/v1/health", get(health))
+        .route("/api/v1/ready", get(ready))
         .route("/api/popular", get(popular))
         .route("/api/latest", get(latest))
         .route("/api/search", get(search))
@@ -365,6 +534,7 @@ async fn main() {
         .fallback_service(spa)
         .layer(axum::middleware::from_fn(static_cache_headers))
         .layer(CompressionLayer::new())
+        .layer(axum::middleware::from_fn(request_logging))
         .with_state(md);
 
     let port: u16 = std::env::var("PORT")
@@ -509,5 +679,43 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn upstream_errors_are_generic() {
+        let (status, Json(body)) = bad("postgresql://user:password@host/db".into());
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body.error.code, "UPSTREAM_ERROR");
+        assert_eq!(
+            body.error.message,
+            "Upstream content is temporarily unavailable."
+        );
+    }
+
+    #[test]
+    fn security_headers_allow_reader_but_no_third_party_sources() {
+        let mut response = (StatusCode::OK, "ok").into_response();
+        apply_security_headers(&mut response);
+        let csp = response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("'wasm-unsafe-eval'"));
+        assert!(csp.contains("img-src 'self' data: blob:"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(!csp.contains("https://"));
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(response.headers()["x-frame-options"], "DENY");
+    }
+
+    #[test]
+    fn log_helpers_never_keep_credentials_or_raw_ids() {
+        assert_eq!(
+            safe_path("/api/content/manga/391b0423-d847-456f-aff0-8b0cfc03066b"),
+            "/api/content/manga/:id"
+        );
+        assert!(!safe_path("/api/content/img?u=https://secret").contains('?'));
     }
 }

@@ -6,10 +6,11 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
+import { browserExecutable } from "./browser.mjs";
 import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
 import { pagePng } from "./image-fixtures.mjs";
 
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = browserExecutable();
 const MANGA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CHAPTER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const SHOT_DIR = join(webDir, ".test-screenshots");
@@ -50,7 +51,7 @@ function seed(url, bytes) {
 }
 
 before(async () => {
-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
+  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
   mkdirSync(SHOT_DIR, { recursive: true });
   cacheDir = join(webDir, ".test-cache", `progression-${process.pid}`);
   mkdirSync(cacheDir, { recursive: true });

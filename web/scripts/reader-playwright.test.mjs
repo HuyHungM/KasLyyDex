@@ -6,10 +6,11 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
+import { browserExecutable } from "./browser.mjs";
 import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
 import { coverJpg, pagePng } from "./image-fixtures.mjs";
 
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const EDGE = browserExecutable();
 const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CHAPTER_IDS = [
   "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -138,7 +139,7 @@ before(async () => {
 
   next = await startNext({ RUST_CONTENT_API_ORIGIN: axumUrl });
   baseUrl = next.baseUrl;
-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
+  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
 });
 
@@ -148,6 +149,18 @@ after(async () => {
   if (axum && axum.exitCode === null) axum.kill("SIGKILL");
   await fixture?.close();
 });
+
+async function assertNoHorizontalOverflow(page, label) {
+  const sizes = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  assert.ok(
+    sizes.scrollWidth <= sizes.viewport + 1 && sizes.bodyWidth <= sizes.viewport + 1,
+    `${label} overflowed horizontally: ${JSON.stringify(sizes)}`,
+  );
+}
 
 async function assertDecoded(locator, label) {
   const result = await locator.evaluate(async (img) => {
@@ -192,7 +205,7 @@ async function openPage(viewport) {
   return { context, page };
 }
 
-test("desktop and 375px shells render decodable fixture covers through Axum with no direct MangaDex requests", async () => {
+test("desktop and 375px shells render decodable covers, no horizontal overflow, and no direct MangaDex requests", async () => {
   for (const [name, viewport] of [["desktop", { width: 1280, height: 800 }], ["mobile", { width: 375, height: 812 }]]) {
     const { context, page } = await openPage(viewport);
     await page.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
@@ -205,7 +218,10 @@ test("desktop and 375px shells render decodable fixture covers through Axum with
     await assertDecoded(page.locator(".popular-rail .card-cover img").first(), `${name} card cover`);
     const rail = page.locator(".site-rail");
     if (name === "desktop") assert.equal(await rail.isVisible(), true);
-    else assert.equal(await page.locator(".bottom-tabs").isVisible(), true);
+    else {
+      assert.equal(await page.locator(".bottom-tabs").isVisible(), true);
+      await assertNoHorizontalOverflow(page, `${name} home`);
+    }
     await page.screenshot({ path: join(SHOT_DIR, `home-${name}.png`), fullPage: false });
     await context.close();
   }
@@ -312,6 +328,7 @@ test("375px reader keeps toolbar, pages and bottom navigation usable", async () 
   assert.equal(await page.locator(".reader-bottom").isVisible(), true);
   assert.ok((await page.locator(".reader-page").count()) >= 2);
   await assertDecoded(page.locator(".reader-page").first(), "375px reader page");
+  await assertNoHorizontalOverflow(page, "375px reader");
   await page.screenshot({ path: join(SHOT_DIR, "reader-mobile.png") });
   await context.close();
 });

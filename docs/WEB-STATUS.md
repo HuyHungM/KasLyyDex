@@ -68,3 +68,27 @@ raw `wasm-release` output (510 KB). Install Binaryen and rebuild to enable it.
   with language tabs, reader with 41 lazy images, scroll counter (Trang 9/41),
   chapter `<select>` and ArrowRight chapter change, `localStorage` history
   (`truyenviet:history`), and the home "Đọc tiếp · Ch. 2" shortcut.
+
+## Phase 1–2 local release gate (Task 9)
+
+The measurements below are from the Next/Axum build, not the older Leptos
+measurements above. Full commands and counts are in
+`docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-report.md`.
+
+- WASM generated from Rust by `npm run build:wasm`:
+  `reader_core.25cb810c379e858e.wasm`, 150,508 source bytes, 43,875 bytes after
+  Brotli compression (computed locally; deployment transfer encoding unverified).
+- Reader startup: browser suites instantiate the real WASM module, decode
+  fixture pages, restore chapter-local state and show a visible retry when the
+  WASM response is corrupted; no fake success fallback.
+- 375px: home and reader suites assert `document`/`body` scroll width does not
+  exceed the viewport by more than 1px. Desktop and mobile screenshots are
+  written to ignored `web/.test-screenshots/`.
+- API error paths: missing auth/content/DB/ticket config returns structured 503,
+  malformed IDs return 400, upstream failures are generic 502 without
+  credentials, and cross-origin mutations are rejected before writes.
+- Auth ownership: real SDK session fixtures show comments, library/progress and
+  completion records scoped to the authenticated user; client role fields and
+  ticket forgery never grant ownership or XP.
+- External Neon/Google/Vercel verification and live browser-to-Neon SQL remain
+  manual gates; no Preview or Production deployment was verified.
