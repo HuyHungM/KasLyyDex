@@ -17,11 +17,12 @@ type Props = {
   onToggleRun: () => void;
   onFullscreen: () => void;
   onSelectChapter: (id: string) => void;
+  fullscreenSupported: boolean;
 };
 
 export default function ReaderToolbar({
   mangaId, mangaTitle, chapterId, chapters, settings, running,
-  onSettings, onPause, onToggleRun, onFullscreen, onSelectChapter,
+  onSettings, onPause, onToggleRun, onFullscreen, onSelectChapter, fullscreenSupported,
 }: Props) {
   return (
     <header className="reader-bar">
@@ -81,11 +82,13 @@ export default function ReaderToolbar({
             )}
           </div>
         </details>
-        <button className="icon-btn" type="button" aria-label="Đổi chế độ toàn màn hình" onClick={onFullscreen}>
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M8 4H4v4m12-4h4v4m0 8v4h-4m-8 0H4v-4" />
-          </svg>
-        </button>
+        {fullscreenSupported && (
+          <button className="icon-btn" type="button" aria-label="Đổi chế độ toàn màn hình" onClick={onFullscreen}>
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M8 4H4v4m12-4h4v4m0 8v4h-4m-8 0H4v-4" />
+            </svg>
+          </button>
+        )}
       </div>
     </header>
   );

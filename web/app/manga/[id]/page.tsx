@@ -5,7 +5,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type ChaptersResponse, type MangaSummaryDto } from "@/lib/contracts";
-import { filterUrl, statusText, tagLabel } from "@/lib/format";
+import { chapterLabel, filterUrl, statusText, tagLabel } from "@/lib/format";
 import ChapterList from "@/components/chapter-list";
 import MangaActions from "@/components/manga-actions";
 import { SectionTitle } from "@/components/manga-card";
@@ -70,7 +70,7 @@ async function MangaContent({ params }: Props) {
               coverFile={manga.cover_file}
               lang={lang}
               firstChapterId={first?.id ?? null}
-              firstChapterLabel={first?.chapter ? `Ch. ${first.chapter}` : "Oneshot"}
+              firstChapterLabel={chapterLabel(first?.chapter)}
               hasExternal={active.length > 0}
             />
           </div>

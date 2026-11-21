@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
 const guest = await import("../lib/guest.ts");
+const format = await import("../lib/format.ts");
 
 class MemoryStorage {
   constructor(seed = {}) {
@@ -21,6 +22,12 @@ function seed(key, value) {
 
 beforeEach(() => {
   globalThis.localStorage = new MemoryStorage();
+});
+
+test("chapter labels use Vietnamese wording everywhere", () => {
+  assert.equal(format.chapterLabel("3"), "Chương 3");
+  assert.equal(format.chapterLabel(null), "Truyện ngắn");
+  assert.equal(format.chapterName("12.5"), "Chương 12.5");
 });
 
 test("legacy camelCase and Leptos snake_case history normalize to one shape", () => {

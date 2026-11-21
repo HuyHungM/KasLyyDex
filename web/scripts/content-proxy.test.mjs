@@ -6,13 +6,14 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
+import { PAGE_HEIGHT, PAGE_WIDTH, pagePng } from "./image-fixtures.mjs";
 
 // Local topology only. The MangaDex fixture stands in for the remote service;
 // no remote MangaDex request is needed and no credentials are involved.
 const { contentPath, createContentClient } = await import("../lib/contracts.ts");
 
 const IMAGE_URL = "https://uploads.mangadex.org/data/abc/1.png";
-const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452" + "00112233445566778899", "hex");
+const PNG = pagePng(0);
 const TAGS = [{ id: "tag-1", name: "Action", group: "genre" }];
 
 let mangadexFixture;
@@ -187,6 +188,13 @@ test("missing content origin returns a structured 503 without breaking public ro
   assert.equal(health.status, 200);
 });
 
+test("fixture page bytes are a decodable 600x900 PNG", async () => {
+  const { PNG: PngReader } = await import("pngjs");
+  const decoded = PngReader.sync.read(PNG);
+  assert.equal(decoded.width, PAGE_WIDTH);
+  assert.equal(decoded.height, PAGE_HEIGHT);
+});
+
 test("Axum page URLs use /api/content/img and Next forwards the real image bytes", async () => {
   const client = createContentClient(proxied.baseUrl);
   const { pages } = await client.pages("11111111-1111-4111-8111-111111111111");
@@ -243,6 +251,17 @@ test("image alias rejects traversal and disallowed source URLs", async () => {
     const res = await fetch(`${proxied.baseUrl}/api/img?u=${encodeURIComponent(raw)}`);
     assert.equal(res.status, 400, raw);
     assert.equal((await res.json()).error.code, "VALIDATION_ERROR");
+  }
+});
+
+test("canonical /api/content/img rejects raw traversal like the legacy alias", async () => {
+  for (const raw of ["", "../secret", IMAGE_URL.replace("/data/", "/../data/"), IMAGE_URL.replace("/data/", "/%252e%252e/data/")]) {
+    const canonical = await fetch(`${proxied.baseUrl}/api/content/img?u=${encodeURIComponent(raw)}`);
+    const legacy = await fetch(`${proxied.baseUrl}/api/img?u=${encodeURIComponent(raw)}`);
+    assert.equal(canonical.status, 400, `canonical ${raw}`);
+    assert.equal(legacy.status, 400, `legacy ${raw}`);
+    assert.equal((await canonical.json()).error.code, "VALIDATION_ERROR");
+    assert.equal((await legacy.json()).error.code, "VALIDATION_ERROR");
   }
 });
 

@@ -60,18 +60,53 @@ Result: `3 tests / 3 pass / 0 fail`; real WASM enforced page bounds (`setPage(4)
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server` | pass |
 | `git diff --check` | pass |
-| `npm run test:task5` | **27/27 pass** (auth 6, database 3, content-proxy 11, guest-storage 4, reader-wasm 3) |
+| `npm run test:task5` | **30/30 pass** (auth 6, database 3, content-proxy 13, guest-storage 5, reader-wasm 3) |
 | `node --test scripts/smoke.test.mjs` | **2/2 pass** |
-| `npm run test:e2e` | **6/6 Playwright pass** (Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`, no Chrome assumed) |
+| `npm run test:e2e` | **9/9 Playwright pass** (Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`, no Chrome assumed) |
 
 Integration details proven by tests:
 
 - Real compiled Axum serves a local MangaDex fixture; Next proxies `/api/content/*` to it. Page URLs are normalized to `/api/content/img?u=...`, and Next→Axum image responses carry identical PNG bytes, `content-type: image/png` and `Cache-Control: … immutable`.
 - Legacy `/api/img?u=...` still returns the same Axum bytes and headers.
 - Encoded/double-encoded dot segments are rejected before URL construction; raw `?u=` traversal is rejected before `new URL()` normalizes it; empty chapters stay `pages: []`; missing origin returns structured 503; browser cookies/authorization are not forwarded and upstream `Set-Cookie` does not cross the BFF.
-- Playwright at 1280×800 and 375×812: dark-lime shell with real covers, desktop rail, mobile bottom tabs, `/search?q=Fixture` results + tag filter UI, clickable manga tag → `/search?tags=…`, `/the-loai`, `/bxh?kind=rating`, `/tu-truyen` empty state, theme persisted across reload.
+- Playwright at 1280×800 and 375×812: dark-lime shell with **decodable test-only fixture covers**, desktop rail, mobile bottom tabs, `/search?q=Fixture` results + tag filter UI, clickable manga tag → `/search?tags=…`, `/the-loai`, `/bxh?kind=rating`, `/tu-truyen` empty state, theme persisted across reload. The earlier "real covers" wording is superseded: these bytes are generated fixtures served by the real Axum proxy, not live MangaDex images.
 - Reader: real WASM reported `Trang 1/4 · 25%`; scroll tracking advanced to `2/4 · 50%`; horizontal button/key advanced to `3/4` then `4/4 · 100%`; mode/background came from Rust settings; reload restored page 4 only for the same chapter, re-applied persisted horizontal/dark settings through Rust, and the next chapter started at page 1. Every browser request to a `*.mangadex.org` host was asserted absent.
 - Corrupt WASM bytes (Playwright route override) produced a visible retry panel with no rendered pages — no fake success.
+
+## Review fix round 1 (load-bearing lifecycle bugs + UX findings)
+
+**RED proof — image decode.** Added `img.decode()` + `naturalWidth > 0` assertions to the existing Playwright checks before touching fixtures. Current truncated PNG / invalid JPEG fixtures failed with:
+
+```text
+✖ desktop and 375px shells render ... (1)
+  desktop feature poster did not decode: {"ok":false,"reason":"EncodingError: The source image cannot be decoded."}
+✖ real WASM drives pages ... 
+  vertical reader page 1 did not decode: {"ok":false,"reason":"EncodingError: The source image cannot be decoded."}
+✖ 375px reader ...
+  tests 6 / pass 3 / fail 3
+```
+
+Screenshots from that run contained broken-image icons; those claims are superseded by the new decode proof.
+
+**Fixes**
+- `web/scripts/image-fixtures.mjs`: generated, deterministic, genuinely decodable 600×900 PNG reader pages and real JPEG covers (`pngjs`/`jpeg-js`, dev/test-only). Both `content-proxy.test.mjs` and `reader-playwright.test.mjs` seed Axum's cache with these bytes; a Node test asserts 600×900 PNG dimensions. Browser tests now await `img.decode()`/`naturalWidth` for feature poster, card cover, vertical page and horizontal page, and fresh screenshots were recaptured.
+- `ReaderPages.tsx`: observer effect depends only on `[mode, pages, onPage, containerRef]`; no `scrollIntoView` inside it. A closure `active` flag plus `disconnect()` ignores queued callbacks after chapter disposal, so natural scroll and auto-scroll are never fought.
+- `ReaderClient.tsx`: each chapter is a keyed `ReaderSession`, so page/settings/loaded/error/running state and the WASM instance cannot leak across equal-page-count chapters or rapid navigation. Restoration is a separate once-per-load/mode scroll; initial page 1 is persisted from actual WASM values (`pageIndex()+1`, `totalPages()`) once that chapter's history row exists. `ReaderWasm.free()` is called on disposal, retry and partially failed init; the module import is cached. Fullscreen is capability-gated and promise rejections are swallowed (no dead control, no `pageerror`).
+- `lib/format.ts` + manga detail: `Ch. N`/`Oneshot` replaced by `Chương N`/`Truyện ngắn`, covered by a unit test.
+- `lib/content-proxy.ts` + both image routes: canonical `/api/content/img?u=` now applies the same raw traversal/source guard as legacy `/api/img`; a regression test checks both aliases for empty, `../`, `/../` and double-encoded traversal without widening other content endpoints.
+
+**GREEN after fix (fresh commands)**
+```bash
+cd web
+npm run lint                 # 0 errors
+npx tsc --noEmit             # pass
+npm run build                # pass
+npm run test:task5           # 30/30 pass
+node --test scripts/reader-playwright.test.mjs  # 9/9 pass
+```
+Rust suites re-run unchanged from this worktree: `cargo test --workspace` (42 pass), `clippy -D warnings` pass, scoped `cargo fmt --check` pass, `git diff --check` pass.
+
+New browser proof: decodable images in both viewports; page 1 history saved without a page turn; equal-page chapter navigation resets to page 1 and does not inherit position; scroll position stays stable for 1.2 s after an observed page change; auto-scroll pauses on wheel with no stale RAF; corrupt WASM retry recovers and decodes pages; fullscreen absent/rejected paths produce no page errors; rapid chapter switches settle on the last chapter at page 1.
 
 ## Generated asset sizes
 
@@ -86,7 +121,7 @@ Hash is derived from the wasm-bindgen transformed binary, so the immutable URL c
 
 ## Screenshots (local, gitignored)
 
-`web/.test-screenshots/`: `home-desktop.png`, `home-mobile.png`, `search-desktop.png`, `library-empty.png`, `reader-desktop.png`, `reader-horizontal-dark.png`, `reader-mobile.png`, `reader-wasm-retry.png`.
+`web/.test-screenshots/`: `home-desktop.png`, `home-mobile.png`, `search-desktop.png`, `library-empty.png`, `reader-desktop.png`, `reader-horizontal-dark.png`, `reader-mobile.png`, `reader-wasm-retry.png`, `reader-after-retry.png`, `reader-chapter-isolation.png`. All were recaptured after the decode fix; image decoding is asserted before each capture.
 
 ## Concerns / external gates
 

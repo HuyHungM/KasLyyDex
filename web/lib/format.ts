@@ -16,7 +16,7 @@ export function chapterName(number?: string | null): string {
 }
 
 export function chapterLabel(chapter?: string | null): string {
-  return chapter ? `Ch. ${chapter}` : "Oneshot";
+  return chapterName(chapter);
 }
 
 export function tagLabel(name: string): string {

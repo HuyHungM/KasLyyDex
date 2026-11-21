@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReaderWasm } from "@/generated/reader-wasm";
 import type { ChapterDto, MangaSummaryDto } from "@/lib/contracts";
 import {
@@ -21,11 +21,26 @@ type Props = {
   pageError: string | null;
 };
 
-export default function ReaderClient({ manga, chapter, chapters, lang, pages, pageError }: Props) {
+// One cached import; repeated retries re-instantiate Rust state but never
+// re-import the glue or leak an earlier ReaderWasm.
+let wasmModulePromise: Promise<typeof import("@/generated/reader-wasm")> | null = null;
+function wasmModule() {
+  return (wasmModulePromise ??= import("@/generated/reader-wasm"));
+}
+
+const noopSubscribe = () => () => {};
+
+/// Each chapter gets a fresh keyed session: no page/settings/error/loaded state
+/// survives a client-side chapter navigation, including equal page counts.
+export default function ReaderClient(props: Props) {
+  return <ReaderSession key={props.chapter.id} {...props} />;
+}
+
+function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Props) {
   const router = useRouter();
   const root = useRef<HTMLDivElement>(null);
+  const pagesContainer = useRef<HTMLDivElement>(null);
   const wasm = useRef<ReaderWasm | null>(null);
-  const ready = useRef(false);
   const savedChapter = useRef("");
   const prefetched = useRef("");
   const settleUntil = useRef(0);
@@ -38,6 +53,12 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
   const [loaded, setLoaded] = useState(false);
   const [running, setRunning] = useState(false);
 
+  const fullscreenSupported = useSyncExternalStore(
+    noopSubscribe,
+    () => Boolean(typeof document !== "undefined" && document.fullscreenEnabled),
+    () => false,
+  );
+
   const total = pages.length;
   const index = chapters.findIndex((item) => item.id === chapter.id);
   const prev = index > 0 ? chapters[index - 1] : null;
@@ -47,20 +68,31 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
     [manga.id, lang],
   );
 
+  const releaseWasm = useCallback(() => {
+    const state = wasm.current;
+    wasm.current = null;
+    if (state) {
+      try {
+        state.free();
+      } catch {
+        // A failed/partial instance is disposable; never block navigation.
+      }
+    }
+  }, []);
+
   /// Mirror Rust state into React only after calling the actual WASM methods.
   const syncFromWasm = useCallback(() => {
     const state = wasm.current;
     if (!state) return;
     setPage(state.pageIndex());
     setProgress(state.progressPercent());
-    let json: ReaderSettings | null = null;
+    let parsed: ReaderSettings | null = null;
     try {
-      json = normalizeSettings(JSON.parse(state.settingsJson()));
+      parsed = normalizeSettings(JSON.parse(state.settingsJson()));
     } catch {
-      json = null;
+      parsed = null;
     }
-    if (json) setSettings(json);
-    ready.current = true;
+    if (parsed) setSettings(parsed);
     setLoaded(true);
   }, []);
 
@@ -68,37 +100,44 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
     let alive = true;
     (async () => {
       try {
-        const { loadReaderWasm } = await import("@/generated/reader-wasm");
+        const { loadReaderWasm } = await wasmModule();
         const { ReaderWasm: Wasm } = await loadReaderWasm();
         if (!alive || total === 0) return;
         setLoaded(false);
         const state = new Wasm(total);
-        // Settings are normalized at the storage boundary, then re-applied to
-        // Rust so the persisted mode/background/fit/speed drive the reader.
-        state.applySettingsJson(JSON.stringify(getSettings()));
-        const restored = restoredPage(getHistoryFor(manga.id), chapter.id, total);
-        if (restored > 0) {
-          state.setPage(restored);
-          // Browser scroll restoration can briefly report an older page to the
-          // observer; let the explicit restoration win until the scroll settles.
-          settleUntil.current = Date.now() + 800;
-        }
         wasm.current = state;
+        try {
+          // Persisted preferences are normalized at the storage boundary, then
+          // re-applied to Rust so mode/background/fit/speed are real state.
+          state.applySettingsJson(JSON.stringify(getSettings()));
+          const restored = restoredPage(getHistoryFor(manga.id), chapter.id, total);
+          if (restored > 0) {
+            state.setPage(restored);
+            // Browser scroll restoration can briefly report an older page to
+            // the observer; let explicit restoration win until scroll settles.
+            settleUntil.current = Date.now() + 800;
+          }
+        } catch (error) {
+          releaseWasm();
+          throw error;
+        }
+        if (!alive) {
+          releaseWasm();
+          return;
+        }
         syncFromWasm();
       } catch (error) {
         if (!alive) return;
-        wasm.current = null;
-        ready.current = false;
+        releaseWasm();
         setLoaded(false);
         setWasmError((error as Error)?.message || "Không tải được trình đọc WASM.");
       }
     })();
     return () => {
       alive = false;
-      wasm.current = null;
-      ready.current = false;
+      releaseWasm();
     };
-  }, [wasmAttempt, total, manga.id, chapter.id, syncFromWasm]);
+  }, [wasmAttempt, total, manga.id, chapter.id, syncFromWasm, releaseWasm]);
 
   useEffect(() => {
     const key = `${chapter.id}|${lang}`;
@@ -116,10 +155,28 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
     setLibraryLast(manga.id, chapter.id, Date.parse(chapter.publish_at) || 0);
   }, [chapter, manga, lang]);
 
+  // Persist the real Rust position, including page 1 without any page turn.
+  // The chapter's history row must exist first (created by the effect above).
   useEffect(() => {
-    if (!ready.current || total === 0) return;
-    saveProgress(chapter.id, page + 1, total);
-  }, [page, total, chapter.id]);
+    if (!loaded || total === 0) return;
+    const state = wasm.current;
+    if (!state) return;
+    const history = getHistoryFor(manga.id);
+    if (!history || history.chapterId !== chapter.id) return;
+    saveProgress(chapter.id, state.pageIndex() + 1, state.totalPages());
+  }, [loaded, page, total, chapter.id, manga.id]);
+
+  // One-off restoration scroll on chapter load and when returning to vertical
+  // mode. It is deliberately independent from the observer and from `page`, so
+  // normal scrolling (and auto-scroll) is never snapped back.
+  useEffect(() => {
+    if (!loaded || settings.mode !== "vertical" || total === 0) return;
+    const target = wasm.current?.pageIndex() ?? 0;
+    if (target === 0) return;
+    pagesContainer.current
+      ?.querySelector(`img[data-index="${target}"]`)
+      ?.scrollIntoView();
+  }, [loaded, settings.mode, total]);
 
   useEffect(() => {
     if (!next || prefetched.current === next.id) return;
@@ -128,20 +185,20 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
       .catch(() => undefined);
   }, [next]);
 
-  const goPage = useCallback((index: number) => {
+  const goPage = useCallback((target: number) => {
     const state = wasm.current;
-    if (!state || index === state.pageIndex()) return;
+    if (!state || target === state.pageIndex()) return;
     try {
-      state.setPage(index);
+      state.setPage(target);
     } catch {
       return; // Rust enforces the boundary; ignore out-of-range input.
     }
     syncFromWasm();
   }, [syncFromWasm]);
 
-  const onObservedPage = useCallback((index: number) => {
+  const onObservedPage = useCallback((target: number) => {
     if (Date.now() < settleUntil.current) return;
-    goPage(index);
+    goPage(target);
   }, [goPage]);
 
   const turn = useCallback((direction: -1 | 1) => {
@@ -223,12 +280,7 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
   const showRetry = wasmError !== null || pageError !== null;
 
   return (
-    <div
-      className="reader"
-      data-bg={settings.bg}
-      ref={root}
-      onWheel={() => setRunning(false)}
-    >
+    <div className="reader" data-bg={settings.bg} ref={root} onWheel={() => setRunning(false)}>
       <ReaderToolbar
         mangaId={manga.id}
         mangaTitle={manga.title}
@@ -236,12 +288,20 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
         chapters={chapters}
         settings={settings}
         running={running}
+        fullscreenSupported={fullscreenSupported}
         onSettings={changeSettings}
         onPause={() => setRunning(false)}
         onToggleRun={() => setRunning((value) => !value)}
         onFullscreen={() => {
-          if (document.fullscreenElement) void document.exitFullscreen();
-          else void root.current?.requestFullscreen();
+          try {
+            if (document.fullscreenElement) {
+              void Promise.resolve(document.exitFullscreen()).catch(() => undefined);
+            } else if (root.current?.requestFullscreen) {
+              void Promise.resolve(root.current.requestFullscreen()).catch(() => undefined);
+            }
+          } catch {
+            // Unsupported/denied fullscreen is not a reading error.
+          }
         }}
         onSelectChapter={(id) => {
           const target = chapters.find((item) => item.id === id);
@@ -263,7 +323,8 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
               onClick={() => {
                 if (wasmError) {
                   setWasmError(null);
-                  wasm.current = null;
+                  releaseWasm();
+                  setLoaded(false);
                   setWasmAttempt((attempt) => attempt + 1);
                 } else {
                   router.refresh();
@@ -285,6 +346,7 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
             onPage={onObservedPage}
             onTurn={turn}
             onPause={() => setRunning(false)}
+            containerRef={pagesContainer}
           />
         )}
       </main>

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
 import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
+import { coverJpg, pagePng } from "./image-fixtures.mjs";
 
 const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -18,9 +19,8 @@ const CHAPTER_IDS = [
 ];
 const TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const SHOT_DIR = join(webDir, ".test-screenshots");
-const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452" + "00112233445566778899", "hex");
-const JPG = Buffer.from("ffd8ffe000104a46494600010100000100010000ffd9", "hex");
 const PAGES = CHAPTER_IDS.map((_, index) => `https://uploads.mangadex.org/data/hash/page-${index + 1}.png`);
+const PAGE_BYTES = Array.from({ length: 4 }, (_, index) => pagePng(index));
 const COVERS = [256, 512].map((size) => `https://uploads.mangadex.org/covers/${MANGA_ID}/cover.jpg.${size}.jpg`);
 
 let fixture;
@@ -31,6 +31,7 @@ let axumUrl;
 let baseUrl;
 let cacheDir;
 let pageRequests = [];
+let pageErrors = [];
 
 function waitForTcp(port, deadlineMs = 20_000) {
   return new Promise((resolve, reject) => {
@@ -62,11 +63,11 @@ before(async () => {
   mkdirSync(SHOT_DIR, { recursive: true });
   cacheDir = join(webDir, ".test-cache", `playwright-${process.pid}`);
   mkdirSync(cacheDir, { recursive: true });
-  for (const url of PAGES) seed(url, PNG);
-  for (const url of COVERS) {
+  PAGES.forEach((url, index) => seed(url, PAGE_BYTES[index]));
+  COVERS.forEach((url, index) => {
     const key = createHash("sha256").update(url).digest("hex");
-    writeFileSync(join(cacheDir, `${key}.jpg`), JPG);
-  }
+    writeFileSync(join(cacheDir, `${key}.jpg`), coverJpg(index === 0 ? 256 : 512));
+  });
 
   const manga = {
     id: MANGA_ID,
@@ -148,9 +149,42 @@ after(async () => {
   await fixture?.close();
 });
 
+async function assertDecoded(locator, label) {
+  const result = await locator.evaluate(async (img) => {
+    if (!img.complete) {
+      await new Promise((resolve) => {
+        img.addEventListener("load", resolve, { once: true });
+        img.addEventListener("error", resolve, { once: true });
+      });
+    }
+    try {
+      await img.decode();
+    } catch (error) {
+      return { ok: false, reason: String(error) };
+    }
+    return { ok: true, width: img.naturalWidth, height: img.naturalHeight };
+  });
+  assert.ok(result.ok && result.width > 0 && result.height > 0, `${label} did not decode: ${JSON.stringify(result)}`);
+}
+
+async function scrollToPage(page, index) {
+  await page.evaluate((target) => {
+    const image = [...document.querySelectorAll(`.reader-page[data-index="${target}"]`)]
+      .find((candidate) => candidate.getBoundingClientRect().height > 0);
+    if (!image) throw new Error(`no visible reader page ${target}`);
+    const top = image.getBoundingClientRect().top + window.scrollY;
+    window.scrollTo(0, top - window.innerHeight * 0.26);
+  }, index);
+}
+
+async function readerText(page) {
+  return page.locator(".reader:visible .reader-page-count").textContent();
+}
+
 async function openPage(viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark" });
   const page = await context.newPage();
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("request", (request) => {
     const { hostname } = new URL(request.url());
     if (/(^|\.)mangadex\.(org|network)$/.test(hostname)) pageRequests.push(request.url());
@@ -158,7 +192,7 @@ async function openPage(viewport) {
   return { context, page };
 }
 
-test("desktop and 375px shells render real covers from Axum with no direct MangaDex requests", async () => {
+test("desktop and 375px shells render decodable fixture covers through Axum with no direct MangaDex requests", async () => {
   for (const [name, viewport] of [["desktop", { width: 1280, height: 800 }], ["mobile", { width: 375, height: 812 }]]) {
     const { context, page } = await openPage(viewport);
     await page.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
@@ -167,6 +201,8 @@ test("desktop and 375px shells render real covers from Axum with no direct Manga
     assert.ok(await page.locator(".popular-rail .card").count() >= 1);
     const cover = page.locator(".feature-poster");
     assert.ok(cover && await cover.getAttribute("src").then((src) => src.startsWith("/api/content/img?u=")));
+    await assertDecoded(cover, `${name} feature poster`);
+    await assertDecoded(page.locator(".popular-rail .card-cover img").first(), `${name} card cover`);
     const rail = page.locator(".site-rail");
     if (name === "desktop") assert.equal(await rail.isVisible(), true);
     else assert.equal(await page.locator(".bottom-tabs").isVisible(), true);
@@ -215,6 +251,7 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
   await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
   await page.locator(".reader-page").first().waitFor();
   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 1\/4 · 25%/);
+  await assertDecoded(page.locator('.reader-page[data-index="0"]'), "vertical reader page 1");
 
   const firstImage = page.locator('.reader-page[data-index="0"]');
   const imageResponse = await firstImage.evaluate(async (img) => {
@@ -223,14 +260,10 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
     return { type: response.headers.get("content-type"), hex: Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("") };
   });
   assert.equal(imageResponse.type, "image/png");
-  assert.equal(imageResponse.hex, PNG.toString("hex"));
+  assert.equal(imageResponse.hex, PAGE_BYTES[0].toString("hex"));
 
   // Vertical mode tracks the page under the reading line via IntersectionObserver.
-  await page.evaluate(() => {
-    const image = document.querySelector('.reader-page[data-index="1"]');
-    const top = image.getBoundingClientRect().top + window.scrollY;
-    window.scrollTo(0, top - window.innerHeight * 0.26);
-  });
+  await scrollToPage(page, 1);
   await page.waitForFunction(() => document.querySelector(".reader-page-count")?.textContent?.includes("Trang 2/4"));
   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 2\/4 · 50%/);
 
@@ -238,6 +271,7 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
   await page.locator(".reader-settings select").first().selectOption("horizontal");
   assert.equal(await page.locator(".reader-paged").count(), 1);
   assert.equal(await page.locator(".reader-paged img").count(), 1);
+  await assertDecoded(page.locator(".reader-paged img"), "horizontal reader page");
   await page.getByRole("button", { name: "Trang sau →" }).click();
   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 3\/4 · 75%/);
   await page.evaluate(() => {
@@ -277,6 +311,7 @@ test("375px reader keeps toolbar, pages and bottom navigation usable", async () 
   assert.equal(await page.locator(".reader-bar").isVisible(), true);
   assert.equal(await page.locator(".reader-bottom").isVisible(), true);
   assert.ok((await page.locator(".reader-page").count()) >= 2);
+  await assertDecoded(page.locator(".reader-page").first(), "375px reader page");
   await page.screenshot({ path: join(SHOT_DIR, "reader-mobile.png") });
   await context.close();
 });
@@ -295,5 +330,120 @@ test("corrupt WASM shows a visible retry instead of a fake success state", async
   assert.equal(await page.getByRole("button", { name: "Thử lại" }).isVisible(), true);
   assert.equal(await page.locator(".reader-page").count(), 0);
   await page.screenshot({ path: join(SHOT_DIR, "reader-wasm-retry.png") });
+
+  // A working retry re-instantiates Rust state and renders decodable pages.
+  await page.unroute("**/wasm/*.wasm");
+  await page.getByRole("button", { name: "Thử lại" }).click();
+  await page.locator(".reader-page").first().waitFor();
+  await assertDecoded(page.locator(".reader-page").first(), "reader page after WASM retry");
+  assert.match(await page.locator(".reader-page-count").textContent(), /Trang 1\/4 · 25%/);
+  assert.equal(await page.locator('.panel[role="alert"]').count(), 0);
+  await page.screenshot({ path: join(SHOT_DIR, "reader-after-retry.png") });
   await context.close();
+});
+
+test("page 1 progress is saved, equal-page chapters are isolated, and reload restores only the same chapter", async () => {
+  const { context, page } = await openPage({ width: 1280, height: 800 });
+  await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+  await page.locator(".reader-page").first().waitFor();
+  await assertDecoded(page.locator('.reader-page[data-index="0"]'), "chapter 1 page 1");
+
+  // No page turn yet: the initial Rust position must still be persisted.
+  await page.waitForFunction(() => {
+    const history = JSON.parse(localStorage.getItem("truyenviet:history") ?? "[]");
+    return history[0]?.chapterId?.startsWith("bbbb") && history[0]?.page === 1 && history[0]?.total === 4;
+  });
+  const first = await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0]);
+  assert.equal(first.chapterId, CHAPTER_IDS[0]);
+  assert.equal(first.page, 1);
+  assert.equal(first.total, 4);
+
+  // Equal page count chapter navigation via the toolbar select: no state leaks.
+  // Next may keep a hidden prefetched reader in the DOM, so scope to the visible one.
+  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[1]);
+  await page.waitForURL(new RegExp(CHAPTER_IDS[1]));
+  await page.locator(".reader:visible .reader-page").first().waitFor();
+  assert.match(await readerText(page), /Trang 1\/4 · 25%/);
+  const second = await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0]);
+  assert.equal(second.chapterId, CHAPTER_IDS[1]);
+  assert.equal(second.page, 1, "chapter 2 must not inherit chapter 1 position");
+
+  // Move within chapter 2, reload: only that chapter's position is restored.
+  await scrollToPage(page, 2);
+  await page.waitForFunction(() => [...document.querySelectorAll(".reader-page-count")]
+    .some((element) => element.getBoundingClientRect().height > 0 && element.textContent?.includes("Trang 3/4")));
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".reader:visible .reader-page").first().waitFor();
+  assert.match(await readerText(page), /Trang 3\/4 · 75%/);
+  assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0])).page, 3);
+
+  // Rapid successive chapter changes still settle on the last chapter at page 1.
+  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[2]);
+  await page.waitForURL(new RegExp(CHAPTER_IDS[2]));
+  await page.locator(".reader:visible .chapter-select").waitFor({ state: "visible" });
+  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[3]);
+  await page.waitForURL(new RegExp(CHAPTER_IDS[3]));
+  await page.locator(".reader:visible .reader-page").first().waitFor();
+  assert.match(await readerText(page), /Trang 1\/4 · 25%/);
+  assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0])).chapterId, CHAPTER_IDS[3]);
+  await page.screenshot({ path: join(SHOT_DIR, "reader-chapter-isolation.png") });
+  await context.close();
+});
+
+test("observer never snaps scrolling and auto-scroll pauses on user input", async () => {
+  const { context, page } = await openPage({ width: 1280, height: 800 });
+  await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+  await page.locator(".reader-page").first().waitFor();
+
+  await scrollToPage(page, 2);
+  await page.waitForFunction(() => document.querySelector(".reader-page-count")?.textContent?.includes("Trang 3/4"));
+  const stable = await page.evaluate(() => window.scrollY);
+  await page.waitForTimeout(1200);
+  assert.match(await page.locator(".reader-page-count").textContent(), /Trang 3\/4 · 75%/);
+  assert.ok(Math.abs((await page.evaluate(() => window.scrollY)) - stable) <= 2, "observer must not snap scroll position");
+
+  await page.locator(".reader-settings summary").click();
+  await page.getByRole("button", { name: "Bật tự cuộn" }).click();
+  await page.waitForTimeout(500);
+  assert.ok((await page.evaluate(() => window.scrollY)) > stable, "auto-scroll should advance");
+  await page.mouse.wheel(0, 50);
+  await page.getByRole("button", { name: "Bật tự cuộn" }).waitFor();
+  const paused = await page.evaluate(() => window.scrollY);
+  await page.waitForTimeout(600);
+  assert.ok(Math.abs((await page.evaluate(() => window.scrollY)) - paused) <= 2, "no stale RAF after pause");
+  await context.close();
+});
+
+test("fullscreen is capability-gated and rejected promises produce no page errors", async () => {
+  const before = pageErrors.length;
+
+  const unsupported = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await unsupported.addInitScript(() => {
+    Object.defineProperty(Document.prototype, "fullscreenEnabled", { configurable: true, get: () => false });
+  });
+  const first = await unsupported.newPage();
+  first.on("pageerror", (error) => pageErrors.push(error.message));
+  await first.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+  await first.locator(".reader-page").first().waitFor();
+  assert.equal(await first.getByRole("button", { name: "Đổi chế độ toàn màn hình" }).count(), 0);
+  await unsupported.close();
+
+  const denied = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await denied.addInitScript(() => {
+    Object.defineProperty(Document.prototype, "fullscreenEnabled", { configurable: true, get: () => true });
+    Object.defineProperty(Element.prototype, "requestFullscreen", {
+      configurable: true,
+      value: () => Promise.reject(new Error("fullscreen denied")),
+    });
+  });
+  const second = await denied.newPage();
+  second.on("pageerror", (error) => pageErrors.push(error.message));
+  await second.goto(`${baseUrl}/read/${CHAPTER_IDS[1]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+  await second.locator(".reader-page").first().waitFor();
+  await second.getByRole("button", { name: "Đổi chế độ toàn màn hình" }).click();
+  await second.waitForTimeout(200);
+  assert.equal(await second.locator(".reader-page").count() > 0, true);
+  await denied.close();
+
+  assert.deepEqual(pageErrors.slice(before), [], `unexpected page errors: ${pageErrors.slice(before).join("; ")}`);
 });

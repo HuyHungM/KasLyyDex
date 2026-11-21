@@ -65,6 +65,17 @@ export function hasTraversal(raw: string): boolean {
   return false;
 }
 
+/// Both `/api/content/img` and legacy `/api/img` apply the same raw-URL guard.
+export function invalidImageSource(raw: string | null | undefined): boolean {
+  if (!raw || hasTraversal(raw)) return true;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol !== "https:" || Boolean(parsed.username || parsed.password);
+  } catch {
+    return true;
+  }
+}
+
 /// Same-origin fetch to the configured Axum origin. Only safe conditional headers
 /// are forwarded; browser credentials and upstream Set-Cookie never cross the BFF.
 export async function forwardGet(request: Request, target: URL): Promise<Response> {
