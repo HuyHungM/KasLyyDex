@@ -227,13 +227,41 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .search-filters form { padding: 14px 16px; border-top: 1px solid var(--line); }
 .filter-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
 .filter-fields label, .reader-settings label { display: grid; min-width: 0; gap: 5px; font-size: .8125rem; font-weight: 600; }
-.filter-fields select, .chapter-select, .reader-settings select { width: 100%; min-height: 44px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .filter-tags { min-width: 0; margin: 14px 0; padding: 8px 0; border: 0; }
 .filter-tags legend { font-weight: 600; }
 .filter-tag { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: .8125rem; cursor: pointer; }
 .filter-tag input { margin: 0; accent-color: var(--accent); }
 .filter-tag:has(:checked) { background: var(--soft); color: var(--accent); }
 .filter-tag:has(:disabled) { opacity: .68; cursor: default; }
+
+/* Shared dropdown: the trigger keeps focus while the listbox handles selection. */
+.select { position: relative; display: inline-block; width: 100%; min-width: 0; }
+.select-trigger {
+  display: flex; width: 100%; min-height: 44px; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text); text-align: left; font-size: .875rem; font-weight: 600;
+}
+.select-trigger:hover:not(:disabled) { background: var(--hover); }
+.select[data-open="true"] .select-trigger { border-color: var(--accent); }
+.select-value { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.select-chevron { color: var(--muted); transition: transform .12s ease; }
+.select[data-open="true"] .select-chevron { transform: rotate(180deg); }
+.select-list {
+  position: absolute; z-index: 20; inset: calc(100% + 4px) 0 auto; display: block;
+  max-height: min(280px, 50dvh); overflow-y: auto; margin: 0; padding: 4px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+  box-shadow: 0 10px 24px #0003; list-style: none;
+}
+.select-list[hidden] { display: none; }
+.select-option { min-height: 40px; padding: 8px 10px; border-radius: 6px; color: var(--text); font-size: .875rem; cursor: pointer; }
+.select-option:hover { background: var(--hover); }
+.select-option[aria-selected="true"] { background: var(--soft); color: var(--accent); font-weight: 600; }
+.select-option[aria-disabled="true"] { opacity: .5; cursor: default; }
+@media (prefers-reduced-motion: no-preference) {
+  .select[data-open="true"] .select-list:not([hidden]) { animation: select-in .12s ease-out both; }
+  @keyframes select-in { from { opacity: 0; transform: translateY(-3px); } }
+}
+
 .genre-group { margin-bottom: 13px; padding: 17px 16px; }
 .genre-group h2 { margin-bottom: 13px; }
 .result-info { margin-bottom: 14px; color: var(--muted); }
@@ -351,11 +379,11 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .account-card h2 { font-size: 1.25rem; margin-bottom: 10px; }
 .account-form { display: grid; gap: 12px; margin: 16px 0; }
 .account-form label { display: grid; gap: 6px; font-size: .9rem; color: var(--muted); }
-.account-form input, .account-form select {
+.account-form input {
   width: 100%; border: 1px solid var(--line); border-radius: 9px;
   background: var(--bg); color: var(--text); padding: 10px 12px; font: inherit;
 }
-.account-form input:focus, .account-form select:focus { outline: 2px solid var(--solid); outline-offset: 1px; }
+.account-form input:focus { outline: 2px solid var(--solid); outline-offset: 1px; }
 .account-form .account-check { display: flex; align-items: center; gap: 8px; }
 .account-form .account-check input { width: auto; }
 .account-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); }

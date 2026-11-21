@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Select from "@/components/ui/Select";
 import type { ReaderSettingsDto } from "@/lib/validators";
 import { getSettings, saveSettings, type ReaderSettings } from "@/lib/guest";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
@@ -35,17 +36,27 @@ function SettingsFields({
   return (
     <form className="account-form" onSubmit={(event) => void submit(event)}>
       <label>Chế độ đọc
-        <select value={mode} onChange={(event) => setMode(event.target.value as ReaderSettingsDto["mode"])}>
-          <option value="vertical">Cuộn dọc</option>
-          <option value="horizontal">Chuyển trang</option>
-        </select>
+        <Select
+          ariaLabel="Chế độ đọc"
+          value={mode}
+          options={[
+            { value: "vertical", label: "Cuộn dọc" },
+            { value: "horizontal", label: "Chuyển trang" },
+          ]}
+          onChange={(value) => setMode(value as ReaderSettingsDto["mode"])}
+        />
       </label>
       <label>Nền
-        <select value={bg} onChange={(event) => setBg(event.target.value as ReaderSettingsDto["bg"])}>
-          <option value="light">Sáng</option>
-          <option value="sepia">Ngà</option>
-          <option value="dark">Tối</option>
-        </select>
+        <Select
+          ariaLabel="Nền"
+          value={bg}
+          options={[
+            { value: "light", label: "Sáng" },
+            { value: "sepia", label: "Ngà" },
+            { value: "dark", label: "Tối" },
+          ]}
+          onChange={(value) => setBg(value as ReaderSettingsDto["bg"])}
+        />
       </label>
       <label className="account-check"><input type="checkbox" checked={fit} onChange={(event) => setFit(event.target.checked)} /> Vừa khung hình</label>
       <label>Tốc độ cuộn

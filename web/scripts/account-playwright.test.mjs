@@ -72,6 +72,15 @@ async function open(baseUrl, viewport = { width: 1280, height: 800 }) {
   return { context, page, baseUrl };
 }
 
+async function choose(page, label, option) {
+  await page.getByRole("combobox", { name: label }).click();
+  await page.getByRole("option", { name: option, exact: true }).click();
+}
+
+function chosen(page, label) {
+  return page.getByRole("combobox", { name: label }).locator(".select-value").textContent();
+}
+
 test("auth-not-configured is explicit and guest account pages stay usable", async () => {
   const { context, page, baseUrl } = await open(unconfigured.baseUrl);
   await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
@@ -81,13 +90,13 @@ test("auth-not-configured is explicit and guest account pages stay usable", asyn
   await page.screenshot({ path: join(SHOT_DIR, "account-unconfigured.png") });
 
   await page.goto(`${baseUrl}/tai-khoan/cai-dat`, { waitUntil: "networkidle" });
-  await page.locator("select").first().selectOption("horizontal");
-  await page.locator("select").nth(1).selectOption("dark");
+  await choose(page, "Chế độ đọc", "Chuyển trang");
+  await choose(page, "Nền", "Tối");
   await page.getByRole("button", { name: "Lưu cài đặt" }).click();
   await page.getByText("Đã lưu trên thiết bị này.").waitFor();
   await page.reload({ waitUntil: "networkidle" });
-  assert.equal(await page.locator("select").first().inputValue(), "horizontal");
-  assert.equal(await page.locator("select").nth(1).inputValue(), "dark");
+  assert.equal(await chosen(page, "Chế độ đọc"), "Chuyển trang");
+  assert.equal(await chosen(page, "Nền"), "Tối");
 
   await page.evaluate(() => {
     localStorage.setItem("truyenviet:history", JSON.stringify([{

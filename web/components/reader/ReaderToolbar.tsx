@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Select from "@/components/ui/Select";
 import { sourceLabel, type ChapterDto } from "@/lib/contracts";
 import { chapterLabel } from "@/lib/format";
 import type { ReaderSettings } from "@/lib/guest";
@@ -30,37 +31,38 @@ export default function ReaderToolbar({
     <header className="reader-bar">
       <div className="reader-bar-inner">
         <Link href={`/manga/${mangaId}`} className="back-link">← {mangaTitle}{sourceSuffix}</Link>
-        <select
+        <Select
           className="chapter-select"
-          aria-label="Chọn chương"
+          ariaLabel="Chọn chương"
           value={chapterId}
-          onChange={(event) => onSelectChapter(event.target.value)}
-        >
-          {chapters.map((chapter) => (
-            <option key={chapter.id} value={chapter.id}>{chapterLabel(chapter.chapter)}</option>
-          ))}
-        </select>
+          options={chapters.map((chapter) => ({ value: chapter.id, label: chapterLabel(chapter.chapter) }))}
+          onChange={onSelectChapter}
+        />
         <details className="reader-settings">
           <summary>Cài đặt</summary>
           <div className="reader-settings-panel">
             <label>Chế độ đọc
-              <select
+              <Select
+                ariaLabel="Chế độ đọc"
                 value={settings.mode}
-                onChange={(event) => {
+                options={[{ value: "vertical", label: "Cuộn dọc" }, { value: "horizontal", label: "Lật ngang" }]}
+                onChange={(value) => {
                   onPause();
-                  onSettings({ mode: event.target.value === "horizontal" ? "horizontal" : "vertical" });
+                  onSettings({ mode: value === "horizontal" ? "horizontal" : "vertical" });
                 }}
-              >
-                <option value="vertical">Cuộn dọc</option>
-                <option value="horizontal">Lật ngang</option>
-              </select>
+              />
             </label>
             <label>Nền đọc
-              <select value={settings.bg} onChange={(event) => onSettings({ bg: event.target.value as ReaderSettings["bg"] })}>
-                <option value="light">Sáng</option>
-                <option value="sepia">Giấy ấm</option>
-                <option value="dark">Tối</option>
-              </select>
+              <Select
+                ariaLabel="Nền đọc"
+                value={settings.bg}
+                options={[
+                  { value: "light", label: "Sáng" },
+                  { value: "sepia", label: "Giấy ấm" },
+                  { value: "dark", label: "Tối" },
+                ]}
+                onChange={(value) => onSettings({ bg: value as ReaderSettings["bg"] })}
+              />
             </label>
             <button
               type="button"
@@ -73,9 +75,12 @@ export default function ReaderToolbar({
             {settings.mode === "vertical" && (
               <>
                 <label>Tốc độ tự cuộn
-                  <select value={settings.speed} onChange={(event) => onSettings({ speed: Number(event.target.value) })}>
-                    {[1, 2, 3, 4, 5].map((speed) => <option key={speed} value={speed}>{speed}</option>)}
-                  </select>
+                  <Select
+                    ariaLabel="Tốc độ tự cuộn"
+                    value={String(settings.speed)}
+                    options={[1, 2, 3, 4, 5].map((speed) => ({ value: String(speed), label: String(speed) }))}
+                    onChange={(value) => onSettings({ speed: Number(value) })}
+                  />
                 </label>
                 <button type="button" className="btn btn-primary" aria-pressed={running} onClick={onToggleRun}>
                   {running ? "Dừng tự cuộn" : "Bật tự cuộn"}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Select from "@/components/ui/Select";
 import type { ReportDto, ReportListDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
 
@@ -85,10 +86,12 @@ export default function ModerationQueue() {
       }}>
         <label>
           Khóa chủ đề
-          <select value={targetType} onChange={(event) => setTargetType(event.target.value as "manga" | "chapter")}>
-            <option value="manga">Truyện</option>
-            <option value="chapter">Chương</option>
-          </select>
+          <Select
+            ariaLabel="Khóa chủ đề"
+            value={targetType}
+            options={[{ value: "manga", label: "Truyện" }, { value: "chapter", label: "Chương" }]}
+            onChange={(value) => setTargetType(value as "manga" | "chapter")}
+          />
         </label>
         <label>Id chủ đề<input value={targetId} maxLength={200} onChange={(event) => setTargetId(event.target.value)} /></label>
         <label className="account-check">

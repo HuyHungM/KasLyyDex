@@ -194,6 +194,18 @@ async function readerText(page) {
   return page.locator(".reader:visible .reader-page-count").textContent();
 }
 
+async function chooseReader(page, label, option) {
+  const reader = page.locator(".reader:visible");
+  await reader.getByRole("combobox", { name: label }).click();
+  await reader.getByRole("option", { name: option, exact: true }).click();
+}
+
+async function chooseChapter(page, number) {
+  const reader = page.locator(".reader:visible");
+  await reader.getByRole("combobox", { name: "Chọn chương" }).click();
+  await reader.getByRole("option", { name: `Chương ${number}`, exact: true }).click();
+}
+
 async function openPage(viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark" });
   const page = await context.newPage();
@@ -284,7 +296,7 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 2\/4 · 50%/);
 
   await page.locator(".reader-settings summary").click();
-  await page.locator(".reader-settings select").first().selectOption("horizontal");
+  await chooseReader(page, "Chế độ đọc", "Lật ngang");
   assert.equal(await page.locator(".reader-paged").count(), 1);
   assert.equal(await page.locator(".reader-paged img").count(), 1);
   await assertDecoded(page.locator(".reader-paged img"), "horizontal reader page");
@@ -301,7 +313,7 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
   });
   await page.screenshot({ path: join(SHOT_DIR, "reader-desktop.png") });
 
-  await page.locator(".reader-settings select").nth(1).selectOption("dark");
+  await chooseReader(page, "Nền đọc", "Tối");
   assert.equal(await page.locator(".reader").getAttribute("data-bg"), "dark");
   await page.screenshot({ path: join(SHOT_DIR, "reader-horizontal-dark.png") });
 
@@ -375,9 +387,9 @@ test("page 1 progress is saved, equal-page chapters are isolated, and reload res
   assert.equal(first.page, 1);
   assert.equal(first.total, 4);
 
-  // Equal page count chapter navigation via the toolbar select: no state leaks.
+  // Equal page count chapter navigation via the toolbar dropdown: no state leaks.
   // Next may keep a hidden prefetched reader in the DOM, so scope to the visible one.
-  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[1]);
+  await chooseChapter(page, 2);
   await page.waitForURL(new RegExp(CHAPTER_IDS[1]));
   await page.locator(".reader:visible .reader-page").first().waitFor();
   assert.match(await readerText(page), /Trang 1\/4 · 25%/);
@@ -395,10 +407,10 @@ test("page 1 progress is saved, equal-page chapters are isolated, and reload res
   assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0])).page, 3);
 
   // Rapid successive chapter changes still settle on the last chapter at page 1.
-  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[2]);
+  await chooseChapter(page, 3);
   await page.waitForURL(new RegExp(CHAPTER_IDS[2]));
   await page.locator(".reader:visible .chapter-select").waitFor({ state: "visible" });
-  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[3]);
+  await chooseChapter(page, 4);
   await page.waitForURL(new RegExp(CHAPTER_IDS[3]));
   await page.locator(".reader:visible .reader-page").first().waitFor();
   assert.match(await readerText(page), /Trang 1\/4 · 25%/);

@@ -4,6 +4,7 @@ import { serverContent } from "@/lib/content-server";
 import type { TagDto } from "@/lib/contracts";
 import { filterUrl, statusText, tagLabel } from "@/lib/format";
 import { GridSkeleton, MangaGrid } from "@/components/manga-card";
+import Select from "@/components/ui/Select";
 
 type Query = {
   q?: string;
@@ -55,15 +56,23 @@ async function Filters({ current }: { current: ReturnType<typeof parseQuery> }) 
         <input type="hidden" name="q" value={current.q} />
         <div className="filter-fields">
           <label>Trạng thái
-            <select name="status" defaultValue={current.status}>
-              <option value="">Tất cả</option>
-              {STATUSES.map((status) => <option key={status} value={status}>{statusText(status)}</option>)}
-            </select>
+            <Select
+              name="status"
+              ariaLabel="Trạng thái"
+              defaultValue={current.status}
+              options={[
+                { value: "", label: "Tất cả" },
+                ...STATUSES.map((status) => ({ value: status, label: statusText(status) })),
+              ]}
+            />
           </label>
           <label>Sắp xếp
-            <select name="sort" defaultValue={current.sort}>
-              {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
+            <Select
+              name="sort"
+              ariaLabel="Sắp xếp"
+              defaultValue={current.sort}
+              options={SORTS.map(([value, label]) => ({ value, label }))}
+            />
           </label>
         </div>
         <fieldset className="filter-tags">
