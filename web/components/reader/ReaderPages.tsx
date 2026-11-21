@@ -55,7 +55,8 @@ export default function ReaderPages({
     return (
       <div className="reader-paged" ref={containerRef} onPointerDown={onPause}>
         <img
-          className="reader-page"
+          key={`${page}-${pages[page] ?? ""}`}
+          className="reader-page img-fade"
           src={pages[page] ?? ""}
           data-index={page}
           data-loaded="false"
@@ -101,7 +102,7 @@ export default function ReaderPages({
       {pages.map((src, index) => (
         <img
           key={`${src}-${index}`}
-          className="reader-page"
+          className="reader-page img-fade"
           src={src}
           data-index={index}
           data-loaded="false"

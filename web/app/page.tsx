@@ -3,7 +3,7 @@ import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
 import { chapterName, relDate, statusText, titleWithSource } from "@/lib/format";
-import { MangaCard } from "@/components/manga-card";
+import { CardSkeleton, MangaCard } from "@/components/manga-card";
 import ContinueReading from "@/components/continue-reading";
 
 async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
@@ -12,6 +12,56 @@ async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverCon
   } catch {
     return fallback;
   }
+}
+
+function HeroSkeleton() {
+  return (
+    <div className="feature skel-hero skel" role="status" aria-label="Đang tải truyện nổi bật">
+      <div className="feature-copy" aria-hidden="true">
+        <span className="skel-bar skel-label" />
+        <span className="skel-bar skel-title" />
+        <span className="skel-bar skel-meta" />
+        <span className="skel-bar skel-desc" />
+        <span className="skel-bar skel-action" />
+      </div>
+    </div>
+  );
+}
+
+function FeedSkeleton() {
+  return (
+    <div className="chapter-feed" role="status" aria-label="Đang tải chương mới">
+      {Array.from({ length: 3 }, (_, index) => (
+        <article className="feed-row skel-feed skel" key={index} aria-hidden="true">
+          <span className="feed-cover" />
+          <div className="feed-details">
+            <span className="skel-line title" />
+            <span className="skel-line short" />
+            <div className="chapter-pills"><span className="skel-pill" /><span className="skel-pill" /></div>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function RankSkeleton() {
+  return (
+    <ol className="rank-list" role="status" aria-label="Đang tải xếp hạng">
+      {Array.from({ length: 5 }, (_, index) => (
+        <li key={index}>
+          <div className="skel-rank skel" aria-hidden="true">
+            <span className="rank-row">
+              <span className="skel-bar skel-rank-no" />
+              <span className="rank-cover" />
+              <span className="rank-title"><span className="skel-bar" /><span className="skel-bar" /></span>
+              <span className="skel-bar skel-rank-score" />
+            </span>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 function FeatureFallback() {
@@ -131,7 +181,7 @@ async function RankPanel() {
 export default function Home() {
   return (
     <main className="wrap home">
-      <Suspense fallback={<div className="feature skel" role="status" aria-label="Đang tải truyện nổi bật" />}>
+      <Suspense fallback={<HeroSkeleton />}>
         <Featured />
       </Suspense>
       <ContinueReading />
@@ -140,7 +190,7 @@ export default function Home() {
           <h2 id="popular-title">Được theo dõi nhiều</h2>
           <Link href="/bxh" className="text-link">Xem xếp hạng →</Link>
         </div>
-        <Suspense fallback={<div className="popular-rail" role="status" aria-label="Đang tải truyện">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="skel skel-cover" />)}</div>}>
+        <Suspense fallback={<div className="popular-rail" role="status" aria-label="Đang tải truyện">{Array.from({ length: 6 }, (_, index) => <CardSkeleton key={index} rank />)}</div>}>
           <Popular />
         </Suspense>
       </section>
@@ -151,7 +201,7 @@ export default function Home() {
               <h2><span className="live-mark" aria-hidden="true" />Mới cập nhật</h2>
               <Link href="/bxh?kind=new" className="text-link">Xem danh sách →</Link>
             </div>
-            <Suspense fallback={<div className="skel" role="status" aria-label="Đang tải chương mới" />}>
+            <Suspense fallback={<FeedSkeleton />}>
               <LatestFeed />
             </Suspense>
           </section>
@@ -159,7 +209,7 @@ export default function Home() {
         <aside className="home-side">
           <section className="surface">
             <div className="panel-heading"><h2>Bảng xếp hạng</h2><Link href="/bxh" className="text-link">Xem tất cả →</Link></div>
-            <Suspense fallback={<div className="skel" role="status" aria-label="Đang tải xếp hạng" />}>
+            <Suspense fallback={<RankSkeleton />}>
               <RankPanel />
             </Suspense>
           </section>

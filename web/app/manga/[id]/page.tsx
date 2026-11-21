@@ -91,10 +91,26 @@ export default function MangaPage({ params }: Props) {
     <Suspense
       fallback={
         <main className="wrap">
-          <div className="surface manga-head skel">
-            <div className="skel-cover big" />
-            <div className="skel-info"><div className="skel-line w60" /><div className="skel-line w30" /><div className="skel-line w90" /></div>
-          </div>
+          <section className="surface manga-head skel" role="status" aria-label="Đang tải truyện">
+            <div className="skel-cover big" aria-hidden="true" />
+            <div className="skel-info" aria-hidden="true">
+              <div className="skel-line w60" /><div className="skel-line w30" /><div className="skel-line w90" />
+            </div>
+          </section>
+          <section className="surface chapters-panel" role="status" aria-label="Đang tải danh sách chapter">
+            <div className="section-title"><h2>Danh sách chapter</h2></div>
+            <ul className="chapter-list">
+              {Array.from({ length: 4 }, (_, index) => (
+                <li key={index}>
+                  <div className="chapter-row skel-chapter skel" aria-hidden="true">
+                    <span className="skel-bar skel-num" />
+                    <span className="skel-bar skel-title" />
+                    <span className="skel-bar skel-date" />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
         </main>
       }
     >

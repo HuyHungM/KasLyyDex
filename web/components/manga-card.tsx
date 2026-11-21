@@ -36,15 +36,22 @@ export function MangaGrid({ list }: { list: MangaSummaryDto[] }) {
   );
 }
 
+export function CardSkeleton({ rank }: { rank?: boolean }) {
+  return (
+    <div className="card skel-card skel" aria-hidden="true">
+      <div className="card-cover">
+        {rank ? <span className="rank-num" /> : null}
+      </div>
+      <span className="card-title skel-bar" />
+      <span className="card-year skel-bar" />
+    </div>
+  );
+}
+
 export function GridSkeleton() {
   return (
     <div className="manga-grid" role="status" aria-label="Đang tải truyện">
-      {Array.from({ length: 6 }).map((_, index) => (
-        <div key={index} className="skel">
-          <div className="skel-cover" />
-          <div className="skel-line" />
-        </div>
-      ))}
+      {Array.from({ length: 6 }, (_, index) => <CardSkeleton key={index} />)}
     </div>
   );
 }

@@ -146,7 +146,12 @@ async function SearchContent({ searchParams }: Props) {
       <div className="page-intro">
         <div><h1>Khám phá truyện</h1><p>Lọc theo thể loại, trạng thái hoặc cách sắp xếp.</p></div>
       </div>
-      <Suspense fallback={<div className="surface skel" role="status" aria-label="Đang tải bộ lọc" />}>
+      <Suspense fallback={
+        <div className="surface search-filters skel" role="status" aria-label="Đang tải bộ lọc">
+          <div className="skel-line w60" aria-hidden="true" />
+          <div className="skel-pill" aria-hidden="true" />
+        </div>
+      }>
         <Filters current={current} />
       </Suspense>
       <Suspense fallback={<GridSkeleton />}>
@@ -158,7 +163,12 @@ async function SearchContent({ searchParams }: Props) {
 
 export default function SearchPage(props: Props) {
   return (
-    <Suspense fallback={<main className="wrap catalog-page" role="status" aria-label="Đang tải kết quả" />}>
+    <Suspense fallback={
+      <main className="wrap catalog-page">
+        <div className="page-intro"><h1>Khám phá truyện</h1></div>
+        <GridSkeleton />
+      </main>
+    }>
       <SearchContent {...props} />
     </Suspense>
   );

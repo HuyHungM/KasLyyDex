@@ -19,6 +19,9 @@
   --rail-width: 208px;
   --safe: env(safe-area-inset-bottom, 0px);
   --tabs-height: calc(65px + var(--safe));
+  --dur-fast: 120ms;
+  --dur-base: 220ms;
+  --ease-out: cubic-bezier(.2, .7, .2, 1);
 }
 
 :root[data-theme="light"] {
@@ -258,8 +261,8 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .select-option[aria-selected="true"] { background: var(--soft); color: var(--accent); font-weight: 600; }
 .select-option[aria-disabled="true"] { opacity: .5; cursor: default; }
 @media (prefers-reduced-motion: no-preference) {
-  .select-chevron { transition: transform .12s ease; }
-  .select[data-open="true"] .select-list:not([hidden]) { animation: select-in .12s ease-out both; }
+  .select-chevron { transition: transform var(--dur-fast) var(--ease-out); }
+  .select[data-open="true"] .select-list:not([hidden]) { animation: select-in var(--dur-fast) var(--ease-out) both; }
   @keyframes select-in { from { opacity: 0; transform: translateY(-3px); } }
 }
 
@@ -364,14 +367,61 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .skel-line.w90 { width: 90%; height: 70px; }
 .skel-head { display: flex; gap: 16px; }
 .skel-info { flex: 1; }
+.skel-bar { display: block; min-width: 0; border-radius: 5px; background: var(--hover); }
+.skel-hero .feature-copy { display: grid; align-content: center; gap: 12px; }
+.skel-hero .skel-label { width: 11ch; height: 14px; }
+.skel-hero .skel-title { width: min(80%, 460px); height: clamp(2.5rem, 5vw, 4.5rem); border-radius: 10px; }
+.skel-hero .skel-meta { width: 40%; height: 14px; }
+.skel-hero .skel-desc { width: min(60%, 420px); height: 14px; }
+.skel-hero .skel-action { width: 132px; height: 44px; border-radius: 9px; }
+.skel-card { min-width: 0; }
+.skel-card .card-title { height: 2.5em; }
+.skel-card .card-year { width: 60%; height: 12px; }
+.skel-card .rank-num { border-color: transparent; background: var(--hover); color: transparent; }
+.skel-feed .skel-line { margin-top: 0; }
+.skel-feed .skel-line.title { height: 19px; width: 85%; }
+.skel-feed .skel-line.short { height: 12px; width: 50%; margin-top: 8px; }
+.skel-feed .chapter-pills { margin-top: 8px; }
+.skel-feed .skel-pill { height: 44px; margin: 0; }
+.skel-rank .rank-row { min-height: 56px; }
+.skel-rank .skel-rank-no { width: 2ch; height: 18px; }
+.skel-rank .rank-title .skel-bar { height: 12px; margin: 0; }
+.skel-rank .rank-title .skel-bar + .skel-bar { width: 60%; margin-top: 6px; }
+.skel-rank .skel-rank-score { width: 42px; height: 14px; }
+.skel-chapter { min-height: 52px; }
+.skel-chapter .skel-bar { margin: 0; }
+.skel-chapter .skel-num { width: 72px; height: 18px; }
+.skel-chapter .skel-title { height: 14px; width: 90%; }
+.skel-chapter .skel-date { grid-column: 2; width: 45%; height: 11px; margin-top: 6px; }
+.reader-page[data-loaded="false"] { background: var(--hover); }
+.img-fade { opacity: 0; }
+.img-fade[data-loaded="true"] { opacity: 1; }
+@media (max-width: 639px) {
+  .skel-hero .skel-title { width: 76%; height: 2.5rem; }
+  .skel-hero .skel-desc { display: none; }
+}
+@media (min-width: 640px) {
+  .skel-chapter .skel-date { grid-column: auto; }
+}
 @media (prefers-reduced-motion: no-preference) {
-  @keyframes breathe { 50% { opacity: .57; } }
-  .skel, .reader-skel { animation: breathe 1.6s ease-in-out infinite; }
-  .feature-copy { animation: feature-in .32s ease-out both; }
+  @keyframes shimmer { 50% { opacity: .57; } }
   @keyframes feature-in { from { opacity: 0; transform: translateY(6px); } }
-  :is(.btn, .icon-btn, .nav-btn):active:not(:disabled) { transform: translateY(1px); }
-  .card-cover img { transition: transform .2s ease; }
+  @keyframes img-in { from { opacity: 0; transform: translateY(4px); } }
+  .skel, .reader-skel { animation: shimmer 1.6s ease-in-out infinite; }
+  .feature-copy { animation: feature-in var(--dur-base) var(--ease-out) both; }
+  :is(.btn, .icon-btn, .nav-btn):active:not(:disabled) {
+    transform: translateY(1px);
+    transition: transform var(--dur-fast) var(--ease-out);
+  }
+  .card-cover img { transition: transform var(--dur-base) var(--ease-out); }
   .card:hover img { transform: scale(1.045); }
+  .reader-page, .reader-paged img {
+    transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+  }
+  .reader-page.img-fade[data-loaded="true"] { animation: img-in var(--dur-base) var(--ease-out) both; }
+  progress { transition: filter var(--dur-fast) var(--ease-out); }
+  progress::-webkit-progress-value { transition: width var(--dur-base) var(--ease-out); }
+  progress::-moz-progress-bar { transition: width var(--dur-base) var(--ease-out); }
 }
 
 /* Account flows: compact, text-first forms that survive the dark/light theme. */
