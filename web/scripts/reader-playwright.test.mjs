@@ -260,6 +260,9 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".reader-page").first().waitFor();
   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 4\/4 · 100%/);
+  // Persisted settings are re-applied to Rust state, not left as a JS-only pref.
+  assert.equal(await page.locator(".reader-paged").count(), 1);
+  assert.equal(await page.locator(".reader").getAttribute("data-bg"), "dark");
 
   await page.goto(`${baseUrl}/read/${CHAPTER_IDS[1]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
   await page.locator(".reader-page").first().waitFor();

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReaderWasm } from "@/generated/reader-wasm";
 import type { ChapterDto, MangaSummaryDto } from "@/lib/contracts";
 import {
-  DEFAULT_SETTINGS, getHistoryFor, normalizeSettings, pushHistory, restoredPage,
+  DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
 } from "@/lib/guest";
 import ReaderPages from "./ReaderPages";
@@ -73,6 +73,9 @@ export default function ReaderClient({ manga, chapter, chapters, lang, pages, pa
         if (!alive || total === 0) return;
         setLoaded(false);
         const state = new Wasm(total);
+        // Settings are normalized at the storage boundary, then re-applied to
+        // Rust so the persisted mode/background/fit/speed drive the reader.
+        state.applySettingsJson(JSON.stringify(getSettings()));
         const restored = restoredPage(getHistoryFor(manga.id), chapter.id, total);
         if (restored > 0) {
           state.setPage(restored);

@@ -70,7 +70,7 @@ Integration details proven by tests:
 - Legacy `/api/img?u=...` still returns the same Axum bytes and headers.
 - Encoded/double-encoded dot segments are rejected before URL construction; raw `?u=` traversal is rejected before `new URL()` normalizes it; empty chapters stay `pages: []`; missing origin returns structured 503; browser cookies/authorization are not forwarded and upstream `Set-Cookie` does not cross the BFF.
 - Playwright at 1280×800 and 375×812: dark-lime shell with real covers, desktop rail, mobile bottom tabs, `/search?q=Fixture` results + tag filter UI, clickable manga tag → `/search?tags=…`, `/the-loai`, `/bxh?kind=rating`, `/tu-truyen` empty state, theme persisted across reload.
-- Reader: real WASM reported `Trang 1/4 · 25%`; scroll tracking advanced to `2/4 · 50%`; horizontal button/key advanced to `3/4` then `4/4 · 100%`; mode/background came from Rust settings; reload restored page 4 only for the same chapter and the next chapter started at page 1. Every browser request to a `*.mangadex.org` host was asserted absent.
+- Reader: real WASM reported `Trang 1/4 · 25%`; scroll tracking advanced to `2/4 · 50%`; horizontal button/key advanced to `3/4` then `4/4 · 100%`; mode/background came from Rust settings; reload restored page 4 only for the same chapter, re-applied persisted horizontal/dark settings through Rust, and the next chapter started at page 1. Every browser request to a `*.mangadex.org` host was asserted absent.
 - Corrupt WASM bytes (Playwright route override) produced a visible retry panel with no rendered pages — no fake success.
 
 ## Generated asset sizes
