@@ -15,3 +15,8 @@ web/.next
 /.worktrees
 web/generated
 web/public/wasm
+web/.test-cache
+web/.test-screenshots
+web/.test-*.log
+/.test-*.log
+web/*.tsbuildinfo

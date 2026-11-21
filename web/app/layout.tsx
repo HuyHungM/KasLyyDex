@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import { Be_Vietnam_Pro, Oswald } from "next/font/google";
+import { Suspense } from "react";
+import { Be_Vietnam_Pro, Bricolage_Grotesque } from "next/font/google";
 import "./globals.css";
-import Header from "@/components/header";
+import SiteShell from "@/components/site-shell";
 
 const beVietnam = Be_Vietnam_Pro({
   variable: "--font-be-vietnam",
@@ -9,10 +10,10 @@ const beVietnam = Be_Vietnam_Pro({
   weight: ["400", "500", "600", "700"],
 });
 
-const oswald = Oswald({
-  variable: "--font-oswald",
+const bricolage = Bricolage_Grotesque({
+  variable: "--font-bricolage",
   subsets: ["latin", "vietnamese"],
-  weight: ["500", "600", "700"],
+  weight: ["500", "600", "700", "800"],
 });
 
 export const metadata: Metadata = {
@@ -26,17 +27,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="vi" className={`${beVietnam.variable} ${oswald.variable} h-full antialiased`}>
-      <body className="flex min-h-full flex-col font-sans">
-        <Header />
-        <div className="flex-1">{children}</div>
-        <footer className="border-t border-line py-6 text-center text-xs text-muted">
-          KasLyyDex — demo đọc truyện phi thương mại. Dữ liệu &amp; ảnh từ{" "}
-          <a href="https://mangadex.org" target="_blank" rel="noopener noreferrer" className="underline hover:text-paper">
-            MangaDex
-          </a>
-          . Ủng hộ tác giả bằng cách mua truyện bản quyền.
-        </footer>
+    <html lang="vi" className={`${beVietnam.variable} ${bricolage.variable}`}>
+      <body>
+        <Suspense fallback={<div className="site-shell">{children}</div>}>
+          <SiteShell>{children}</SiteShell>
+        </Suspense>
       </body>
     </html>
   );

@@ -1,33 +1,27 @@
-import { agent, undiciFetch } from "@/lib/http";
-
-// Image proxy with a strict host allowlist (SSRF-safe).
-const ALLOWED = (h: string) => h === "uploads.mangadex.org" || h.endsWith(".mangadex.network");
+// Legacy compatibility alias. The only image fetcher is Axum; this route just
+// forwards `/api/img?u=...` to its `/api/img` handler so old Leptos pages and
+// cached Next HTML keep working. New page URLs use `/api/content/img`.
+import { badRequest, contentOrigin, forwardGet, hasTraversal } from "@/lib/content-proxy";
 
 export async function GET(request: Request) {
-  const raw = new URL(request.url).searchParams.get("u") || "";
-  let url: URL;
+  const origin = contentOrigin();
+  if (typeof origin !== "string") return origin;
+
+  // The raw query value is checked before `new URL()` normalizes `..` away.
+  const raw = new URL(request.url).searchParams.get("u")?.trim();
+  if (!raw) return badRequest("Thiếu địa chỉ ảnh.");
+  if (hasTraversal(raw)) return badRequest("Đường dẫn ảnh không hợp lệ.");
+
+  let upstreamUrl: URL;
   try {
-    url = new URL(raw);
+    upstreamUrl = new URL(raw);
   } catch {
-    return new Response("Bad url", { status: 400 });
+    return badRequest("Địa chỉ ảnh không hợp lệ.");
   }
-  if (url.protocol !== "https:" || !ALLOWED(url.hostname)) {
-    return new Response("Host not allowed", { status: 400 });
+  if (upstreamUrl.protocol !== "https:" || upstreamUrl.username || upstreamUrl.password) {
+    return badRequest("Nguồn ảnh không được phép.");
   }
-  try {
-    const up = await undiciFetch(url.toString(), {
-      dispatcher: agent,
-      redirect: "error", // never follow redirects into arbitrary hosts (SSRF)
-      headers: { "User-Agent": "KasLyyDexReader/1.0 (educational demo)" },
-    });
-    if (!up.ok || !up.body) return new Response("Upstream error", { status: 502 });
-    return new Response(up.body as unknown as BodyInit, {
-      headers: {
-        "Content-Type": up.headers.get("content-type") || "image/jpeg",
-        "Cache-Control": "public, max-age=86400",
-      },
-    });
-  } catch {
-    return new Response("Upstream unreachable", { status: 502 });
-  }
+
+  const target = new URL(`${origin}/api/img?u=${encodeURIComponent(raw)}`);
+  return forwardGet(request, target);
 }

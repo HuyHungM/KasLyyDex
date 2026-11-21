@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -10,11 +11,16 @@ import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./t
 // no remote MangaDex request is needed and no credentials are involved.
 const { contentPath, createContentClient } = await import("../lib/contracts.ts");
 
+const IMAGE_URL = "https://uploads.mangadex.org/data/abc/1.png";
+const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452" + "00112233445566778899", "hex");
+const TAGS = [{ id: "tag-1", name: "Action", group: "genre" }];
+
 let mangadexFixture;
 let axum;
 let axumUrl;
 let proxied;
 let unconfigured;
+let cacheDir;
 
 function waitForTcp(port, deadlineMs = 20_000) {
   return new Promise((resolve, reject) => {
@@ -32,14 +38,37 @@ function waitForTcp(port, deadlineMs = 20_000) {
   });
 }
 
+function json(res, body, extraHeaders = {}) {
+  res.writeHead(200, { "content-type": "application/json", ...extraHeaders });
+  res.end(JSON.stringify(body));
+}
+
 before(async () => {
+  cacheDir = join(webDir, ".test-cache", `axum-${process.pid}`);
+  mkdirSync(cacheDir, { recursive: true });
+  // Pre-seed Axum's disk cache so the image bytes are served by the real Axum
+  // handler without any production fake host override or network dependency.
+  const key = createHash("sha256").update(IMAGE_URL).digest("hex");
+  writeFileSync(join(cacheDir, `${key}.png`), PNG);
+
   mangadexFixture = await startHttpServer((req, res) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    if (req.url.startsWith("/chapter")) {
-      res.end(JSON.stringify({
+    const url = req.url ?? "";
+    if (url.startsWith("/at-home/server/")) {
+      const empty = url.endsWith("/22222222-2222-4222-8222-222222222222");
+      return json(res, {
+        baseUrl: "https://uploads.mangadex.org",
+        chapter: {
+          hash: "abc",
+          data: empty ? [] : ["1.png"],
+          dataSaver: [],
+        },
+      });
+    }
+    if (url.startsWith("/chapter")) {
+      return json(res, {
         total: 1,
         data: [{
-          id: "fixture-chapter-1",
+          id: "11111111-1111-4111-8111-111111111111",
           attributes: {
             chapter: "1",
             pages: 2,
@@ -47,16 +76,18 @@ before(async () => {
             translatedLanguage: "vi",
             readableAt: "2026-11-20T00:00:00Z",
           },
-          relationships: [{ type: "manga", id: "fixture-manga-1" }],
+          relationships: [{ type: "manga", id: "33333333-3333-4333-8333-333333333333" }],
         }],
-      }));
-      return;
+      });
     }
-    if (req.url.startsWith("/manga?")) {
-      res.end(JSON.stringify({
+    if (url.startsWith("/manga/tag")) {
+      return json(res, { total: TAGS.length, data: TAGS.map((t) => ({ id: t.id, attributes: { name: { en: t.name }, group: t.group } })) }, { "set-cookie": "fixture=1; Path=/" });
+    }
+    if (url.startsWith("/manga?")) {
+      return json(res, {
         total: 1,
         data: [{
-          id: "fixture-manga-1",
+          id: "33333333-3333-4333-8333-333333333333",
           attributes: {
             title: { vi: "Fixture Manga" },
             status: "ongoing",
@@ -64,10 +95,23 @@ before(async () => {
           },
           relationships: [],
         }],
-      }));
-      return;
+      });
     }
-    res.end(JSON.stringify({ total: 0, data: [] }));
+    if (url.includes("/feed?")) {
+      return json(res, { total: 1, data: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        attributes: { chapter: "1", pages: 2, translatedLanguage: "vi", readableAt: "2026-11-20T00:00:00Z" },
+        relationships: [],
+      }] });
+    }
+    if (url.startsWith("/manga/")) {
+      return json(res, { data: {
+        id: "33333333-3333-4333-8333-333333333333",
+        attributes: { title: { vi: "Fixture Manga" }, status: "ongoing", description: { vi: "Local fixture" } },
+        relationships: [],
+      } });
+    }
+    return json(res, { total: 0, data: [] });
   });
 
   const port = await freePort();
@@ -80,6 +124,7 @@ before(async () => {
       ...process.env,
       PORT: String(port),
       MANGADEX_API_ORIGIN: mangadexFixture.baseUrl,
+      CACHE_DIR: cacheDir,
       DIST_DIR: join(webDir, "public"),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -140,4 +185,76 @@ test("missing content origin returns a structured 503 without breaking public ro
 
   const health = await fetch(`${unconfigured.baseUrl}/api/v1/health`);
   assert.equal(health.status, 200);
+});
+
+test("Axum page URLs use /api/content/img and Next forwards the real image bytes", async () => {
+  const client = createContentClient(proxied.baseUrl);
+  const { pages } = await client.pages("11111111-1111-4111-8111-111111111111");
+  assert.equal(pages.length, 1);
+  assert.ok(pages[0].startsWith("/api/content/img?u="), pages[0]);
+  assert.equal(new URL(pages[0], proxied.baseUrl).searchParams.get("u"), IMAGE_URL);
+
+  const res = await fetch(`${proxied.baseUrl}${pages[0]}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "image/png");
+  assert.match(res.headers.get("cache-control") ?? "", /immutable/);
+  assert.equal(res.headers.get("set-cookie"), null);
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), PNG);
+});
+
+test("legacy /api/img alias still forwards the same Axum bytes", async () => {
+  const alias = `${proxied.baseUrl}/api/img?u=${encodeURIComponent(IMAGE_URL)}`;
+  const res = await fetch(alias);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "image/png");
+  assert.match(res.headers.get("cache-control") ?? "", /immutable/);
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), PNG);
+});
+
+test("empty chapter pages stay an empty array instead of a fake image", async () => {
+  const client = createContentClient(proxied.baseUrl);
+  assert.deepEqual((await client.pages("22222222-2222-4222-8222-222222222222")).pages, []);
+});
+
+test("dot segments are rejected before URL construction (encoded and double encoded)", async () => {
+  for (const segment of ["%2e%2e", "%252e%252e", "%252e"]) {
+    const res = await fetch(`${proxied.baseUrl}/api/content/${segment}/latest`);
+    assert.ok(res.status >= 400, `${segment} => ${res.status}`);
+    if (res.status === 400) {
+      assert.equal((await res.json()).error.code, "VALIDATION_ERROR");
+    }
+  }
+});
+
+test("dot-segment guard rejects literal and encoded forms before URL construction", async () => {
+  const { unsafeSegment, hasTraversal } = await import("../lib/content-proxy.ts");
+  for (const value of [".", "..", "%2e", "%2e%2e", "%252e%252e", "a/b", "a\\b"]) {
+    assert.ok(unsafeSegment(value), value);
+  }
+  assert.equal(unsafeSegment("latest"), false);
+  assert.equal(unsafeSegment("11111111-1111-4111-8111-111111111111"), false);
+  assert.ok(hasTraversal("https://uploads.mangadex.org/../a.png"));
+  assert.ok(hasTraversal("https://uploads.mangadex.org/%252e%252e/a.png"));
+  assert.equal(hasTraversal(IMAGE_URL), false);
+});
+
+test("image alias rejects traversal and disallowed source URLs", async () => {
+  for (const raw of ["", "../secret", IMAGE_URL.replace("/data/", "/../data/")]) {
+    const res = await fetch(`${proxied.baseUrl}/api/img?u=${encodeURIComponent(raw)}`);
+    assert.equal(res.status, 400, raw);
+    assert.equal((await res.json()).error.code, "VALIDATION_ERROR");
+  }
+});
+
+test("browser cookies and upstream Set-Cookie never cross the content proxy", async () => {
+  const res = await fetch(`${proxied.baseUrl}/api/content/tags`, {
+    headers: { cookie: "session=leak", authorization: "Bearer leak" },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("set-cookie"), null);
+  assert.ok(Array.isArray(await res.json()));
+  const upstream = mangadexFixture.requests.find((request) => request.url.startsWith("/manga/tag"));
+  assert.ok(upstream);
+  assert.equal(upstream.headers.cookie, undefined);
+  assert.equal(upstream.headers.authorization, undefined);
 });

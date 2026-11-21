@@ -1,47 +1,53 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getHistoryFor } from "@/lib/history";
+import { useSyncExternalStore } from "react";
+import { chapterLabel } from "@/lib/format";
+import {
+  getHistory, getLibrary, subscribe, toggleLibrary, type GuestHistory, type GuestLibraryEntry,
+} from "@/lib/guest";
 
 type Props = {
   mangaId: string;
+  title: string;
+  coverFile: string | null;
   lang: string;
   firstChapterId: string | null;
   firstChapterLabel: string;
   hasExternal?: boolean;
 };
 
-export default function MangaActions({ mangaId, lang, firstChapterId, firstChapterLabel, hasExternal }: Props) {
-  const [resume, setResume] = useState<{ chapterId: string; chapter: string | null; lang: string } | null>(null);
+const NO_HISTORY: GuestHistory[] = [];
+const NO_LIBRARY: GuestLibraryEntry[] = [];
 
-  useEffect(() => {
-    const h = getHistoryFor(mangaId);
-    if (h) setResume({ chapterId: h.chapterId, chapter: h.chapter, lang: h.lang });
-  }, [mangaId]);
+export default function MangaActions({ mangaId, title, coverFile, lang, firstChapterId, firstChapterLabel, hasExternal }: Props) {
+  const history = useSyncExternalStore(subscribe, getHistory, () => NO_HISTORY);
+  const library = useSyncExternalStore(subscribe, getLibrary, () => NO_LIBRARY);
+  const resume = history.find((entry) => entry.mangaId === mangaId);
+  const followed = library.some((entry) => entry.mangaId === mangaId);
 
   return (
-    <div className="flex flex-wrap gap-3">
+    <div className="actions">
       {firstChapterId ? (
-        <Link
-          href={`/read/${firstChapterId}?manga=${mangaId}&lang=${lang}`}
-          className="rounded-full bg-vermillion px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-vermillion-dark"
-        >
+        <Link href={`/read/${firstChapterId}?manga=${encodeURIComponent(mangaId)}&lang=${lang}`} className="btn btn-primary">
           Đọc từ đầu · {firstChapterLabel}
         </Link>
       ) : (
-        <span className="rounded-full bg-panel px-6 py-2.5 text-sm text-muted">
-          {hasExternal ? "Chapter chỉ có ở nguồn ngoài" : "Chưa có chapter"}
-        </span>
+        <span className="btn btn-disabled">{hasExternal ? "Chapter chỉ có ở nguồn ngoài" : "Chưa có chapter"}</span>
       )}
       {resume && (
-        <Link
-          href={`/read/${resume.chapterId}?manga=${mangaId}&lang=${resume.lang}`}
-          className="rounded-full border border-line bg-panel px-6 py-2.5 text-sm font-medium text-paper transition hover:border-vermillion"
-        >
-          Đọc tiếp · {resume.chapter ? `Ch. ${resume.chapter}` : "Oneshot"}
+        <Link href={`/read/${resume.chapterId}?manga=${encodeURIComponent(mangaId)}&lang=${resume.lang}`} className="btn">
+          Đọc tiếp · {chapterLabel(resume.chapter)}
         </Link>
       )}
+      <button
+        type="button"
+        className="btn"
+        aria-pressed={followed}
+        onClick={() => toggleLibrary({ mangaId, title, coverFile, lang })}
+      >
+        {followed ? "✓ Đang theo dõi" : "+ Thêm vào tủ truyện"}
+      </button>
     </div>
   );
 }

@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { getChapters, getManga } from "@/lib/mangadex";
-import Reader from "@/components/reader";
+import { serverContent } from "@/lib/content-server";
+import type { ChapterDto, MangaSummaryDto } from "@/lib/contracts";
+import { chapterLabel } from "@/lib/format";
+import ReaderClient from "@/components/reader/ReaderClient";
 
 type Props = {
   params: Promise<{ chapterId: string }>;
@@ -10,34 +12,61 @@ type Props = {
 };
 
 export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
-  const [{ chapterId }, sp] = await Promise.all([params, searchParams]);
-  if (!sp.manga) return { title: "Đọc truyện" };
+  const [{ chapterId }, query] = await Promise.all([params, searchParams]);
+  if (!query.manga) return { title: "Đọc truyện" };
   try {
-    const manga = await getManga(sp.manga);
-    const chapters = await getChapters(sp.manga, sp.lang || "vi");
-    const c = chapters.find((x) => x.id === chapterId);
-    return { title: `${c ? `Ch. ${c.chapter ?? "Oneshot"} — ` : ""}${manga.title}` };
+    const client = await serverContent();
+    const [manga, chapters] = await Promise.all([client.manga(query.manga), client.chapters(query.manga)]);
+    const chapter = [...chapters.vi, ...chapters.en].find((item) => item.id === chapterId);
+    return { title: `${chapter ? `${chapterLabel(chapter.chapter)} — ` : ""}${manga.title}` };
   } catch {
     return { title: "Đọc truyện" };
   }
 }
 
 async function ReadContent({ params, searchParams }: Props) {
-  const [{ chapterId }, sp] = await Promise.all([params, searchParams]);
-  if (!sp.manga) notFound();
-  const lang = sp.lang === "en" ? "en" : "vi";
-  const manga = await getManga(sp.manga).catch(() => notFound());
-  const chapters = await getChapters(sp.manga, lang);
-  return <Reader manga={manga} lang={lang} chapters={chapters} chapterId={chapterId} />;
+  const [{ chapterId }, query] = await Promise.all([params, searchParams]);
+  if (!query.manga) notFound();
+  const lang = query.lang === "en" ? "en" : "vi";
+  let manga: MangaSummaryDto;
+  let chapters: { vi: ChapterDto[]; en: ChapterDto[] };
+  try {
+    const client = await serverContent();
+    [manga, chapters] = await Promise.all([client.manga(query.manga), client.chapters(query.manga)]);
+  } catch {
+    notFound();
+  }
+  const chapter = chapters[lang].find((item) => item.id === chapterId)
+    ?? [...chapters.vi, ...chapters.en].find((item) => item.id === chapterId);
+  if (!chapter) notFound();
+
+  let pages: string[] = [];
+  let pageError: string | null = null;
+  if (!chapter.external_url) {
+    try {
+      pages = (await (await serverContent()).pages(chapterId)).pages;
+    } catch {
+      pageError = "Không tải được ảnh chương. Vui lòng thử lại.";
+    }
+  }
+
+  return (
+    <ReaderClient
+      manga={manga}
+      chapter={chapter}
+      chapters={chapters[lang].length > 0 ? chapters[lang] : chapters.en}
+      lang={lang}
+      pages={pages}
+      pageError={pageError}
+    />
+  );
 }
 
 export default function ReadPage(props: Props) {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-[60vh] items-center justify-center text-sm text-muted">
-          Đang tải chapter…
-        </div>
+        <div className="reader-loading" role="status" aria-label="Đang mở chương">Đang mở chương…</div>
       }
     >
       <ReadContent {...props} />

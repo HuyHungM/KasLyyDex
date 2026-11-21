@@ -1,51 +1,49 @@
-/* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getHistory, type HistoryEntry } from "@/lib/history";
-import { imgProxy } from "@/lib/types";
-import { SectionTitle } from "./manga-card";
+import { useSyncExternalStore } from "react";
+import { coverImageUrl } from "@/lib/contracts";
+import { chapterLabel } from "@/lib/format";
+import { getHistory, subscribe, type GuestHistory } from "@/lib/guest";
+import { SectionTitle } from "@/components/manga-card";
+
+const EMPTY: GuestHistory[] = [];
 
 export default function ContinueReading() {
-  const [list, setList] = useState<HistoryEntry[]>([]);
-
-  useEffect(() => {
-    setList(getHistory().slice(0, 6));
-  }, []);
-
+  // useSyncExternalStore reads localStorage during hydration without a
+  // setState-in-effect (and without a hydration mismatch).
+  const list = useSyncExternalStore(subscribe, getHistory, () => EMPTY);
   if (list.length === 0) return null;
 
   return (
-    <section className="mb-10">
+    <section className="section">
       <SectionTitle>Đọc tiếp</SectionTitle>
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-        {list.map((h) => {
-          const cover = h.coverFile
-            ? `https://uploads.mangadex.org/covers/${h.mangaId}/${h.coverFile}.256.jpg`
-            : null;
-          return (
-            <Link
-              key={h.mangaId}
-              href={`/read/${h.chapterId}?manga=${h.mangaId}&lang=${h.lang}`}
-              className="group flex gap-3 rounded-lg bg-panel p-2 ring-1 ring-line transition hover:ring-vermillion/60"
-            >
-              <div className="relative h-20 w-14 shrink-0 overflow-hidden rounded bg-panel-2">
-                {cover && (
-                  <img src={imgProxy(cover)} alt={h.mangaTitle} loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
-                )}
-              </div>
-              <div className="min-w-0 py-0.5">
-                <p className="line-clamp-2 text-sm font-medium text-paper group-hover:text-vermillion">
-                  {h.mangaTitle}
-                </p>
-                <p className="mt-1 text-xs text-muted">
-                  Đọc tiếp · {h.chapter ? `Ch. ${h.chapter}` : "Oneshot"}
-                </p>
-              </div>
-            </Link>
-          );
-        })}
+      <div className="continue-grid">
+        {list.slice(0, 6).map((entry) => (
+          <Link
+            key={entry.mangaId}
+            href={`/read/${entry.chapterId}?manga=${encodeURIComponent(entry.mangaId)}&lang=${entry.lang}`}
+            className="continue-card"
+          >
+            <div className="continue-cover">
+              {entry.coverFile && (
+                <img
+                  src={coverImageUrl({ id: entry.mangaId, cover_file: entry.coverFile }, 256) ?? ""}
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                />
+              )}
+            </div>
+            <div className="continue-meta">
+              <p className="cc-title">{entry.mangaTitle}</p>
+              <p className="cc-ch">{chapterLabel(entry.chapter)}</p>
+              {entry.total && entry.total > 0 ? (
+                <progress aria-label="Tiến độ đọc chương" max={entry.total} value={entry.page ?? 1} />
+              ) : null}
+            </div>
+          </Link>
+        ))}
       </div>
     </section>
   );

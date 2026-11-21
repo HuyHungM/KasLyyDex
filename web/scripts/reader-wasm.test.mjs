@@ -39,9 +39,9 @@ before(async () => {
     res.writeHead(404);
     res.end();
   });
-  const module = await import(new URL("../generated/reader-wasm/index.mjs", import.meta.url).href);
-  init = module.init;
-  ReaderWasm = module.ReaderWasm;
+  const wasmModule = await import(new URL("../generated/reader-wasm/index.mjs", import.meta.url).href);
+  init = wasmModule.init;
+  ReaderWasm = wasmModule.ReaderWasm;
   await init({ module_or_path: `${server.baseUrl}${asset}` });
 });
 

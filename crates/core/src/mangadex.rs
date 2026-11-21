@@ -324,11 +324,20 @@ impl Md {
             .filter_map(|f| f.as_str())
             .map(|f| {
                 let url = format!("{base}/{directory}/{hash}/{f}");
-                format!("/api/img?u={}", utf8_percent_encode(&url, NON_ALPHANUMERIC))
+                image_proxy_path(&url)
             })
             .collect();
         Ok(PagesResponse { pages })
     }
+}
+
+/// New page URLs target the content namespace; legacy `/api/img` stays registered
+/// on the Axum server for the old Leptos client and as a forwarding alias in Next.
+fn image_proxy_path(url: &str) -> String {
+    format!(
+        "/api/content/img?u={}",
+        utf8_percent_encode(url, NON_ALPHANUMERIC)
+    )
 }
 
 fn pick(map: &Value) -> String {
@@ -584,6 +593,14 @@ fn latest_groups(feed: &Value) -> Vec<(&str, Vec<LatestChapterDto>)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn page_image_urls_use_the_content_namespace() {
+        let path = image_proxy_path("https://uploads.mangadex.org/data/hash/1.png");
+        assert!(path.starts_with("/api/content/img?u="));
+        assert!(path.contains("%2Fdata%2Fhash%2F1"));
+        assert!(!path.starts_with("/api/img"));
+    }
 
     #[test]
     fn content_ids_are_uuids_and_never_opaque_auth_ids() {

@@ -1,48 +1,175 @@
 import { Suspense } from "react";
-import { getLatest, getPopular } from "@/lib/mangadex";
-import { GridSkeleton, MangaGrid, SectionTitle } from "@/components/manga-card";
+import Link from "next/link";
+import { serverContent } from "@/lib/content-server";
+import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+import { chapterName, relDate, statusText } from "@/lib/format";
+import { MangaCard } from "@/components/manga-card";
 import ContinueReading from "@/components/continue-reading";
 
-async function Popular() {
-  const list = await getPopular();
-  return <MangaGrid list={list} />;
+async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await load(await serverContent());
+  } catch {
+    return fallback;
+  }
 }
 
-async function Latest() {
-  const list = await getLatest();
-  return <MangaGrid list={list} />;
+function FeatureFallback() {
+  return (
+    <section className="feature feature-fallback">
+      <div className="feature-copy">
+        <h1>Khám phá truyện</h1>
+        <p>Tìm manga theo tên, thể loại hoặc xem các chương vừa cập nhật.</p>
+        <Link href="/search" className="btn btn-primary">Tìm truyện →</Link>
+      </div>
+    </section>
+  );
+}
+
+async function Featured() {
+  const [manga] = await withContent((client) => client.rank("follows"), [] as MangaSummaryDto[]);
+  if (!manga) return <FeatureFallback />;
+  const cover = coverImageUrl(manga, 512);
+  return (
+    <section className="feature" aria-labelledby="featured-title">
+      {cover && (
+        <div className="feature-art" aria-hidden="true">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="feature-bleed" src={cover} alt="" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="feature-poster" src={cover} alt="" fetchPriority="high" />
+        </div>
+      )}
+      <div className="feature-copy">
+        <p className="feature-label"><span aria-hidden="true" />Truyện nổi bật</p>
+        <h1 id="featured-title">{manga.title}</h1>
+        <p className="feature-meta">
+          {manga.rating && manga.rating > 0 ? <strong>★ {manga.rating.toFixed(1)}</strong> : null}
+          {manga.year ? <span>{manga.year}</span> : null}
+          {manga.status ? <span>{statusText(manga.status)}</span> : null}
+        </p>
+        {manga.description ? <p className="feature-description">{manga.description}</p> : null}
+        <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
+      </div>
+    </section>
+  );
+}
+
+async function Popular() {
+  const list = await withContent((client) => client.rank("follows").then((rows) => rows.slice(0, 6)), [] as MangaSummaryDto[]);
+  if (list.length === 0) return <p className="empty">Chưa có truyện để hiển thị.</p>;
+  return (
+    <div className="popular-rail">
+      {list.map((manga, index) => <MangaCard key={manga.id} manga={manga} rank={index + 1} />)}
+    </div>
+  );
+}
+
+async function LatestFeed() {
+  const feed = await withContent((client) => client.latest(), [] as LatestMangaDto[]);
+  if (feed.length === 0) return <p className="empty">Chưa có chương mới. Bạn có thể tìm truyện theo thể loại.</p>;
+  return (
+    <div className="chapter-feed">
+      {feed.map((item) => {
+        const cover = coverImageUrl(item, 256);
+        return (
+          <article className="feed-row" key={item.id}>
+            <Link href={`/manga/${item.id}`} className="feed-cover" aria-label={`Xem truyện ${item.title}`}>
+              {cover && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={cover} alt="" loading="lazy" decoding="async" />
+              )}
+            </Link>
+            <div className="feed-details">
+              <h3><Link href={`/manga/${item.id}`}>{item.title}</Link></h3>
+              <div className="chapter-pills">
+                {item.chapters.map((chapter, index) => (
+                  <Link
+                    key={chapter.id}
+                    href={`/read/${chapter.id}?manga=${encodeURIComponent(item.id)}&lang=${chapter.lang}`}
+                    className={index === 0 ? "chapter-pill fresh" : "chapter-pill"}
+                  >
+                    {chapterName(chapter.chapter)}
+                    <abbr title={chapter.lang === "vi" ? "Tiếng Việt" : "Tiếng Anh"}>
+                      {chapter.lang === "vi" ? "VI" : "EN"}
+                    </abbr>
+                    {index === 0 ? <span className="feed-date">{relDate(chapter.publish_at)}</span> : null}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+async function RankPanel() {
+  const list = await withContent((client) => client.rank("follows").then((rows) => rows.slice(0, 5)), [] as MangaSummaryDto[]);
+  return (
+    <ol className="rank-list">
+      {list.map((manga, index) => (
+        <li key={manga.id}>
+          <Link href={`/manga/${manga.id}`} className="rank-row">
+            <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+            <span className="rank-cover">
+              {coverImageUrl(manga, 256) && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={coverImageUrl(manga, 256) ?? ""} alt="" loading="lazy" />
+              )}
+            </span>
+            <span className="rank-title">{manga.title}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
+            {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
+          </Link>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 export default function Home() {
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8">
-      <section className="relative mb-10 overflow-hidden rounded-xl bg-panel px-6 py-10 ring-1 ring-line sm:px-10">
-        <div className="halftone absolute inset-0 opacity-30" aria-hidden />
-        <div className="relative">
-          <h1 className="font-display text-3xl font-semibold uppercase leading-tight tracking-wide sm:text-4xl">
-            Kho manga <span className="text-vermillion">bản Việt &amp; Anh</span>
-          </h1>
-          <p className="mt-2 max-w-xl text-sm text-muted sm:text-base">
-            Hàng chục nghìn bộ truyện từ MangaDex — đọc miễn phí, không quảng cáo, lưu lịch sử đọc ngay trên máy bạn.
-          </p>
-        </div>
-      </section>
-
+    <main className="wrap home">
+      <Suspense fallback={<div className="feature skel" role="status" aria-label="Đang tải truyện nổi bật" />}>
+        <Featured />
+      </Suspense>
       <ContinueReading />
-
-      <section className="mb-10">
-        <SectionTitle>Phổ biến nhất</SectionTitle>
-        <Suspense fallback={<GridSkeleton />}>
+      <section className="popular-section" aria-labelledby="popular-title">
+        <div className="panel-heading">
+          <h2 id="popular-title">Được theo dõi nhiều</h2>
+          <Link href="/bxh" className="text-link">Xem xếp hạng →</Link>
+        </div>
+        <Suspense fallback={<div className="popular-rail" role="status" aria-label="Đang tải truyện">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="skel skel-cover" />)}</div>}>
           <Popular />
         </Suspense>
       </section>
-
-      <section className="mb-10">
-        <SectionTitle>Mới cập nhật</SectionTitle>
-        <Suspense fallback={<GridSkeleton />}>
-          <Latest />
-        </Suspense>
-      </section>
+      <div className="home-columns">
+        <div className="home-main">
+          <section className="surface feed-panel" aria-label="Mới cập nhật">
+            <div className="panel-heading">
+              <h2><span className="live-mark" aria-hidden="true" />Mới cập nhật</h2>
+              <Link href="/bxh?kind=new" className="text-link">Xem danh sách →</Link>
+            </div>
+            <Suspense fallback={<div className="skel" role="status" aria-label="Đang tải chương mới" />}>
+              <LatestFeed />
+            </Suspense>
+          </section>
+        </div>
+        <aside className="home-side">
+          <section className="surface">
+            <div className="panel-heading"><h2>Bảng xếp hạng</h2><Link href="/bxh" className="text-link">Xem tất cả →</Link></div>
+            <Suspense fallback={<div className="skel" role="status" aria-label="Đang tải xếp hạng" />}>
+              <RankPanel />
+            </Suspense>
+          </section>
+          <section className="surface shelf-preview">
+            <h2>Tủ truyện của bạn</h2>
+            <p>Lưu truyện đang theo dõi và đọc tiếp mọi lúc trên thiết bị này.</p>
+            <Link href="/tu-truyen" className="btn">Mở tủ truyện →</Link>
+          </section>
+        </aside>
+      </div>
     </main>
   );
 }

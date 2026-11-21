@@ -224,10 +224,10 @@ mod tests {
             assert!(chapters.get(field).is_some(), "missing `{field}`");
         }
         let pages: Value = serde_json::to_value(PagesResponse {
-            pages: vec!["/api/img?u=x".into()],
+            pages: vec!["/api/content/img?u=x".into()],
         })
         .unwrap();
-        assert_eq!(pages, json!({ "pages": ["/api/img?u=x"] }));
+        assert_eq!(pages, json!({ "pages": ["/api/content/img?u=x"] }));
     }
 
     #[test]
