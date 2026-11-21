@@ -3,7 +3,42 @@
 Worktree: `D:\Code\nodejs\kaslyydex\.worktrees\kaslyydex-phase-1-2`
 Branch: `feature/kaslyydex-phase-1-2`
 Base: `6a1496f7a18b000bd45436eb792e5a99aa19e516`
-Commit message: `chore: establish KasLyyDex phase release gates`
+Initial implementation commit: `902f77c` (`chore: establish KasLyyDex phase release gates`)
+Fix round 1 applied on top of `902f77c`; no cloud/provider writes, deploy, merge or push.
+
+## Fix round 1 — security redaction and honest gates
+
+Important 1 (redaction) and Important 2 (runbook), plus the controller-ruled
+cheap gate fixes, were implemented in this round. No Rust source changed.
+
+| Fix-round command | Result |
+|---|---|
+| `node --import tsx --conditions=react-server --test scripts/observability.test.mjs` (`web/`, RED) | FAIL as expected — 5 tests, 2 pass / 3 fail: opaque Bearer token leaked, repeated/no-colon header token leaked, `logStructured` leaked arbitrary field values. |
+| Same command after fix (GREEN, final suite) | PASS — 6/6 tests, 0 skipped. Covers opaque Bearer, multi-value Cookie/Set-Cookie, Proxy/X-Forwarded-Authorization, OAuth `code=`, URL query token, DB URL credentials, repeated headers, no-colon headers, serialized-log defense in depth, valid JSON, and ordinary prose preservation. |
+| `node --test scripts/whitespace-check.test.mjs` (`web/`) | PASS — 2/2. The fixture test seeds a tracked trailing-whitespace file, asserts the gate exits 1 with `trailing.txt:1: trailing-whitespace`, then cleans the file and asserts exit 0. |
+| `node scripts/whitespace-check.mjs ..` (`web/`) | PASS — 221 tracked files inspected, 0 findings after removing one historical trailing space in `task-5-report.md` (whitespace-only). |
+| `node --import tsx --conditions=react-server --test scripts/observability.test.mjs scripts/env-validation.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs` (`web/`, focused) | PASS — 14/14 at the time of that focused run; final observability suite then grew to 6 tests and aggregate below is authoritative. |
+| `node ../infra/healthcheck 'http://127.0.0.1:9/?token=supersecret123'` (`web/`) | PASS — exit 1, output contained status codes only; supplied URL/token were not echoed. |
+| CI YAML sanity (`js-yaml.load` + assertions) | PASS — parsed 19 steps; real whitespace gate and `-p reader-wasm` fmt present. |
+| `cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server` | PASS — no Rust changes, maintained-package scope now includes `reader-wasm`. |
+| `npm run build:web`, `npm run typecheck`, `npm run lint` (`web/`) | PASS — build clean; typecheck clean; lint 0 errors / 7 pre-existing warnings. |
+| `npm run test:aggregate` (`web/`, final) | PASS — **121/121** tests, 0 skipped, 33.7s. |
+
+Security rationale: the previous key/value regex stopped at the first whitespace
+token, so `Authorization: Bearer <opaque>` kept the opaque token, multi-value
+cookies kept later `k=v` pairs, forwarded authorization was not covered, and
+`logStructured` could serialize arbitrary fields unredacted. The fix redacts the
+whole header value for Authorization/Proxy-Authorization/X-Forwarded-Authorization
+and whole Cookie/Set-Cookie values, supports `code=`/query secrets and repeated
+headers, and applies redaction to the serialized log line as defense in depth.
+Generic prose without a credential separator is preserved so error messages stay
+diagnostic. No raw headers/bodies are logged; metric labels remain bounded.
+
+Runbook fix: `infra/deployment.md` now has an owner-gated manual Vercel
+rollback/promote-previous-successful-deployment step with
+`node infra/healthcheck <url>` verification, clearly separate from Neon migration
+rollback. No automatic rollback or token handling; first-deploy caveat unchanged.
+`infra/healthcheck` no longer echoes the operator-supplied base URL.
 
 ## Final local gate status
 
@@ -29,7 +64,7 @@ Remove-Item -Recurse -Force web\generated\reader-wasm, web\public\wasm, web\.nex
 |---|---|
 | `npm ci` (`web/`) | PASS — 439 packages added, 440 audited. 4 moderate advisories reported by npm; `npm audit fix --force` was not run (out of scope, could change dependencies). |
 | `node scripts/secret-scan.mjs ..` (`web/`) | PASS — 168 tracked text files scanned, 0 candidates. |
-| `cargo fmt --check -p domain -p contracts -p reader-core -p server` | PASS. First run found only new Axum formatting; `cargo fmt -p server` fixed it, final check clean. Full-workspace fmt remains a documented baseline exception. |
+| `cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server` | PASS. Initial implementation needed `cargo fmt -p server`; fix-round recheck with `reader-wasm` included is clean. Full-workspace fmt remains a documented baseline exception. |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS — 0 warnings. |
 | `cargo test --workspace` | PASS — 50 tests, 0 failed: contracts 4, core 14, domain 1, reader-core 5, reader-wasm 3, server 9, legacy UI 14; doc-tests 0. |
 | `cargo build -p server` | PASS. |
@@ -37,9 +72,9 @@ Remove-Item -Recurse -Force web\generated\reader-wasm, web\public\wasm, web\.nex
 | `npm run build:web` (`web/`) | PASS — Next 16.4.6 build, `/api/v1/ready` listed among dynamic routes. |
 | `npm run typecheck` (`web/`) | PASS after WASM/Next generated types exist. On a truly empty `.next` this must run after `build:web`; CI ordering was corrected accordingly. |
 | `npm run lint` (`web/`) | PASS — 0 errors, 7 pre-existing `@next/next/no-img-element` warnings, none suppressed. |
-| `npm run test:aggregate` (`web/`) | PASS — 116/116 tests, 0 skipped, 34.4s. |
+| `npm run test:aggregate` (`web/`) | Initial implementation PASS 116/116; after fix-round additions final PASS 121/121 tests, 0 skipped, 33.7s. |
 | `npm run test:browser` (`web/`) | PASS — 23/23 tests, 0 skipped, 25.2s. |
-| `git diff --check` | PASS after removing two trailing blank lines in `infra/*.md`. |
+| `node scripts/whitespace-check.mjs ..` (`web/`) | Replaced vacuous clean-checkout `git diff --check`; final PASS, 221 tracked files inspected, 0 findings. Fixture proof is in the fix-round table above. |
 
 Logs were written outside the repository (`C:\Users\Hungg\AppData\Local\Temp\opencode\task9-final-*.log`)
 and are not committed.
@@ -68,10 +103,13 @@ and are not committed.
   transactional and idempotent.
 - **Security/observability**: Next/Axum CSP permits same-origin images and
   `'wasm-unsafe-eval'` with no third-party source; health is credential-free
-  liveness, readiness is bounded and returns only env names/status; structured
-  JSON logs carry correlation ids and redact sensitive values; `metric()` is
-  local no-op with bounded `operation`/`outcome` labels on auth/account/
-  community/progression only.
+  liveness, readiness is bounded and returns only env names/status. After fix
+  round 1, structured JSON logs carry correlation IDs and redact whole
+  Authorization/Proxy-Authorization/X-Forwarded-Authorization and Cookie/
+  Set-Cookie values, OAuth `code=`/query secrets, DB URL credentials, JWTs,
+  emails and repeated headers; the serialized log line is redacted as defense
+  in depth. No raw headers/bodies are logged. `metric()` is a local no-op with
+  bounded `operation`/`outcome` labels on auth/account/community/progression only.
 
 ## Implemented in this task
 
@@ -83,7 +121,9 @@ and are not committed.
   health/readiness, correlation-id request logging, normalized log paths and
   generic upstream errors.
 - Added `web/lib/observability.ts`, `lib/health.ts`, `infra/healthcheck`,
-  secret-pattern scan/env validation tests and browser executable discovery.
+  secret-pattern scan/env validation tests, tracked-file whitespace gate and
+  browser executable discovery. Fix round 1 hardened whole-value redaction and
+  removed URL echo from `infra/healthcheck`.
 - Added `@vercel/functions@^3.11.3` solely for `metric()`; operators can query
   `kaslyydex.user_requests` and `kaslyydex.user_request.duration_ms`.
 - Updated `README.md`, `CHANGELOG.md`, `docs/WEB-STATUS.md`, `infra/README.md`,
@@ -108,6 +148,8 @@ No Preview or Production smoke was run or claimed.
 ## Deferred final-review items (not fixed or claimed here)
 
 - Full-workspace Rust `fmt --check` baseline debt in legacy Leptos/UI files.
+- Secret scan uses a tracked-text extension allowlist; it is not a binary or
+  generated-artifact scanner.
 - Vercel first-deploy/external gates, team access and the 402 fair-use block.
 - Task 5's uncommitted generated-WASM/CI rebuild requirement is now covered by
   CI and the clean-state gate above; generated files are still not committed.

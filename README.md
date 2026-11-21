@@ -69,9 +69,11 @@ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
 ## Release gates
 
 `.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
-secret-pattern scan; `cargo fmt --check` scoped; clippy workspace `-D warnings`;
-`cargo test --workspace`; `npm ci`; typecheck/lint; `build:wasm` → `build:web`;
-aggregate tests; Playwright Chromium install + browser suites; `git diff --check`.
+secret-pattern scan; `cargo fmt --check` scoped including `reader-wasm`; clippy
+workspace `-D warnings`; `cargo test --workspace`; `npm ci`; `build:wasm` →
+`build:web` → typecheck/lint; aggregate tests; Playwright Chromium install +
+browser suites; tracked-file whitespace/conflict-marker scan (not vacuous on a
+clean checkout).
 
 Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
 CI scoped vào `domain`, `contracts`, `reader-core`, `server`. Xem

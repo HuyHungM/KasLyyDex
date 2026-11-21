@@ -20,6 +20,6 @@ async function probe(path) {
 }
 
 const liveness = await probe("/api/v1/health");
-const result = { base, liveness, readiness: livenessOnly ? undefined : await probe("/api/v1/ready") };
+const result = { liveness, readiness: livenessOnly ? undefined : await probe("/api/v1/ready") };
 console.log(JSON.stringify(result));
 process.exit(liveness.ok && (livenessOnly || result.readiness.ok) ? 0 : 1);

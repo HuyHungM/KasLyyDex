@@ -11,15 +11,59 @@ export type ObservedOperation = (typeof OBSERVED_OPERATIONS)[number];
 
 const correlation = new AsyncLocalStorage<string>();
 
+// Longer names first so `set-cookie` wins over `cookie` and forwarded headers
+// win over plain `authorization`. Headers may use `:`/`=` or whitespace before
+// an auth scheme / cookie pair; generic fields need a real `:`/`=` separator so
+// ordinary prose such as "This ticket belongs to another account" survives.
+const HEADER_FIELDS = [
+  "x-forwarded-authorization",
+  "proxy-authorization",
+  "authorization",
+  "set-cookie",
+  "cookie",
+];
+const GENERIC_FIELDS = [
+  "connection-string",
+  "connection_string",
+  "database-url",
+  "database_url",
+  "upstream-key",
+  "upstream_key",
+  "api-key",
+  "api_key",
+  "password",
+  "passwd",
+  "pwd",
+  "secret",
+  "ticket",
+  "token",
+  "email",
+  "code",
+];
+const FIELD_PATTERN = [...HEADER_FIELDS, ...GENERIC_FIELDS].join("|");
+const HEADER_SEPARATOR = String.raw`(?:\s*[:=]\s*|\s+(?:(?=(?:Bearer|Basic)\b)|(?=[A-Za-z0-9_.%-]+=)))`;
+const GENERIC_SEPARATOR = String.raw`\s*[:=]\s*`;
+// Stop at a closing quote, line end, or the next known credential field. For
+// Cookie/Set-Cookie this redacts the whole header (every k=v pair), not just
+// the first value. `&` handles URL query strings such as ?code=...&token=...
+const VALUE_BOUNDARY = String.raw`(?=\s*(?:"|'|$|[\r\n]|[,;|&]\s*(?:${FIELD_PATTERN})(?:${HEADER_SEPARATOR}|${GENERIC_SEPARATOR})|\s+(?:${FIELD_PATTERN})(?:${HEADER_SEPARATOR}|${GENERIC_SEPARATOR})))`;
+const VALUE_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^\r\n"']*?)`;
+const HEADER_PATTERN = new RegExp(
+  String.raw`\b(${HEADER_FIELDS.join("|")})${HEADER_SEPARATOR}${VALUE_PATTERN}${VALUE_BOUNDARY}`,
+  "gi",
+);
+const GENERIC_PATTERN = new RegExp(
+  String.raw`\b(${GENERIC_FIELDS.join("|")})${GENERIC_SEPARATOR}${VALUE_PATTERN}${VALUE_BOUNDARY}`,
+  "gi",
+);
+
 function redactValue(value: string): string {
   return value
     .replace(/postgres(?:ql)?:\/\/[^\s"'<>]+/gi, "[redacted-database-url]")
     .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted-token]")
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[redacted-email]")
-    .replace(
-      /\b(cookie|authorization|password|passwd|pwd|secret|ticket|token|api[_-]?key|upstream[_-]?key|database_url|connection_string)\s*[:=]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}]+)/gi,
-      "$1=[redacted]",
-    );
+    .replace(HEADER_PATTERN, "$1=[redacted]")
+    .replace(GENERIC_PATTERN, "$1=[redacted]");
 }
 
 /// Shared redaction for structured logs. It never echoes raw headers, bodies,
@@ -43,8 +87,11 @@ export function logStructured(
     correlationId: correlation.getStore() ?? "none",
     ...fields,
   });
-  if (level === "info") process.stdout.write(`${entry}\n`);
-  else process.stderr.write(`${entry}\n`);
+  // Defense in depth: even a future field that accidentally contains a header
+  // or body is redacted before it reaches the log sink.
+  const line = redactValue(entry);
+  if (level === "info") process.stdout.write(`${line}\n`);
+  else process.stderr.write(`${line}\n`);
 }
 
 /// Call from existing error-to-response helpers so error details are logged once

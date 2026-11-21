@@ -42,7 +42,7 @@ jobs:
         run: node web/scripts/secret-scan.mjs .
 
       - name: Rust scoped formatting
-        run: cargo fmt --check -p domain -p contracts -p reader-core -p server
+        run: cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server
 
       - name: Rust clippy (workspace, warnings are errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -93,5 +93,6 @@ jobs:
         run: npm run test:browser
         working-directory: web
 
+      # Inspects tracked checkout content, so it is not vacuous on a clean tree.
       - name: Whitespace / conflict-marker check
-        run: git diff --check
+        run: node web/scripts/whitespace-check.mjs .

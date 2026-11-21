@@ -24,7 +24,7 @@ The same commands run in `.github/workflows/ci.yml`; CI requests no secrets.
 ```bash
 # repository root
 node web/scripts/secret-scan.mjs .
-cargo fmt --check -p domain -p contracts -p reader-core -p server
+cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build -p server
@@ -38,7 +38,7 @@ npm run lint
 npm run test:aggregate
 npm run browser:install   # installs Playwright Chromium in CI
 npm run test:browser
-git diff --check
+node web/scripts/whitespace-check.mjs .
 ```
 
 Local Windows verification uses the installed Edge path discovered by
@@ -106,6 +106,23 @@ server secrets with `NEXT_PUBLIC_`.
 5. Deploy the built app manually, verify `health`/`ready`, content proxy, a real
    browser-to-Neon account/progression flow and error paths. Record the actual
    deployment URL/target. Do not call these gates passed until observed.
+
+## Vercel rollback (manual, owner-gated)
+
+This is separate from Neon migration rollback and was not performed here. No
+automatic rollback, token handling or credential capture is part of the gate.
+If a real deployment is unhealthy, the owner explicitly chooses a previous
+successful deployment in the Vercel dashboard or an authenticated CLI session,
+promotes/aliases it to the affected target, and records the target, deployment
+id and time. Then verify with:
+
+```bash
+node infra/healthcheck <owner-supplied-deployment-url>
+```
+
+The healthcheck prints status codes only and never echoes the supplied URL.
+Confirm liveness/readiness, content proxy and a read-only account request before
+resuming writes. The first-deploy-is-production caveat above remains unchanged.
 
 ## Neon migration and rollback
 
