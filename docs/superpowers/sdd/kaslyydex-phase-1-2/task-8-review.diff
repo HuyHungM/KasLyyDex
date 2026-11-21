@@ -1,0 +1,4429 @@
+e64d486 docs: report task 8 local verification and gates
+7bd7d71 test: prove progression integrity and reader xp flow
+bdc2ad1 feat: add cultivation progression and xp integrity
+ crates/contracts/src/lib.rs                        |   16 +
+ crates/core/src/mangadex.rs                        |   83 +-
+ crates/server/src/main.rs                          |   15 +
+ .../sdd/kaslyydex-phase-1-2/task-8-report.md       |   54 +
+ web/app/api/v1/progress/checkpoint/route.ts        |    5 +
+ web/app/api/v1/progress/complete/route.ts          |    5 +
+ web/app/api/v1/reader-sessions/route.ts            |    5 +
+ web/app/globals.css                                |    5 +
+ web/components/account/AccountPage.tsx             |    2 +
+ web/components/profile/CultivationBadge.tsx        |   29 +
+ web/components/reader/ReaderClient.tsx             |  177 ++-
+ web/components/reader/ReaderPages.tsx              |    3 +
+ web/drizzle/0006_progression.sql                   |   73 +
+ web/drizzle/meta/0006_snapshot.json                | 1610 ++++++++++++++++++++
+ web/drizzle/meta/_journal.json                     |    7 +
+ web/lib/contracts.ts                               |   16 +
+ web/lib/db/schema.ts                               |   56 +-
+ web/lib/me/handlers.ts                             |    3 +-
+ web/lib/me/service.ts                              |   21 +-
+ web/lib/progression-api.ts                         |  471 ++++++
+ web/lib/progression.ts                             |   87 ++
+ web/package.json                                   |    4 +-
+ web/scripts/account.test.mjs                       |   15 +-
+ web/scripts/community.test.mjs                     |    4 +-
+ web/scripts/database.test.mjs                      |   36 +
+ web/scripts/notification-feed.test.mjs             |    4 +-
+ web/scripts/progression-playwright.test.mjs        |  262 ++++
+ web/scripts/progression.test.mjs                   |  535 +++++++
+ 28 files changed, 3586 insertions(+), 17 deletions(-)
+diff --git a/crates/contracts/src/lib.rs b/crates/contracts/src/lib.rs
+index a13d414..43d0980 100644
+--- a/crates/contracts/src/lib.rs
++++ b/crates/contracts/src/lib.rs
+@@ -66,16 +66,32 @@ pub struct ChapterDto {
+     pub title: String,
+     pub lang: String,
+     pub pages: u64,
+     pub external_url: Option<String>,
+     pub publish_at: String,
+     pub group: String,
+ }
+ 
++/// Single-chapter authority for the BFF reader ticket. Manga ownership comes
++/// from the chapter's manga relationship, not from a client-supplied list.
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ChapterMetadataDto {
++    pub id: String,
++    pub manga_id: String,
++    pub lang: String,
++    pub pages: u64,
++    pub external_url: Option<String>,
++    pub unavailable: bool,
++    #[serde(default)]
++    pub chapter: Option<String>,
++    #[serde(default)]
++    pub title: String,
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct PagesResponse {
+     pub pages: Vec<String>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct ChaptersResponse {
+     pub vi: Vec<ChapterDto>,
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 2b70e6b..7cfd27f 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -1,11 +1,11 @@
+ use contracts::{
+-    ChapterDto, ChapterFeedPage, ChaptersResponse, LatestChapterDto, LatestMangaDto,
+-    MangaSummaryDto, PagesResponse, SearchResponse, TagDto,
++    ChapterDto, ChapterFeedPage, ChapterMetadataDto, ChaptersResponse, LatestChapterDto,
++    LatestMangaDto, MangaSummaryDto, PagesResponse, SearchResponse, TagDto,
+ };
+ use moka::future::Cache;
+ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+ use serde_json::Value;
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+ const API: &str = "https://api.mangadex.org";
+@@ -363,16 +363,27 @@ impl Md {
+             };
+             num(a)
+                 .partial_cmp(&num(b))
+                 .unwrap_or(std::cmp::Ordering::Equal)
+         });
+         Ok(out)
+     }
+ 
++    /// Single chapter with its manga relationship. GET /chapter/{id} is the
++    /// documented entity endpoint; includes[]=manga expands the relationship.
++    pub async fn chapter_metadata(&self, id: &str) -> Result<ChapterMetadataDto, Err> {
++        let j = self.get(&format!("/chapter/{id}?includes[]=manga")).await?;
++        if j["result"] != "ok" || j["response"] != "entity" || j["data"]["type"] != "chapter" {
++            return Err("MangaDex trả về chương không hợp lệ.".into());
++        }
++        chapter_metadata_dto(&j["data"])
++            .ok_or_else(|| "MangaDex trả về chương thiếu thông tin.".to_owned())
++    }
++
+     /// At-home URLs are short-lived: never cache. Returns same-origin proxy paths.
+     pub async fn pages(&self, chapter_id: &str) -> Result<PagesResponse, Err> {
+         let j = self.get(&format!("/at-home/server/{chapter_id}")).await?;
+         let ch = &j["chapter"];
+         let (directory, files) = if ch["data"].as_array().is_some_and(|a| !a.is_empty()) {
+             ("data", &ch["data"])
+         } else {
+             ("data-saver", &ch["dataSaver"])
+@@ -490,16 +501,46 @@ fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<
+                 .or(attributes["publishAt"].as_str())
+         }
+         .unwrap_or_default()
+         .to_owned(),
+         group,
+     })
+ }
+ 
++fn chapter_metadata_dto(chapter: &Value) -> Option<ChapterMetadataDto> {
++    let id = chapter["id"].as_str().filter(|id| !id.trim().is_empty())?;
++    let relationships = chapter["relationships"].as_array()?;
++    let manga = relationships.iter().find(|relationship| {
++        relationship["type"] == "manga"
++            && relationship["id"]
++                .as_str()
++                .is_some_and(|id| !id.trim().is_empty())
++    })?;
++    let manga_id = manga["id"].as_str()?.to_owned();
++    let attributes = &chapter["attributes"];
++    let lang = attributes["translatedLanguage"].as_str()?;
++    if lang.trim().is_empty() {
++        return None;
++    }
++    let external = attributes["externalUrl"]
++        .as_str()
++        .filter(|url| !url.is_empty());
++    Some(ChapterMetadataDto {
++        id: id.to_owned(),
++        manga_id,
++        lang: lang.to_owned(),
++        pages: attributes["pages"].as_u64().unwrap_or(0),
++        external_url: external.map(str::to_owned),
++        unavailable: attributes["isUnavailable"].as_bool().unwrap_or(false),
++        chapter: attributes["chapter"].as_str().map(str::to_owned),
++        title: attributes["title"].as_str().unwrap_or_default().to_owned(),
++    })
++}
++
+ fn summary(m: &Value) -> Option<MangaSummaryDto> {
+     let id = m["id"].as_str().filter(|id| !id.trim().is_empty())?;
+     let a = &m["attributes"];
+     let rels = m["relationships"].as_array().cloned().unwrap_or_default();
+     let cover = rels
+         .iter()
+         .find(|r| r["type"] == "cover_art")
+         .and_then(|r| r["attributes"]["fileName"].as_str())
+@@ -691,16 +732,54 @@ mod tests {
+     #[test]
+     fn page_image_urls_use_the_content_namespace() {
+         let path = image_proxy_path("https://uploads.mangadex.org/data/hash/1.png");
+         assert!(path.starts_with("/api/content/img?u="));
+         assert!(path.contains("%2Fdata%2Fhash%2F1"));
+         assert!(!path.starts_with("/api/img"));
+     }
+ 
++    #[test]
++    fn chapter_metadata_uses_the_real_entity_shape_and_manga_relationship() {
++        let chapter = json!({
++            "id": "391b0423-d847-456f-aff0-8b0cfc03066b",
++            "type": "chapter",
++            "attributes": {
++                "chapter": "7", "title": "Seven", "pages": 12,
++                "translatedLanguage": "vi", "externalUrl": null, "isUnavailable": false
++            },
++            "relationships": [
++                { "type": "scanlation_group", "id": "group-1" },
++                { "type": "manga", "id": "0f6f5f2c-2c50-4b2d-9d69-ccb9f0d8e1a1" }
++            ]
++        });
++        let dto = chapter_metadata_dto(&chapter).unwrap();
++        assert_eq!(dto.id, "391b0423-d847-456f-aff0-8b0cfc03066b");
++        assert_eq!(dto.manga_id, "0f6f5f2c-2c50-4b2d-9d69-ccb9f0d8e1a1");
++        assert_eq!(dto.pages, 12);
++        assert_eq!(dto.lang, "vi");
++        assert!(!dto.unavailable);
++
++        let mut orphan = chapter.clone();
++        orphan["relationships"] = json!([{ "type": "scanlation_group", "id": "group-1" }]);
++        assert!(
++            chapter_metadata_dto(&orphan).is_none(),
++            "no manga relationship is not a ticket source"
++        );
++        let mut external = chapter;
++        external["attributes"]["externalUrl"] = json!("https://example.com");
++        assert_eq!(
++            chapter_metadata_dto(&external)
++                .unwrap()
++                .external_url
++                .as_deref(),
++            Some("https://example.com")
++        );
++    }
++
+     #[test]
+     fn content_ids_are_uuids_and_never_opaque_auth_ids() {
+         assert!(is_uuid("391b0423-d847-456f-aff0-8b0cfc03066b"));
+         for bad in [
+             "not-a-uuid",
+             "google|opaque",
+             "",
+             "391b0423d847456faff08b0cfc03066b",
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index a99aecb..01c06e6 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -206,16 +206,29 @@ async fn chapters(State(md): State<Md>, Path(id): Path<String>) -> Result<Respon
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+     Ok(json_cached(md.chapters(&id).await.map_err(bad)?, 60))
+ }
+ 
++/// Single-chapter metadata for the BFF ticket. Capped public chapter lists
++/// cannot prove ownership past 2000 entries; this entity lookup can.
++async fn chapter_metadata(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
++    if !is_uuid(&id) {
++        return Err(api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Mã chương không hợp lệ.",
++        ));
++    }
++    Ok(json_no_store(md.chapter_metadata(&id).await.map_err(bad)?))
++}
++
+ async fn notification_feed(
+     State(md): State<Md>,
+     Path(id): Path<String>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+@@ -321,16 +334,17 @@ fn content_routes() -> Router<Md> {
+         .route("/api/content/tags", get(tags))
+         .route("/api/content/rank", get(rank))
+         .route("/api/content/manga/{id}", get(manga))
+         .route("/api/content/manga/{id}/chapters", get(chapters))
+         .route(
+             "/api/content/notifications/feed/{id}",
+             get(notification_feed),
+         )
++        .route("/api/content/chapter/{id}", get(chapter_metadata))
+         .route("/api/content/chapter/{id}/pages", get(pages))
+         .route("/api/content/img", get(img))
+ }
+ 
+ #[tokio::main]
+ async fn main() {
+     let md = Md::new(manga_core::dns::PublicDns::client());
+     let dist = std::env::var("DIST_DIR").unwrap_or_else(|_| "crates/ui/dist".into());
+@@ -339,16 +353,17 @@ async fn main() {
+     let app = Router::new()
+         .route("/api/popular", get(popular))
+         .route("/api/latest", get(latest))
+         .route("/api/search", get(search))
+         .route("/api/tags", get(tags))
+         .route("/api/rank", get(rank))
+         .route("/api/manga/{id}", get(manga))
+         .route("/api/manga/{id}/chapters", get(chapters))
++        .route("/api/chapter/{id}", get(chapter_metadata))
+         .route("/api/chapter/{id}/pages", get(pages))
+         .route("/api/img", get(img))
+         .merge(content_routes())
+         .fallback_service(spa)
+         .layer(axum::middleware::from_fn(static_cache_headers))
+         .layer(CompressionLayer::new())
+         .with_state(md);
+ 
+diff --git a/web/app/api/v1/progress/checkpoint/route.ts b/web/app/api/v1/progress/checkpoint/route.ts
+new file mode 100644
+index 0000000..0ce9dde
+--- /dev/null
++++ b/web/app/api/v1/progress/checkpoint/route.ts
+@@ -0,0 +1,5 @@
++import { wrapProgressionRoute } from "@/lib/progression-api";
++
++export function POST(request: Request) {
++  return wrapProgressionRoute((api, req) => api.checkpointPost(req), request);
++}
+diff --git a/web/app/api/v1/progress/complete/route.ts b/web/app/api/v1/progress/complete/route.ts
+new file mode 100644
+index 0000000..69c72c8
+--- /dev/null
++++ b/web/app/api/v1/progress/complete/route.ts
+@@ -0,0 +1,5 @@
++import { wrapProgressionRoute } from "@/lib/progression-api";
++
++export function POST(request: Request) {
++  return wrapProgressionRoute((api, req) => api.completePost(req), request);
++}
+diff --git a/web/app/api/v1/reader-sessions/route.ts b/web/app/api/v1/reader-sessions/route.ts
+new file mode 100644
+index 0000000..2eaffcf
+--- /dev/null
++++ b/web/app/api/v1/reader-sessions/route.ts
+@@ -0,0 +1,5 @@
++import { wrapProgressionRoute } from "@/lib/progression-api";
++
++export function POST(request: Request) {
++  return wrapProgressionRoute((api, req) => api.sessionPost(req), request);
++}
+diff --git a/web/app/globals.css b/web/app/globals.css
+index d48ef4d..895204c 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -364,16 +364,21 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .account-hint { color: var(--muted); font-size: .88rem; line-height: 1.5; }
+ .account-error { color: #ff8c7a; font-size: .9rem; }
+ .history-list { display: grid; gap: 10px; }
+ .history-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+ .history-row span { display: grid; gap: 4px; }
+ .history-row small { color: var(--muted); }
+ .history-row img { width: 42px; height: 56px; object-fit: cover; border-radius: 6px; }
+ .history-row progress { width: 120px; accent-color: var(--solid); }
++.cultivation-badge { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
++.cultivation-realm { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
++.cultivation-level { color: var(--text); }
++.cultivation-xp { color: var(--muted); font-size: .9rem; }
++.reader-award { padding: 12px 16px; border: 1px solid var(--solid); border-radius: 10px; background: var(--surface); color: var(--text); }
+ 
+ /* Task 7: plain-text comments, moderation and in-app notifications. */
+ .comment-section { display: grid; gap: 14px; margin-top: 22px; padding: 20px; }
+ .comment-composer { display: grid; gap: 8px; }
+ .comment-composer label { color: var(--muted); font-size: .85rem; }
+ .comment-composer textarea, .comment-edit textarea {
+   width: 100%; border: 1px solid var(--line); border-radius: 10px;
+   background: var(--bg); color: var(--text); padding: 10px 12px; font: inherit; resize: vertical;
+diff --git a/web/components/account/AccountPage.tsx b/web/components/account/AccountPage.tsx
+index db5d66f..cb32e1e 100644
+--- a/web/components/account/AccountPage.tsx
++++ b/web/components/account/AccountPage.tsx
+@@ -1,21 +1,23 @@
+ "use client";
+ 
+ import AuthPanel from "@/components/account/AuthPanel";
+ import ProfileForm from "@/components/account/ProfileForm";
+ import GuestImportPanel from "@/components/account/GuestImportPanel";
++import CultivationBadge from "@/components/profile/CultivationBadge";
+ import { useAccountSession } from "@/lib/account/client";
+ 
+ export default function AccountPage() {
+   const { session } = useAccountSession();
+   return (
+     <div className="account-grid">
+       <AuthPanel />
+       {session.status === "authenticated" ? (
+         <>
++          <CultivationBadge />
+           <ProfileForm />
+           <GuestImportPanel />
+         </>
+       ) : null}
+     </div>
+   );
+ }
+diff --git a/web/components/profile/CultivationBadge.tsx b/web/components/profile/CultivationBadge.tsx
+new file mode 100644
+index 0000000..b27f345
+--- /dev/null
++++ b/web/components/profile/CultivationBadge.tsx
+@@ -0,0 +1,29 @@
++"use client";
++
++import { useRemoteResource } from "@/lib/account/client";
++
++type LevelDto = {
++  level: number;
++  totalXp: number;
++  title: string;
++  realm: string;
++  source: string;
++  ruleVersion: string;
++};
++
++/// Cosmetic cultivation label. All values come from the server; no client
++/// state or local import can raise the level or a permission.
++export default function CultivationBadge() {
++  const { data, loading, error } = useRemoteResource<LevelDto>("/api/v1/me/level");
++  if (loading && !data) return <div className="cultivation-badge" aria-busy="true">Đang tải tu vi…</div>;
++  if (error || !data) {
++    return <div className="cultivation-badge" role="status">Chưa tải được tu vi.</div>;
++  }
++  return (
++    <div className="cultivation-badge" aria-live="polite" data-realm={data.realm}>
++      <span className="cultivation-realm">{data.title}</span>
++      <span className="cultivation-level">Cấp {data.level}</span>
++      <span className="cultivation-xp">{data.totalXp} XP</span>
++    </div>
++  );
++}
+diff --git a/web/components/reader/ReaderClient.tsx b/web/components/reader/ReaderClient.tsx
+index 34a3ce7..a9b1cf9 100644
+--- a/web/components/reader/ReaderClient.tsx
++++ b/web/components/reader/ReaderClient.tsx
+@@ -1,17 +1,17 @@
+ "use client";
+ 
+ import Link from "next/link";
+ import { useRouter } from "next/navigation";
+ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+ import type { ReaderWasm } from "@/generated/reader-wasm";
+ import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
+ import type { ReaderSettingsDto } from "@/lib/validators";
+-import { accountGet, accountMutate, useAccountSession } from "@/lib/account/client";
++import { accountGet, accountMutate, parseAccountResponse, useAccountSession } from "@/lib/account/client";
+ import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
+ import {
+   DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
+   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
+ } from "@/lib/guest";
+ import ReaderPages from "./ReaderPages";
+ import ReaderToolbar from "./ReaderToolbar";
+ import CommentSection from "@/components/comments/CommentSection";
+@@ -29,51 +29,103 @@ type Props = {
+ // re-import the glue or leak an earlier ReaderWasm.
+ let wasmModulePromise: Promise<typeof import("@/generated/reader-wasm")> | null = null;
+ function wasmModule() {
+   return (wasmModulePromise ??= import("@/generated/reader-wasm"));
+ }
+ 
+ const noopSubscribe = () => () => {};
+ 
++type ReaderTicket = {
++  ticket: string;
++  pageCount: number;
++  requiredPages: number;
++  minimumElapsedMs: number;
++  expiresAt: number;
++};
++
++type CheckpointResult = { seenPages: number[]; complete: boolean };
++
++type CompletionResult = {
++  awarded: boolean;
++  xp: number;
++  level: number;
++  title: string;
++  chapterId: string;
++};
++
++type XpTrack = {
++  generation: number;
++  ticket: ReaderTicket | null;
++  issuedAt: number;
++  pending: Set<number>;
++  sent: Set<number>;
++  sends: number[];
++  observer: IntersectionObserver | null;
++  timer: number | null;
++  inFlight: boolean;
++  completed: boolean;
++};
++
++const checkpointIntervalMs = 3_000;
++const maxCheckpointsPerMinute = 15;
++
++async function progressionPost<T>(path: string, body: unknown, signal: AbortSignal): Promise<T> {
++  const response = await fetch(path, {
++    method: "POST",
++    credentials: "same-origin",
++    cache: "no-store",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify(body),
++    signal,
++  });
++  return parseAccountResponse<T>(response);
++}
++
+ /// Each chapter gets a fresh keyed session: no page/settings/error/loaded state
+ /// survives a client-side chapter navigation, including equal page counts.
+ export default function ReaderClient(props: Props) {
+   return <ReaderSession key={props.chapter.id} {...props} />;
+ }
+ 
+ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Props) {
+   const router = useRouter();
+   const root = useRef<HTMLDivElement>(null);
+   const pagesContainer = useRef<HTMLDivElement>(null);
+   const wasm = useRef<ReaderWasm | null>(null);
+   const savedChapter = useRef("");
+   const prefetched = useRef("");
+   const restore = useRef(new ReaderRestoreCoordinator());
+   const settleUntil = useRef(0);
++  const xp = useRef<XpTrack>({
++    generation: 0, ticket: null, issuedAt: 0, pending: new Set(), sent: new Set(),
++    sends: [], observer: null, timer: null, inFlight: false, completed: false,
++  });
+   const { session } = useAccountSession();
+ 
+   const [page, setPage] = useState(0);
+   const [progress, setProgress] = useState(0);
+   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
+   const [wasmError, setWasmError] = useState<string | null>(null);
+   const [wasmAttempt, setWasmAttempt] = useState(0);
+   const [loaded, setLoaded] = useState(false);
+   const [running, setRunning] = useState(false);
+   const [remoteReadyKey, setRemoteReadyKey] = useState("");
+   const [syncError, setSyncError] = useState<string | null>(null);
+   const [syncAttempt, setSyncAttempt] = useState(0);
++  const [award, setAward] = useState<string | null>(null);
+ 
+   const fullscreenSupported = useSyncExternalStore(
+     noopSubscribe,
+     () => Boolean(typeof document !== "undefined" && document.fullscreenEnabled),
+     () => false,
+   );
+ 
+   const total = pages.length;
++  const external = Boolean(chapter.external_url);
+   const index = chapters.findIndex((item) => item.id === chapter.id);
+   const prev = index > 0 ? chapters[index - 1] : null;
+   const next = index >= 0 && index < chapters.length - 1 ? chapters[index + 1] : null;
+   const hrefFor = useCallback(
+     (target: ChapterDto) => `/read/${target.id}?manga=${encodeURIComponent(manga.id)}&lang=${lang}`,
+     [manga.id, lang],
+   );
+ 
+@@ -210,16 +262,137 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+     });
+     return () => {
+       alive = false;
+     };
+   }, [session.status, session.user?.id, loaded, total, chapter.id, manga.id, lang, syncFromWasm, syncAttempt]);
+ 
+   useEffect(() => () => restore.current.dispose(), []);
+ 
++  // Account reading XP runs only after the Task 6 restore gate has settled,
++  // on the real Rust/WASM chapter, and only for a managed session. A chapter,
++  // language or account switch invalidates the generation and all timers.
++  useEffect(() => {
++    const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
++    const track = xp.current;
++    const generation = ++track.generation;
++    track.ticket = null;
++    track.pending.clear();
++    track.sent.clear();
++    track.sends = [];
++    track.completed = false;
++    queueMicrotask(() => setAward(null));
++    if (session.status !== "authenticated" || !session.user || !loaded
++      || total === 0 || external || remoteReadyKey !== key) return;
++
++    const abort = new AbortController();
++    let onVisibility: (() => void) | null = null;
++    const active = () => generation === track.generation && !abort.signal.aborted
++      && document.visibilityState === "visible" && !document.hidden;
++
++    const flush = async () => {
++      const ticket = track.ticket;
++      if (!ticket || track.inFlight || track.completed || !active() || Date.now() >= ticket.expiresAt) return;
++      const minuteAgo = Date.now() - 60_000;
++      track.sends = track.sends.filter((time) => time > minuteAgo);
++      if (track.sends.length >= maxCheckpointsPerMinute) return;
++      const batch = [...track.pending].filter((page) => !track.sent.has(page))
++        .slice(0, maxCheckpointsPerMinute - track.sends.length);
++      track.inFlight = true;
++      try {
++        if (batch.length > 0) {
++          const result = await progressionPost<CheckpointResult>("/api/v1/progress/checkpoint", {
++            ticket: ticket.ticket, pages: batch,
++          }, abort.signal);
++          if (!active()) return;
++          for (const page of batch) {
++            track.pending.delete(page);
++            track.sent.add(page);
++          }
++          for (const page of result.seenPages) track.sent.add(page);
++          track.sends.push(Date.now());
++        }
++        if (track.sent.size >= ticket.requiredPages
++          && Date.now() - track.issuedAt >= ticket.minimumElapsedMs) {
++          track.completed = true;
++          const result = await progressionPost<CompletionResult>("/api/v1/progress/complete", {
++            ticket: ticket.ticket,
++          }, abort.signal);
++          if (!active()) return;
++          setAward(result.awarded
++            ? `+${result.xp} XP · Cấp ${result.level} · ${result.title}`
++            : `Chương đã được ghi nhận · Cấp ${result.level} · ${result.title}`);
++        }
++      } catch {
++        track.completed = false; // retry with the same distinct evidence
++      } finally {
++        track.inFlight = false;
++      }
++    };
++
++    void (async () => {
++      try {
++        const ticket = await progressionPost<ReaderTicket>("/api/v1/reader-sessions", {
++          chapterId: chapter.id, mangaId: manga.id, lang,
++        }, abort.signal);
++        if (!active()) return;
++        track.ticket = ticket;
++        track.issuedAt = Date.now();
++        const root = pagesContainer.current;
++        if (root) {
++          // Only decoded, actually intersecting images in the active document
++          // become evidence. Prefetched or hidden images are never reported.
++          const observer = new IntersectionObserver((entries) => {
++            if (!active()) return;
++            for (const entry of entries) {
++              if (!entry.isIntersecting) continue;
++              const image = entry.target as HTMLImageElement;
++              const page = Number(image.dataset.index) + 1;
++              if (!Number.isInteger(page) || page < 1 || page > total || track.sent.has(page)) continue;
++              void image.decode().then(() => {
++                if (!active() || image.dataset.loaded !== "true") return;
++                track.pending.add(page);
++              }).catch(() => undefined);
++            }
++          }, { threshold: 0 });
++          root.querySelectorAll<HTMLImageElement>("img[data-index]").forEach((image) => observer.observe(image));
++          track.observer = observer;
++        }
++        track.timer = window.setInterval(() => { void flush(); }, checkpointIntervalMs);
++        onVisibility = () => { if (document.visibilityState === "visible") void flush(); };
++        document.addEventListener("visibilitychange", onVisibility);
++        void flush();
++      } catch {
++        // A ticket failure never blocks reading and never grants XP.
++      }
++    })();
++
++    return () => {
++      abort.abort();
++      track.generation += 1;
++      if (track.timer !== null) {
++        window.clearInterval(track.timer);
++        track.timer = null;
++      }
++      track.observer?.disconnect();
++      track.observer = null;
++      if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
++      track.pending.clear();
++    };
++  }, [session.status, session.user, loaded, total, chapter.id, manga.id, lang, remoteReadyKey, external]);
++
++  useEffect(() => {
++    if (settings.mode !== "horizontal" || !loaded || document.hidden) return;
++    const image = pagesContainer.current?.querySelector<HTMLImageElement>(`img[data-index="${page}"]`);
++    if (!image) return;
++    void image.decode().then(() => {
++      if (!document.hidden && image.dataset.loaded === "true") xp.current.pending.add(page + 1);
++    }).catch(() => undefined);
++  }, [settings.mode, page, loaded]);
++
+   useEffect(() => {
+     const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
+     if (session.status !== "authenticated" || !loaded || total === 0 || !restore.current.isReady(key)) return;
+     const state = wasm.current;
+     if (!state) return;
+     void accountMutate(`/api/v1/me/progress/${encodeURIComponent(chapter.id)}`, "PUT", {
+       mangaId: manga.id,
+       lang,
+@@ -340,17 +513,16 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+       }
+       last = now;
+       frame = window.requestAnimationFrame(step);
+     };
+     frame = window.requestAnimationFrame(step);
+     return () => window.cancelAnimationFrame(frame);
+   }, [running, settings.mode, settings.speed]);
+ 
+-  const external = Boolean(chapter.external_url);
+   const showRetry = wasmError !== null || pageError !== null;
+ 
+   return (
+     <div className="reader" data-bg={settings.bg} ref={root} onWheel={() => setRunning(false)}>
+       <ReaderToolbar
+         mangaId={manga.id}
+         mangaTitle={manga.title}
+         chapterId={chapter.id}
+@@ -373,16 +545,17 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+           }
+         }}
+         onSelectChapter={(id) => {
+           const target = chapters.find((item) => item.id === id);
+           if (target) router.push(hrefFor(target));
+         }}
+       />
+       <main className={`reader-main${settings.fit ? "" : " full-width"}`} onPointerDown={() => setRunning(false)}>
++        {award ? <div className="reader-award" role="status">{award}</div> : null}
+         {syncError && session.status === "authenticated" ? (
+           <div className="panel" role="alert">
+             <p>{syncError}</p>
+             <button
+               type="button"
+               className="link-btn"
+               onClick={() => {
+                 setSyncError(null);
+diff --git a/web/components/reader/ReaderPages.tsx b/web/components/reader/ReaderPages.tsx
+index 22f80d1..ea05934 100644
+--- a/web/components/reader/ReaderPages.tsx
++++ b/web/components/reader/ReaderPages.tsx
+@@ -52,16 +52,18 @@ export default function ReaderPages({
+   }, [settings.mode, pages, onPage, containerRef]);
+ 
+   if (settings.mode === "horizontal") {
+     return (
+       <div className="reader-paged" ref={containerRef} onPointerDown={onPause}>
+         <img
+           className="reader-page"
+           src={pages[page] ?? ""}
++          data-index={page}
++          data-loaded="false"
+           alt={`Trang ${page + 1}`}
+           draggable={false}
+           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+           onPointerDown={(event) => {
+             if (!event.isPrimary) {
+               pointerStart.current = null;
+               return;
+             }
+@@ -97,16 +99,17 @@ export default function ReaderPages({
+   return (
+     <div className="reader-pages" ref={containerRef} onPointerDown={onPause}>
+       {pages.map((src, index) => (
+         <img
+           key={`${src}-${index}`}
+           className="reader-page"
+           src={src}
+           data-index={index}
++          data-loaded="false"
+           alt={`Trang ${index + 1}`}
+           loading={index < 2 || index === page ? "eager" : "lazy"}
+           decoding="async"
+           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+         />
+       ))}
+     </div>
+   );
+diff --git a/web/drizzle/0006_progression.sql b/web/drizzle/0006_progression.sql
+new file mode 100644
+index 0000000..e81650f
+--- /dev/null
++++ b/web/drizzle/0006_progression.sql
+@@ -0,0 +1,73 @@
++CREATE TABLE "cultivation_realms" (
++	"key" text PRIMARY KEY NOT NULL,
++	"min_level" integer NOT NULL,
++	"max_level" integer NOT NULL,
++	"name" text NOT NULL,
++	CONSTRAINT "cultivation_realms_range_check" CHECK ("cultivation_realms"."min_level" <= "cultivation_realms"."max_level")
++);
++--> statement-breakpoint
++CREATE TABLE "reader_checkpoints" (
++	"session_id" text NOT NULL,
++	"page" integer NOT NULL,
++	"seen_at" bigint NOT NULL,
++	CONSTRAINT "reader_checkpoints_session_id_page_pk" PRIMARY KEY("session_id","page")
++);
++--> statement-breakpoint
++CREATE TABLE "reader_sessions" (
++	"id" text PRIMARY KEY NOT NULL,
++	"user_id" text NOT NULL,
++	"chapter_id" text NOT NULL,
++	"manga_id" text NOT NULL,
++	"language" text NOT NULL,
++	"page_count" integer NOT NULL,
++	"issued_at" bigint NOT NULL,
++	"expires_at" bigint NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL
++);
++--> statement-breakpoint
++CREATE TABLE "reading_completions" (
++	"user_id" text NOT NULL,
++	"chapter_id" text NOT NULL,
++	"manga_id" text NOT NULL,
++	"language" text NOT NULL,
++	"page_count" integer NOT NULL,
++	"last_page_seen" integer NOT NULL,
++	"reader_session_id" text NOT NULL,
++	"completed_at" bigint NOT NULL,
++	CONSTRAINT "reading_completions_user_id_chapter_id_pk" PRIMARY KEY("user_id","chapter_id")
++);
++--> statement-breakpoint
++CREATE TABLE "xp_events" (
++	"id" text PRIMARY KEY NOT NULL,
++	"user_id" text NOT NULL,
++	"event_type" text NOT NULL,
++	"chapter_id" text NOT NULL,
++	"amount" integer NOT NULL,
++	"rule_version" text NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL
++);
++--> statement-breakpoint
++ALTER TABLE "profiles" ADD COLUMN "level" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
++ALTER TABLE "reader_checkpoints" ADD CONSTRAINT "reader_checkpoints_session_id_reader_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."reader_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "reader_sessions" ADD CONSTRAINT "reader_sessions_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "reading_completions" ADD CONSTRAINT "reading_completions_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "xp_events" ADD CONSTRAINT "xp_events_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++CREATE INDEX "reader_sessions_user_idx" ON "reader_sessions" USING btree ("user_id","issued_at");--> statement-breakpoint
++CREATE UNIQUE INDEX "xp_events_user_type_chapter_key" ON "xp_events" USING btree ("user_id","event_type","chapter_id");
++--> statement-breakpoint
++-- Deterministic cosmetic seed; boundaries mirror the pure TypeScript/Rust
++-- shared-domain fixtures and the approved platform spec section 8.
++INSERT INTO "cultivation_realms" ("key","min_level","max_level","name") VALUES
++ ('mortal',1,9,'Phàm Nhân'),
++ ('qi_refining',10,49,'Luyện Khí'),
++ ('foundation_establishment',50,99,'Trúc Cơ'),
++ ('golden_core',100,199,'Kim Đan'),
++ ('nascent_soul',200,299,'Nguyên Anh'),
++ ('spirit_severing',300,399,'Hóa Thần'),
++ ('void_refinement',400,499,'Luyện Hư'),
++ ('body_integration',500,599,'Hợp Thể'),
++ ('mahayana',600,699,'Đại Thừa'),
++ ('tribulation_transcendence',700,799,'Độ Kiếp'),
++ ('true_immortal',800,899,'Chân Tiên'),
++ ('immortal_king',900,999,'Tiên Vương'),
++ ('immortal_emperor',1000,1000,'Tiên Đế');
+\ No newline at end of file
+diff --git a/web/drizzle/meta/0006_snapshot.json b/web/drizzle/meta/0006_snapshot.json
+new file mode 100644
+index 0000000..fcbc842
+--- /dev/null
++++ b/web/drizzle/meta/0006_snapshot.json
+@@ -0,0 +1,1610 @@
++{
++  "id": "c4a97d95-0471-40d3-8697-ddc9a896856d",
++  "prevId": "8370a9ea-752c-4890-b62a-77b0a2e2de1d",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.action_events": {
++      "name": "action_events",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "action": {
++          "name": "action",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "occurred_at": {
++          "name": "occurred_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {
++        "action_events_window_idx": {
++          "name": "action_events_window_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "action",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "occurred_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "action_events_user_id_profiles_user_id_fk": {
++          "name": "action_events_user_id_profiles_user_id_fk",
++          "tableFrom": "action_events",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.chapter_progress": {
++      "name": "chapter_progress",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "chapter": {
++          "name": "chapter",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "page": {
++          "name": "page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "max_page": {
++          "name": "max_page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "total": {
++          "name": "total",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_read_at": {
++          "name": "last_read_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "chapter_progress_user_recent_idx": {
++          "name": "chapter_progress_user_recent_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "last_read_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "chapter_progress_user_id_profiles_user_id_fk": {
++          "name": "chapter_progress_user_id_profiles_user_id_fk",
++          "tableFrom": "chapter_progress",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "chapter_progress_user_id_manga_id_chapter_id_language_pk": {
++          "name": "chapter_progress_user_id_manga_id_chapter_id_language_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "chapter_id",
++            "language"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.comment_reports": {
++      "name": "comment_reports",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "comment_id": {
++          "name": "comment_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "reason": {
++          "name": "reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'open'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "resolved_at": {
++          "name": "resolved_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "resolved_by": {
++          "name": "resolved_by",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {
++        "comment_reports_open_key": {
++          "name": "comment_reports_open_key",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "comment_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"comment_reports\".\"status\" = 'open'",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "comment_reports_queue_idx": {
++          "name": "comment_reports_queue_idx",
++          "columns": [
++            {
++              "expression": "status",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "comment_reports_user_id_profiles_user_id_fk": {
++          "name": "comment_reports_user_id_profiles_user_id_fk",
++          "tableFrom": "comment_reports",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "comment_reports_comment_id_comments_id_fk": {
++          "name": "comment_reports_comment_id_comments_id_fk",
++          "tableFrom": "comment_reports",
++          "tableTo": "comments",
++          "columnsFrom": [
++            "comment_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comment_reports_status_check": {
++          "name": "comment_reports_status_check",
++          "value": "\"comment_reports\".\"status\" in ('open', 'resolved', 'dismissed')"
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.comment_threads": {
++      "name": "comment_threads",
++      "schema": "",
++      "columns": {
++        "target_type": {
++          "name": "target_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_id": {
++          "name": "target_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "locked": {
++          "name": "locked",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "locked_by": {
++          "name": "locked_by",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "comment_threads_target_type_target_id_pk": {
++          "name": "comment_threads_target_type_target_id_pk",
++          "columns": [
++            "target_type",
++            "target_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comment_threads_target_type_check": {
++          "name": "comment_threads_target_type_check",
++          "value": "\"comment_threads\".\"target_type\" in ('manga', 'chapter')"
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.comments": {
++      "name": "comments",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_type": {
++          "name": "target_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_id": {
++          "name": "target_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "parent_id": {
++          "name": "parent_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "body": {
++          "name": "body",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "spoiler": {
++          "name": "spoiler",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'visible'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "comments_thread_idx": {
++          "name": "comments_thread_idx",
++          "columns": [
++            {
++              "expression": "target_type",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "target_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "comments_parent_idx": {
++          "name": "comments_parent_idx",
++          "columns": [
++            {
++              "expression": "parent_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "comments_user_id_profiles_user_id_fk": {
++          "name": "comments_user_id_profiles_user_id_fk",
++          "tableFrom": "comments",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comments_status_check": {
++          "name": "comments_status_check",
++          "value": "\"comments\".\"status\" in ('visible', 'hidden', 'removed')"
++        },
++        "comments_target_type_check": {
++          "name": "comments_target_type_check",
++          "value": "\"comments\".\"target_type\" in ('manga', 'chapter')"
++        },
++        "comments_no_self_parent": {
++          "name": "comments_no_self_parent",
++          "value": "\"comments\".\"parent_id\" is null or \"comments\".\"parent_id\" <> \"comments\".\"id\""
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.cultivation_realms": {
++      "name": "cultivation_realms",
++      "schema": "",
++      "columns": {
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "min_level": {
++          "name": "min_level",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "max_level": {
++          "name": "max_level",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "cultivation_realms_range_check": {
++          "name": "cultivation_realms_range_check",
++          "value": "\"cultivation_realms\".\"min_level\" <= \"cultivation_realms\".\"max_level\""
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.library_entries": {
++      "name": "library_entries",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "lang": {
++          "name": "lang",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'reading'"
++        },
++        "followed_at": {
++          "name": "followed_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_chapter_id": {
++          "name": "last_chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "last_read_publish": {
++          "name": "last_read_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "library_entries_user_id_profiles_user_id_fk": {
++          "name": "library_entries_user_id_profiles_user_id_fk",
++          "tableFrom": "library_entries",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "library_entries_user_id_manga_id_pk": {
++          "name": "library_entries_user_id_manga_id_pk",
++          "columns": [
++            "user_id",
++            "manga_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.notification_cursors": {
++      "name": "notification_cursors",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_publish": {
++          "name": "last_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_chapter_id": {
++          "name": "last_chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "''"
++        },
++        "scan_publish": {
++          "name": "scan_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "scan_offset": {
++          "name": "scan_offset",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "cohort_publish": {
++          "name": "cohort_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cohort_complete": {
++          "name": "cohort_complete",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "notification_cursors_user_id_profiles_user_id_fk": {
++          "name": "notification_cursors_user_id_profiles_user_id_fk",
++          "tableFrom": "notification_cursors",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "notification_cursors_user_id_manga_id_language_pk": {
++          "name": "notification_cursors_user_id_manga_id_language_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "language"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.notification_pending": {
++      "name": "notification_pending",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "publish": {
++          "name": "publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter": {
++          "name": "chapter",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {
++        "notification_pending_cohort_idx": {
++          "name": "notification_pending_cohort_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "manga_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "language",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "publish",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "notification_pending_user_id_profiles_user_id_fk": {
++          "name": "notification_pending_user_id_profiles_user_id_fk",
++          "tableFrom": "notification_pending",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "notification_pending_user_id_manga_id_language_chapter_id_pk": {
++          "name": "notification_pending_user_id_manga_id_language_chapter_id_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "language",
++            "chapter_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.notifications": {
++      "name": "notifications",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "event_key": {
++          "name": "event_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "body": {
++          "name": "body",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "href": {
++          "name": "href",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "read_at": {
++          "name": "read_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "notifications_event_key": {
++          "name": "notifications_event_key",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "event_key",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "notifications_inbox_idx": {
++          "name": "notifications_inbox_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "notifications_user_id_profiles_user_id_fk": {
++          "name": "notifications_user_id_profiles_user_id_fk",
++          "tableFrom": "notifications",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.profiles": {
++      "name": "profiles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "username": {
++          "name": "username",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "display_name": {
++          "name": "display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "avatar_url": {
++          "name": "avatar_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "total_xp": {
++          "name": "total_xp",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "level": {
++          "name": "level",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "profiles_username_key": {
++          "name": "profiles_username_key",
++          "columns": [
++            {
++              "expression": "username",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.reader_checkpoints": {
++      "name": "reader_checkpoints",
++      "schema": "",
++      "columns": {
++        "session_id": {
++          "name": "session_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "page": {
++          "name": "page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "seen_at": {
++          "name": "seen_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "reader_checkpoints_session_id_reader_sessions_id_fk": {
++          "name": "reader_checkpoints_session_id_reader_sessions_id_fk",
++          "tableFrom": "reader_checkpoints",
++          "tableTo": "reader_sessions",
++          "columnsFrom": [
++            "session_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "reader_checkpoints_session_id_page_pk": {
++          "name": "reader_checkpoints_session_id_page_pk",
++          "columns": [
++            "session_id",
++            "page"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.reader_preferences": {
++      "name": "reader_preferences",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "mode": {
++          "name": "mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vertical'"
++        },
++        "fit": {
++          "name": "fit",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": true
++        },
++        "bg": {
++          "name": "bg",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'light'"
++        },
++        "speed": {
++          "name": "speed",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 3
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "reader_preferences_user_id_profiles_user_id_fk": {
++          "name": "reader_preferences_user_id_profiles_user_id_fk",
++          "tableFrom": "reader_preferences",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.reader_sessions": {
++      "name": "reader_sessions",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "page_count": {
++          "name": "page_count",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "issued_at": {
++          "name": "issued_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "expires_at": {
++          "name": "expires_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "reader_sessions_user_idx": {
++          "name": "reader_sessions_user_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "issued_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "reader_sessions_user_id_profiles_user_id_fk": {
++          "name": "reader_sessions_user_id_profiles_user_id_fk",
++          "tableFrom": "reader_sessions",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.reading_completions": {
++      "name": "reading_completions",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "page_count": {
++          "name": "page_count",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_page_seen": {
++          "name": "last_page_seen",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "reader_session_id": {
++          "name": "reader_session_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "completed_at": {
++          "name": "completed_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "reading_completions_user_id_profiles_user_id_fk": {
++          "name": "reading_completions_user_id_profiles_user_id_fk",
++          "tableFrom": "reading_completions",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "reading_completions_user_id_chapter_id_pk": {
++          "name": "reading_completions_user_id_chapter_id_pk",
++          "columns": [
++            "user_id",
++            "chapter_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.user_roles": {
++      "name": "user_roles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "role": {
++          "name": "role",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "user_roles_user_id_profiles_user_id_fk": {
++          "name": "user_roles_user_id_profiles_user_id_fk",
++          "tableFrom": "user_roles",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "user_roles_user_id_role_pk": {
++          "name": "user_roles_user_id_role_pk",
++          "columns": [
++            "user_id",
++            "role"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.xp_events": {
++      "name": "xp_events",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "event_type": {
++          "name": "event_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "amount": {
++          "name": "amount",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "rule_version": {
++          "name": "rule_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "xp_events_user_type_chapter_key": {
++          "name": "xp_events_user_type_chapter_key",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "event_type",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "chapter_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "xp_events_user_id_profiles_user_id_fk": {
++          "name": "xp_events_user_id_profiles_user_id_fk",
++          "tableFrom": "xp_events",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {},
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/web/drizzle/meta/_journal.json b/web/drizzle/meta/_journal.json
+index e8cfb40..a3ad9ee 100644
+--- a/web/drizzle/meta/_journal.json
++++ b/web/drizzle/meta/_journal.json
+@@ -38,11 +38,18 @@
+       "breakpoints": true
+     },
+     {
+       "idx": 5,
+       "version": "7",
+       "when": 1795247445528,
+       "tag": "0005_notification_pending",
+       "breakpoints": true
++    },
++    {
++      "idx": 6,
++      "version": "7",
++      "when": 1795249694093,
++      "tag": "0006_progression",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index ec0a2ba..ca59f01 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -4,16 +4,17 @@
+ // public content components.
+ export type AccountProfileDto = {
+   id: string;
+   username: string | null;
+   displayName: string | null;
+   avatarUrl: string | null;
+   level: number;
+   totalXp: number;
++  title: string;
+ };
+ 
+ export type LibraryEntryDto = {
+   mangaId: string;
+   title: string;
+   coverFile: string | null;
+   lang: string;
+   status: string;
+@@ -116,16 +117,29 @@ export type ChapterDto = {
+   title: string;
+   lang: string;
+   pages: number;
+   external_url: string | null;
+   publish_at: string;
+   group: string;
+ };
+ 
++/// Single-chapter authority from Axum/MangaDex entity metadata. The public
++/// chapter lists are capped at 2000 and cannot establish ownership alone.
++export type ChapterMetadataDto = {
++  id: string;
++  manga_id: string;
++  lang: string;
++  pages: number;
++  external_url: string | null;
++  unavailable: boolean;
++  chapter: string | null;
++  title: string;
++};
++
+ export type PagesResponse = { pages: string[] };
+ 
+ /// Bounded continuation page for chapter notifications. `partial` is true when
+ /// MangaDex's 10,000 offset limit prevents reaching older candidates.
+ export type ChapterFeedPageDto = {
+   items: ChapterDto[];
+   total: number;
+   offset: number;
+@@ -270,16 +284,17 @@ export function searchQuery(params: SearchParams): string {
+ export type ContentClient = {
+   latest(signal?: AbortSignal): Promise<LatestMangaDto[]>;
+   popular(signal?: AbortSignal): Promise<MangaSummaryDto[]>;
+   tags(signal?: AbortSignal): Promise<TagDto[]>;
+   rank(kind: "follows" | "rating", signal?: AbortSignal): Promise<MangaSummaryDto[]>;
+   search(params: SearchParams, signal?: AbortSignal): Promise<SearchResponse>;
+   manga(id: string, signal?: AbortSignal): Promise<MangaSummaryDto>;
+   chapters(id: string, signal?: AbortSignal): Promise<ChaptersResponse>;
++  chapterMetadata(id: string, signal?: AbortSignal): Promise<ChapterMetadataDto>;
+   notificationFeed(id: string, params: NotificationFeedParams, signal?: AbortSignal): Promise<ChapterFeedPageDto>;
+   pages(chapterId: string, signal?: AbortSignal): Promise<PagesResponse>;
+ };
+ 
+ export function createContentClient(origin = "/api/content"): ContentClient {
+   const root = origin.endsWith("/api/content")
+     ? origin.slice(0, -"/api/content".length)
+     : origin.replace(/\/$/, "");
+@@ -303,16 +318,17 @@ export function createContentClient(origin = "/api/content"): ContentClient {
+       `${contentPath("search")}${searchQuery(params)}`,
+       signal,
+     ),
+     manga: (id, signal) => get<MangaSummaryDto>(contentPath("manga", id), signal),
+     chapters: (id, signal) => get<ChaptersResponse>(
+       contentPath("manga", id, "chapters"),
+       signal,
+     ),
++    chapterMetadata: (id, signal) => get<ChapterMetadataDto>(contentPath("chapter", id), signal),
+     notificationFeed: (id, params, signal) => {
+       const query = new URLSearchParams();
+       query.set("lang", params.lang);
+       if (params.since) query.set("since", params.since);
+       if (params.offset !== undefined) query.set("offset", String(params.offset));
+       if (params.limit !== undefined) query.set("limit", String(params.limit));
+       const encoded = query.toString();
+       return get<ChapterFeedPageDto>(
+diff --git a/web/lib/db/schema.ts b/web/lib/db/schema.ts
+index 70ebadc..2b617d8 100644
+--- a/web/lib/db/schema.ts
++++ b/web/lib/db/schema.ts
+@@ -5,18 +5,20 @@ import { sql } from "drizzle-orm";
+ // tables in its own schema and they are never managed from this file. Opaque
+ // auth user ids stay text: never parse them as UUIDs or derive trust from them.
+ export const profiles = pgTable("profiles", {
+   userId: text("user_id").primaryKey(),
+   // Stored normalized (trimmed + lowercase); the unique index is the final guard.
+   username: text("username"),
+   displayName: text("display_name"),
+   avatarUrl: text("avatar_url"),
+-  // Placeholder only until Task 8 owns XP events. Never client-writable.
++  // Server-owned XP/level. Never client-writable; kept consistent with the
++  // xp_events ledger by the single completion transaction.
+   totalXp: integer("total_xp").default(0).notNull(),
++  level: integer("level").default(1).notNull(),
+   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+ }, (table) => [uniqueIndex("profiles_username_key").on(table.username)]);
+ 
+ // Roles are explicitly bootstrapped from a verified allowlisted auth email.
+ export const userRoles = pgTable("user_roles", {
+   userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+   role: text("role").notNull(),
+@@ -160,16 +162,68 @@ export const notificationPending = pgTable("notification_pending", {
+   publish: bigint("publish", { mode: "number" }).notNull(),
+   chapter: text("chapter"),
+   title: text("title"),
+ }, (table) => [
+   primaryKey({ columns: [table.userId, table.mangaId, table.language, table.chapterId] }),
+   index("notification_pending_cohort_idx").on(table.userId, table.mangaId, table.language, table.publish),
+ ]);
+ 
++// Task 8: server-signed reader sessions. The ticket signature binds these
++// exact values; the persisted row is checked against the caller on every use.
++export const readerSessions = pgTable("reader_sessions", {
++  id: text("id").primaryKey(),
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  chapterId: text("chapter_id").notNull(),
++  mangaId: text("manga_id").notNull(),
++  language: text("language").notNull(),
++  pageCount: integer("page_count").notNull(),
++  issuedAt: bigint("issued_at", { mode: "number" }).notNull(),
++  expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
++  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [index("reader_sessions_user_idx").on(table.userId, table.issuedAt)]);
++
++// Distinct observed pages per session. The PK is the monotone union guard; a
++// legacy `lastPageSeen` value adds exactly one row, never a page range.
++export const readerCheckpoints = pgTable("reader_checkpoints", {
++  sessionId: text("session_id").notNull().references(() => readerSessions.id, { onDelete: "cascade" }),
++  page: integer("page").notNull(),
++  seenAt: bigint("seen_at", { mode: "number" }).notNull(),
++}, (table) => [primaryKey({ columns: [table.sessionId, table.page] })]);
++
++export const readingCompletions = pgTable("reading_completions", {
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  chapterId: text("chapter_id").notNull(),
++  mangaId: text("manga_id").notNull(),
++  language: text("language").notNull(),
++  pageCount: integer("page_count").notNull(),
++  lastPageSeen: integer("last_page_seen").notNull(),
++  readerSessionId: text("reader_session_id").notNull(),
++  completedAt: bigint("completed_at", { mode: "number" }).notNull(),
++}, (table) => [primaryKey({ columns: [table.userId, table.chapterId] })]);
++
++export const xpEvents = pgTable("xp_events", {
++  id: text("id").primaryKey(),
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  eventType: text("event_type").notNull(),
++  chapterId: text("chapter_id").notNull(),
++  amount: integer("amount").notNull(),
++  ruleVersion: text("rule_version").notNull(),
++  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [uniqueIndex("xp_events_user_type_chapter_key").on(table.userId, table.eventType, table.chapterId)]);
++
++// Deterministic cosmetic realm seed; boundaries mirror the pure TypeScript and
++// Rust shared-domain fixtures.
++export const cultivationRealms = pgTable("cultivation_realms", {
++  key: text("key").primaryKey(),
++  minLevel: integer("min_level").notNull(),
++  maxLevel: integer("max_level").notNull(),
++  name: text("name").notNull(),
++}, (table) => [check("cultivation_realms_range_check", sql`${table.minLevel} <= ${table.maxLevel}`)]);
++
+ // Durable, sliding-window counters. pg_advisory_xact_lock in the service keeps
+ // concurrent requests for one user/action from racing past the limit.
+ export const actionEvents = pgTable("action_events", {
+   id: text("id").primaryKey(),
+   userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+   action: text("action").notNull(),
+   occurredAt: bigint("occurred_at", { mode: "number" }).notNull(),
+ }, (table) => [index("action_events_window_idx").on(table.userId, table.action, table.occurredAt)]);
+diff --git a/web/lib/me/handlers.ts b/web/lib/me/handlers.ts
+index beec04e..3d1fcd0 100644
+--- a/web/lib/me/handlers.ts
++++ b/web/lib/me/handlers.ts
+@@ -86,17 +86,18 @@ export function createMeApi(deps: MeDeps) {
+     }),
+ 
+     mePatch: (request: Request) => withUser(request, async (user) => {
+       const patch = parseProfilePatch(await readJson(request));
+       const profile = await updateProfile(db(), user.id, patch, now());
+       return privateJson({ profile });
+     }, true),
+ 
+-    levelGet: (request: Request) => withUser(request, async () => privateJson(getLevel())),
++    levelGet: (request: Request) => withUser(request, async (user) =>
++      privateJson(await getLevel(db(), user.id))),
+ 
+     libraryGet: (request: Request) => withUser(request, async (user) => {
+       const items = await listLibrary(db(), user.id);
+       return privateJson({ items });
+     }),
+ 
+     libraryPut: (request: Request, params: { mangaId: string }) => withUser(request, async (user) => {
+       const mangaId = parseResourceId(params.mangaId, "mangaId");
+diff --git a/web/lib/me/service.ts b/web/lib/me/service.ts
+index ed452fc..e0eed2e 100644
+--- a/web/lib/me/service.ts
++++ b/web/lib/me/service.ts
+@@ -8,16 +8,17 @@ import { roleFromVerifiedAllowlist } from "../validators";
+ import type {
+   ImportHistoryItem,
+   ImportLibraryItem,
+   LibraryInput,
+   ProgressInput,
+   ReaderSettingsDto,
+ } from "../validators";
+ import { mergeLibrary, mergeProgress } from "../merge";
++import { levelFromXp, progressionForXp, realmForLevel } from "../progression";
+ 
+ export class ServiceError extends Error {
+   readonly status: number;
+   readonly code: string;
+ 
+   constructor(status: number, code: string, message: string) {
+     super(message);
+     this.name = "ServiceError";
+@@ -45,16 +46,17 @@ const excluded = (column: string) => sql.raw(`excluded."${column}"`);
+ 
+ export type ProfileDto = {
+   id: string;
+   username: string | null;
+   displayName: string | null;
+   avatarUrl: string | null;
+   level: number;
+   totalXp: number;
++  title: string;
+ };
+ 
+ export type LibraryDto = {
+   mangaId: string;
+   title: string;
+   coverFile: string | null;
+   lang: string;
+   status: string;
+@@ -88,19 +90,19 @@ export type ImportSummary = {
+ };
+ 
+ function profileDto(row: typeof tables.profiles.$inferSelect): ProfileDto {
+   return {
+     id: row.userId,
+     username: row.username,
+     displayName: row.displayName,
+     avatarUrl: row.avatarUrl,
+-    // Explicit placeholder: Task 8 owns XP events and realm titles.
+-    level: 1,
++    level: levelFromXp(row.totalXp),
+     totalXp: row.totalXp,
++    title: realmForLevel(levelFromXp(row.totalXp)).name,
+   };
+ }
+ 
+ function libraryDto(row: typeof tables.libraryEntries.$inferSelect): LibraryDto {
+   return {
+     mangaId: row.mangaId,
+     title: row.title,
+     coverFile: row.coverFile,
+@@ -299,18 +301,29 @@ export async function deleteProgress(
+     eq(tables.chapterProgress.language, language),
+   );
+   const rows = await db.select().from(tables.chapterProgress).where(where).limit(1);
+   if (rows.length === 0) return false;
+   await db.delete(tables.chapterProgress).where(where);
+   return true;
+ }
+ 
+-export function getLevel(): { level: number; totalXp: number; source: string } {
+-  return { level: 1, totalXp: 0, source: "placeholder" };
++/// Real level data from the profile XP ledger. `source` names the active rule
++/// version so future rebalancing can be versioned without rewriting history.
++export async function getLevel(db: AppDatabase, userId: string): Promise<{
++  level: number; totalXp: number; title: string; realm: string;
++  source: string; ruleVersion: string;
++}> {
++  const rows = await db.select({ totalXp: tables.profiles.totalXp })
++    .from(tables.profiles).where(eq(tables.profiles.userId, userId)).limit(1);
++  const snapshot = progressionForXp(rows[0]?.totalXp ?? 0);
++  return {
++    level: snapshot.level, totalXp: snapshot.totalXp, title: snapshot.title,
++    realm: snapshot.realm.key, source: "progression_v1", ruleVersion: snapshot.ruleVersion,
++  };
+ }
+ 
+ export async function getSettings(db: AppDatabase, userId: string): Promise<ReaderSettingsDto> {
+   const rows = await db.select().from(tables.readerPreferences)
+     .where(eq(tables.readerPreferences.userId, userId)).limit(1);
+   if (rows.length === 0) return { mode: "vertical", fit: true, bg: "light", speed: 3 };
+   return { mode: rows[0].mode as ReaderSettingsDto["mode"], fit: rows[0].fit, bg: rows[0].bg as ReaderSettingsDto["bg"], speed: rows[0].speed };
+ }
+diff --git a/web/lib/progression-api.ts b/web/lib/progression-api.ts
+new file mode 100644
+index 0000000..fb1b507
+--- /dev/null
++++ b/web/lib/progression-api.ts
+@@ -0,0 +1,471 @@
++import "server-only";
++
++import { randomUUID } from "node:crypto";
++import { and, asc, count, eq, gt, sql } from "drizzle-orm";
++import { SignJWT, jwtVerify } from "jose";
++import { getDatabase, type AppDatabase } from "./db/client";
++import * as tables from "./db/schema";
++import { AuthConfigurationError, getAuth } from "./auth/server";
++import { identityFromSession, type AccountIdentity } from "./auth/identity";
++import { serverContent } from "./content-server";
++import type { ContentClient } from "./contracts";
++import { errorEnvelope } from "./contracts";
++import { errorToResponse, privateJson } from "./me/handlers";
++import { ServiceError, ensureProfile } from "./me/service";
++import { emitNotification } from "./moderation";
++import { parseLanguage, parseResourceId, readJson, requireOrigin, ValidationError } from "./validators";
++import {
++  CHECKPOINT_LIMIT, MAX_PAGE_COUNT, PROGRESSION_RULE_VERSION,
++  READER_TICKET_TTL_SECONDS, XP_PER_CHAPTER, levelFromXp, minimumElapsedMs,
++  progressionForXp, requiredPages,
++} from "./progression";
++
++// Pooled and transaction databases share these calls; `$client` exists only on
++// the pooled handle, exactly as in the Task 7 moderation services.
++type Db = Omit<AppDatabase, "$client">;
++
++const ISSUER = "kaslyydex-reader";
++const AUDIENCE = "kaslyydex-reader";
++const COMPLETE_LIMIT = 10;
++const SESSION_LIMIT = 30;
++const WINDOW_MS = 60_000;
++const MAX_CHECKPOINT_PAGES = 500;
++const CONTENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++
++export class TicketSecretError extends Error {
++  readonly code = "READER_TICKET_NOT_CONFIGURED";
++  readonly missing = ["READER_TICKET_SECRET"];
++  constructor(message = "Reader ticket signing secret is not configured.") {
++    super(message);
++    this.name = "TicketSecretError";
++  }
++}
++
++/// Missing or short secrets fail closed. No known default key exists and no
++/// request may provide one.
++export function readTicketSecret(env: NodeJS.ProcessEnv = process.env): string {
++  const secret = env.READER_TICKET_SECRET?.trim();
++  if (!secret || secret.length < 32) throw new TicketSecretError();
++  return secret;
++}
++
++function secretKey(secret: string): Uint8Array {
++  return new TextEncoder().encode(secret);
++}
++
++export type TicketClaims = {
++  sid: string;
++  sub: string;
++  cid: string;
++  mid: string;
++  lang: string;
++  pages: number;
++  iat: number;
++  exp: number;
++};
++
++export async function signTicket(secret: string, claims: TicketClaims): Promise<string> {
++  return new SignJWT({
++    sid: claims.sid, sub: claims.sub, cid: claims.cid, mid: claims.mid,
++    lang: claims.lang, pages: claims.pages,
++  })
++    .setProtectedHeader({ alg: "HS256" })
++    .setIssuedAt(claims.iat)
++    .setExpirationTime(claims.exp)
++    .setIssuer(ISSUER)
++    .setAudience(AUDIENCE)
++    .sign(secretKey(secret));
++}
++
++/// Verifies the HMAC, registered claims and our own claim shape. `now` is
++/// injected by the service factory only; production supplies Date.now().
++export async function verifyTicket(token: string, secret: string, nowMs: number): Promise<TicketClaims> {
++  let payload: Record<string, unknown>;
++  try {
++    const result = await jwtVerify(token, secretKey(secret), {
++      algorithms: ["HS256"],
++      issuer: ISSUER,
++      audience: AUDIENCE,
++      currentDate: new Date(nowMs),
++    });
++    payload = result.payload as Record<string, unknown>;
++  } catch {
++    throw new ServiceError(401, "INVALID_TICKET", "Reader session ticket is invalid or expired.");
++  }
++  const text = (key: string, max: number): string => {
++    const value = payload[key];
++    if (typeof value !== "string" || value.length === 0 || value.length > max) {
++      throw new ServiceError(401, "INVALID_TICKET", "Reader session ticket is invalid.");
++    }
++    return value;
++  };
++  const integer = (key: string): number => {
++    const value = payload[key];
++    if (!Number.isSafeInteger(value)) throw new ServiceError(401, "INVALID_TICKET", "Reader session ticket is invalid.");
++    return value as number;
++  };
++  const claims: TicketClaims = {
++    sid: text("sid", 200), sub: text("sub", 200), cid: text("cid", 200),
++    mid: text("mid", 200), lang: text("lang", 20), pages: integer("pages"),
++    iat: integer("iat"), exp: integer("exp"),
++  };
++  if (claims.pages < 1 || claims.pages > MAX_PAGE_COUNT
++    || claims.exp - claims.iat !== READER_TICKET_TTL_SECONDS || claims.exp * 1000 <= nowMs) {
++    throw new ServiceError(401, "INVALID_TICKET", "Reader session ticket is invalid or expired.");
++  }
++  return claims;
++}
++
++function date(ms: number): Date {
++  return new Date(Number.isFinite(ms) ? ms : Date.now());
++}
++
++function excluded(column: string) {
++  return sql.raw(`excluded."${column}"`);
++}
++
++function assertKeys(body: Record<string, unknown>, allowed: readonly string[]): void {
++  const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
++  if (unknown.length > 0) {
++    throw new ValidationError(400, "INVALID_INPUT", `Unexpected field: ${unknown[0]}`);
++  }
++}
++
++/// Sliding window in SQL with a transaction-scoped advisory lock: no
++/// process-local counters, and rejected requests roll back with the caller.
++async function consumeRateLimit(
++  db: Db,
++  userId: string,
++  action: "reader_checkpoint" | "reader_complete" | "reader_session",
++  now: number,
++  max: number,
++): Promise<void> {
++  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${"progression-rate:" + action + ":" + userId}))`);
++  await db.delete(tables.actionEvents).where(and(
++    eq(tables.actionEvents.userId, userId),
++    eq(tables.actionEvents.action, action),
++    sql`${tables.actionEvents.occurredAt} <= ${now - WINDOW_MS}`,
++  ));
++  await db.insert(tables.actionEvents).values({ id: randomUUID(), userId, action, occurredAt: now });
++  const rows = await db.select({ value: count() }).from(tables.actionEvents).where(and(
++    eq(tables.actionEvents.userId, userId),
++    eq(tables.actionEvents.action, action),
++    gt(tables.actionEvents.occurredAt, now - WINDOW_MS),
++  ));
++  if ((rows[0]?.value ?? 0) > max) {
++    throw new ServiceError(429, "RATE_LIMITED", "Too many reading requests. Try again shortly.");
++  }
++}
++
++type SessionRow = typeof tables.readerSessions.$inferSelect;
++
++async function loadSession(
++  db: Db,
++  claims: TicketClaims,
++  user: AccountIdentity,
++  now: number,
++): Promise<SessionRow> {
++  if (claims.sub !== user.id) throw new ServiceError(403, "INVALID_TICKET_OWNER", "This ticket belongs to another account.");
++  const rows = await db.select().from(tables.readerSessions)
++    .where(and(eq(tables.readerSessions.id, claims.sid), eq(tables.readerSessions.userId, user.id)))
++    .limit(1);
++  const session = rows[0];
++  if (!session) throw new ServiceError(401, "INVALID_TICKET", "Reader session no longer exists.");
++  if (session.chapterId !== claims.cid || session.mangaId !== claims.mid
++    || session.language !== claims.lang || session.pageCount !== claims.pages
++    || session.issuedAt !== claims.iat * 1000 || session.expiresAt !== claims.exp * 1000) {
++    throw new ServiceError(401, "INVALID_TICKET", "Ticket does not match the persisted session.");
++  }
++  if (session.expiresAt <= now) throw new ServiceError(401, "TICKET_EXPIRED", "Reader session has expired.");
++  return session;
++}
++
++async function observedPages(db: Db, sessionId: string): Promise<number[]> {
++  const rows = await db.select({ page: tables.readerCheckpoints.page })
++    .from(tables.readerCheckpoints)
++    .where(eq(tables.readerCheckpoints.sessionId, sessionId))
++    .orderBy(asc(tables.readerCheckpoints.page));
++  return rows.map((row) => row.page);
++}
++
++export type ProgressionDeps = {
++  db: () => AppDatabase;
++  identity: () => Promise<AccountIdentity | null>;
++  now: () => number;
++  content: () => ContentClient | Promise<ContentClient>;
++  secret: () => string;
++  allowlist?: readonly string[];
++  // Test harness only. Production never supplies it; no environment bypass.
++  hooks?: { beforeCommit?: (phase: string) => void | Promise<void> };
++};
++
++export function progressionErrorResponse(error: unknown): Response {
++  if (error instanceof TicketSecretError) {
++    return privateJson(errorEnvelope(error.code, error.message, { service: "reader", missing: "READER_TICKET_SECRET" }), 503);
++  }
++  return errorToResponse(error);
++}
++
++export function createProgressionApi(deps: ProgressionDeps) {
++  async function withUser(request: Request, action: (user: AccountIdentity) => Promise<Response>): Promise<Response> {
++    try {
++      requireOrigin(request);
++      const user = await deps.identity();
++      if (!user) return privateJson(errorEnvelope("UNAUTHENTICATED", "Sign in before reading with an account."), 401);
++      deps.secret(); // fail closed before any upstream or database work
++      return await action(user);
++    } catch (error) {
++      return progressionErrorResponse(error);
++    }
++  }
++
++  return {
++    /// Authority comes from Axum's single-chapter entity plus the actual image
++    /// list, never from a client percentage or page count.
++    sessionPost: (request: Request) => withUser(request, async (user) => {
++      const body = await readJson(request, 2048);
++      assertKeys(body, ["chapterId", "mangaId", "lang"]);
++      const chapterId = parseResourceId(body.chapterId, "chapterId");
++      const mangaId = parseResourceId(body.mangaId, "mangaId");
++      if (!CONTENT_ID.test(chapterId) || !CONTENT_ID.test(mangaId)) {
++        throw new ValidationError(400, "INVALID_INPUT", "Content ids must be MangaDex UUIDs.");
++      }
++      const lang = parseLanguage(body.lang);
++      const now = deps.now();
++      const db = deps.db();
++      await ensureProfile(db, user, { now, allowlist: deps.allowlist ?? [] });
++      await db.transaction(async (tx) => {
++        await consumeRateLimit(tx, user.id, "reader_session", now, SESSION_LIMIT);
++      });
++
++      let metadata;
++      let images;
++      try {
++        const client = await deps.content();
++        [metadata, images] = await Promise.all([
++          client.chapterMetadata(chapterId),
++          client.pages(chapterId),
++        ]);
++      } catch {
++        throw new ServiceError(503, "CONTENT_METADATA_UNAVAILABLE", "Chapter metadata is temporarily unavailable.");
++      }
++      // A missing or malformed entity is never a ticket source.
++      if (typeof metadata?.id !== "string" || typeof metadata.manga_id !== "string"
++        || typeof metadata.lang !== "string" || typeof metadata.pages !== "number"
++        || typeof metadata.unavailable !== "boolean"
++        || (metadata.external_url !== null && typeof metadata.external_url !== "string")
++        || !Array.isArray(images?.pages)) {
++        throw new ServiceError(503, "CONTENT_METADATA_UNAVAILABLE", "Chapter metadata is incomplete.");
++      }
++      if (metadata.id !== chapterId || metadata.manga_id !== mangaId || metadata.lang !== lang) {
++        throw new ServiceError(409, "CONTENT_MISMATCH", "Chapter does not belong to this manga and language.");
++      }
++      if (metadata.unavailable || metadata.external_url
++        || !Number.isInteger(metadata.pages) || metadata.pages < 1 || metadata.pages > MAX_PAGE_COUNT
++        || images.pages.length === 0 || images.pages.length > MAX_PAGE_COUNT) {
++        throw new ServiceError(409, "CONTENT_UNAVAILABLE", "This chapter has no readable pages here.");
++      }
++      if (metadata.pages !== images.pages.length) {
++        throw new ServiceError(409, "CONTENT_MISMATCH", "Chapter page count differs from the image list.");
++      }
++
++      // Align to whole seconds so the JWT iat/exp match the persisted row.
++      const issuedAt = Math.floor(now / 1000) * 1000;
++      const session = {
++        id: randomUUID(), userId: user.id, chapterId, mangaId, language: lang,
++        pageCount: metadata.pages, issuedAt,
++        expiresAt: issuedAt + READER_TICKET_TTL_SECONDS * 1000,
++      };
++      await db.insert(tables.readerSessions).values({ ...session, createdAt: date(now) });
++      const ticket = await signTicket(deps.secret(), {
++        sid: session.id, sub: user.id, cid: chapterId, mid: mangaId, lang,
++        pages: session.pageCount,
++        iat: Math.floor(session.issuedAt / 1000), exp: Math.floor(session.expiresAt / 1000),
++      });
++      return privateJson({
++        ticket, sessionId: session.id, chapterId, mangaId, lang,
++        pageCount: session.pageCount, expiresAt: session.expiresAt,
++        requiredPages: requiredPages(session.pageCount),
++        minimumElapsedMs: minimumElapsedMs(session.pageCount),
++      });
++    }),
++
++    checkpointPost: (request: Request) => withUser(request, async (user) => {
++      const body = await readJson(request, 2048);
++      assertKeys(body, ["ticket", "pages", "lastPageSeen"]);
++      const token = body.ticket;
++      if (typeof token !== "string" || token.length > 4096) {
++        throw new ValidationError(400, "INVALID_INPUT", "ticket is required.");
++      }
++      const now = deps.now();
++      const claims = await verifyTicket(token, deps.secret(), now);
++      const session = await loadSession(deps.db(), claims, user, now);
++
++      let additions: number[];
++      if (body.pages !== undefined) {
++        if (!Array.isArray(body.pages) || body.pages.length > MAX_CHECKPOINT_PAGES
++          || body.pages.some((page) => !Number.isSafeInteger(page))) {
++          throw new ValidationError(400, "INVALID_INPUT", "pages must be a bounded array of page numbers.");
++        }
++        additions = body.pages as number[];
++      } else if (body.lastPageSeen !== undefined) {
++        // Legacy interface: a single observed page, never a visited range.
++        if (!Number.isSafeInteger(body.lastPageSeen)) {
++          throw new ValidationError(400, "INVALID_INPUT", "lastPageSeen must be a page number.");
++        }
++        additions = [body.lastPageSeen as number];
++      } else {
++        throw new ValidationError(400, "INVALID_INPUT", "pages is required.");
++      }
++      if (additions.some((page) => page < 1 || page > session.pageCount)) {
++        throw new ValidationError(400, "INVALID_INPUT", "Page is outside this chapter.");
++      }
++
++      return deps.db().transaction(async (tx) => {
++        await consumeRateLimit(tx, user.id, "reader_checkpoint", now, CHECKPOINT_LIMIT);
++        await tx.insert(tables.readerCheckpoints).values(
++          [...new Set(additions)].map((page) => ({ sessionId: session.id, page, seenAt: now })),
++        ).onConflictDoNothing();
++        const seen = await observedPages(tx, session.id);
++        const need = requiredPages(session.pageCount);
++        return privateJson({
++          sessionId: session.id, seenPages: seen, pageCount: session.pageCount,
++          requiredPages: need, complete: seen.length >= need,
++        });
++      });
++    }),
++
++    completePost: (request: Request) => withUser(request, async (user) => {
++      const body = await readJson(request, 2048);
++      assertKeys(body, ["ticket"]);
++      const token = body.ticket;
++      if (typeof token !== "string" || token.length > 4096) {
++        throw new ValidationError(400, "INVALID_INPUT", "ticket is required.");
++      }
++      const now = deps.now();
++      const claims = await verifyTicket(token, deps.secret(), now);
++      const session = await loadSession(deps.db(), claims, user, now);
++
++      return deps.db().transaction(async (tx) => {
++        await consumeRateLimit(tx, user.id, "reader_complete", now, COMPLETE_LIMIT);
++        // Serialize every chapter completion by the same account: concurrent
++        // sessions cannot read a stale total or emit duplicate level events.
++        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"progression-profile:" + user.id}))`);
++        const seen = await observedPages(tx, session.id);
++        const need = requiredPages(session.pageCount);
++        if (seen.length < need) {
++          throw new ServiceError(409, "COVERAGE_INSUFFICIENT", "Not enough distinct pages were observed.");
++        }
++        if (now - session.issuedAt < minimumElapsedMs(session.pageCount)) {
++          throw new ServiceError(429, "TOO_FAST", "This chapter was completed too quickly.");
++        }
++        const lastPageSeen = Math.max(...seen);
++        await tx.insert(tables.chapterProgress).values({
++          userId: user.id, mangaId: session.mangaId, chapterId: session.chapterId,
++          language: session.language, chapter: null, title: null, coverFile: null,
++          page: lastPageSeen, maxPage: lastPageSeen, total: session.pageCount,
++          lastReadAt: now, revision: 1, updatedAt: date(now),
++        }).onConflictDoUpdate({
++          target: [
++            tables.chapterProgress.userId, tables.chapterProgress.mangaId,
++            tables.chapterProgress.chapterId, tables.chapterProgress.language,
++          ],
++          set: {
++            page: excluded("page"),
++            maxPage: sql`greatest(${tables.chapterProgress.maxPage}, ${excluded("page")})`,
++            total: excluded("total"),
++            lastReadAt: sql`greatest(${tables.chapterProgress.lastReadAt} + 1, ${excluded("last_read_at")})`,
++            revision: sql`${tables.chapterProgress.revision} + 1`,
++            updatedAt: date(now),
++          },
++        });
++
++        const completion = await tx.insert(tables.readingCompletions).values({
++          userId: user.id, chapterId: session.chapterId, mangaId: session.mangaId,
++          language: session.language, pageCount: session.pageCount, lastPageSeen,
++          readerSessionId: session.id, completedAt: now,
++        }).onConflictDoNothing().returning({ userId: tables.readingCompletions.userId });
++
++        const profileRows = await tx.select({ totalXp: tables.profiles.totalXp, level: tables.profiles.level })
++          .from(tables.profiles).where(eq(tables.profiles.userId, user.id)).limit(1).for("update");
++        const before = profileRows[0];
++        if (!before) throw new ServiceError(404, "PROFILE_UNAVAILABLE", "Account profile is missing.");
++        let totalXp = before.totalXp;
++        let awarded = false;
++        if (completion.length > 0) {
++          const event = await tx.insert(tables.xpEvents).values({
++            id: randomUUID(), userId: user.id, eventType: "chapter_complete",
++            chapterId: session.chapterId, amount: XP_PER_CHAPTER,
++            ruleVersion: PROGRESSION_RULE_VERSION, createdAt: date(now),
++          }).onConflictDoNothing().returning({ id: tables.xpEvents.id });
++          if (event.length > 0) {
++            awarded = true;
++            totalXp += XP_PER_CHAPTER;
++            const level = levelFromXp(totalXp);
++            await tx.update(tables.profiles)
++              .set({ totalXp, level, updatedAt: date(now) })
++              .where(eq(tables.profiles.userId, user.id));
++            if (level > before.level) {
++              const snapshot = progressionForXp(totalXp);
++              await emitNotification(tx, {
++                userId: user.id, type: "level_up", eventKey: `level:${level}`,
++                title: `Đạt cấp ${level}`,
++                body: `Bạn đã đạt cấp ${level} · ${snapshot.title}.`,
++                href: "/tai-khoan",
++              });
++            }
++          }
++        }
++        // Old rows may predate the persisted level column; keep it consistent
++        // even on idempotent retries without minting another XP event.
++        const consistentLevel = levelFromXp(totalXp);
++        if (consistentLevel !== before.level && !awarded) {
++          await tx.update(tables.profiles)
++            .set({ level: consistentLevel, updatedAt: date(now) })
++            .where(eq(tables.profiles.userId, user.id));
++        }
++        await deps.hooks?.beforeCommit?.("complete");
++        const snapshot = progressionForXp(totalXp);
++        return privateJson({
++          awarded, xp: XP_PER_CHAPTER, level: snapshot.level, totalXp: snapshot.totalXp,
++          title: snapshot.title, realm: snapshot.realm.key, ruleVersion: snapshot.ruleVersion,
++          chapterId: session.chapterId, completed: true,
++        });
++      });
++    }),
++  };
++}
++
++export type ProgressionApi = ReturnType<typeof createProgressionApi>;
++
++/// Production wiring: identity comes from the managed session, content from
++/// Axum, and the signing secret stays server-side. No header/env request bypass.
++export async function wrapProgressionRoute(
++  run: (api: ProgressionApi, request: Request) => Promise<Response>,
++  request: Request,
++): Promise<Response> {
++  try {
++    return await run(productionProgressionApi(), request);
++  } catch (error) {
++    return progressionErrorResponse(error);
++  }
++}
++
++export function productionProgressionApi(): ProgressionApi {
++  return createProgressionApi({
++    db: () => getDatabase(),
++    identity: async () => {
++      try {
++        const { data, error } = await getAuth().getSession();
++        if (error) return null;
++        return identityFromSession(data);
++      } catch (error) {
++        if (error instanceof AuthConfigurationError) throw error;
++        throw new ServiceError(503, "AUTH_UNAVAILABLE", "Managed authentication is temporarily unavailable.");
++      }
++    },
++    now: () => Date.now(),
++    content: () => serverContent(),
++    secret: () => readTicketSecret(),
++  });
++}
+diff --git a/web/lib/progression.ts b/web/lib/progression.ts
+new file mode 100644
+index 0000000..bf07bca
+--- /dev/null
++++ b/web/lib/progression.ts
+@@ -0,0 +1,87 @@
++// Browser-safe progression contract. Cosmetic only: no role or permission is
++// derived from XP or cultivation level. Mirrors crates/domain CultivationRealm.
++
++export const PROGRESSION_RULE_VERSION = "progression_v1";
++export const XP_PER_CHAPTER = 100;
++export const READER_TICKET_TTL_SECONDS = 30 * 60;
++export const CHECKPOINT_WINDOW_MS = 60_000;
++export const CHECKPOINT_LIMIT = 20;
++export const MAX_PAGE_COUNT = 10_000;
++
++export type Realm = {
++  key: string;
++  min: number;
++  max: number;
++  name: string;
++};
++
++// Exact 13 ranges from the approved platform spec (section 8).
++export const REALMS: readonly Realm[] = [
++  { key: "mortal", min: 1, max: 9, name: "Phàm Nhân" },
++  { key: "qi_refining", min: 10, max: 49, name: "Luyện Khí" },
++  { key: "foundation_establishment", min: 50, max: 99, name: "Trúc Cơ" },
++  { key: "golden_core", min: 100, max: 199, name: "Kim Đan" },
++  { key: "nascent_soul", min: 200, max: 299, name: "Nguyên Anh" },
++  { key: "spirit_severing", min: 300, max: 399, name: "Hóa Thần" },
++  { key: "void_refinement", min: 400, max: 499, name: "Luyện Hư" },
++  { key: "body_integration", min: 500, max: 599, name: "Hợp Thể" },
++  { key: "mahayana", min: 600, max: 699, name: "Đại Thừa" },
++  { key: "tribulation_transcendence", min: 700, max: 799, name: "Độ Kiếp" },
++  { key: "true_immortal", min: 800, max: 899, name: "Chân Tiên" },
++  { key: "immortal_king", min: 900, max: 999, name: "Tiên Vương" },
++  { key: "immortal_emperor", min: 1000, max: 1000, name: "Tiên Đế" },
++];
++
++export function clampTotalXp(totalXp: number): number {
++  if (!Number.isFinite(totalXp)) return 0;
++  return Math.max(0, Math.floor(totalXp));
++}
++
++export function levelFromXp(totalXp: number): number {
++  return Math.min(1000, 1 + Math.floor(clampTotalXp(totalXp) / 200));
++}
++
++export function realmForLevel(level: number): Realm {
++  const bounded = Math.min(1000, Math.max(1, Math.floor(level)));
++  return REALMS.find((realm) => bounded >= realm.min && bounded <= realm.max) ?? REALMS[0];
++}
++
++export function progressionForXp(totalXp: number): {
++  level: number;
++  totalXp: number;
++  realm: Realm;
++  title: string;
++  ruleVersion: string;
++} {
++  const xp = clampTotalXp(totalXp);
++  const level = levelFromXp(xp);
++  const realm = realmForLevel(level);
++  return { level, totalXp: xp, realm, title: realm.name, ruleVersion: PROGRESSION_RULE_VERSION };
++}
++
++/// Authoritative page threshold: 80% of the server-observed image count.
++export function requiredPages(pageCount: number): number {
++  if (!Number.isInteger(pageCount) || pageCount < 1) return 1;
++  return Math.min(pageCount, Math.ceil(pageCount * 0.8));
++}
++
++/// Anti-farm floor, not proof of human reading: max(10s, 2s per required page).
++export function minimumElapsedMs(pageCount: number): number {
++  return Math.max(10_000, requiredPages(pageCount) * 2_000);
++}
++
++/// Distinct, in-range visited pages only. Never returns "everything up to N".
++export function mergePages(
++  current: readonly number[],
++  additions: readonly number[],
++  pageCount: number,
++): number[] {
++  const seen = new Set<number>();
++  for (const page of current) {
++    if (Number.isInteger(page) && page >= 1 && page <= pageCount) seen.add(page);
++  }
++  for (const page of additions) {
++    if (Number.isInteger(page) && page >= 1 && page <= pageCount) seen.add(page);
++  }
++  return [...seen].sort((a, b) => a - b);
++}
+diff --git a/web/package.json b/web/package.json
+index 881dc02..bd656bd 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -14,17 +14,19 @@
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+     "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs",
+     "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
+     "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs",
+     "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs",
+     "test:notification-feed": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs",
+     "test:task7": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs scripts/notification-feed.test.mjs",
+-    "test:task7:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs"
++    "test:task7:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs",
++    "test:task8": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs scripts/notification-feed.test.mjs scripts/progression.test.mjs",
++    "test:task8:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs"
+   },
+   "dependencies": {
+     "@neon/auth": "^0.8.2",
+     "drizzle-orm": "^0.45.4",
+     "jose": "^6.2.18",
+     "next": "16.4.6",
+     "pg": "^8.23.1",
+     "react": "19.3.0",
+diff --git a/web/scripts/account.test.mjs b/web/scripts/account.test.mjs
+index 2c0d172..77444ae 100644
+--- a/web/scripts/account.test.mjs
++++ b/web/scripts/account.test.mjs
+@@ -18,17 +18,21 @@ const { createMeApi } = await import("../lib/me/handlers.ts");
+ const schema = await import("../lib/db/schema.ts");
+ 
+ const DAY = 86_400_000;
+ let now = Date.parse("2026-06-01T12:00:00.000Z");
+ 
+ async function migratedDb() {
+   const pg = new PGlite();
+   const db = drizzle(pg, { schema });
+-  for (const file of ["0000_application.sql", "0001_account_data.sql"]) {
++  for (const file of [
++    "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
++    "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
++    "0005_notification_pending.sql", "0006_progression.sql",
++  ]) {
+     const url = new URL(`../drizzle/${file}`, import.meta.url);
+     await pg.exec(await readFile(fileURLToPath(url), "utf8"));
+   }
+   return { pg, db };
+ }
+ 
+ function identity(id = "opaque|reader-1", overrides = {}) {
+   return {
+@@ -423,25 +427,30 @@ test("cross-origin mutations are rejected before any database write", async () =
+     }));
+     assert.equal(res.status, 403);
+     assert.equal((await db.select().from(schema.readerPreferences)).length, 0);
+   } finally {
+     await pg.close();
+   }
+ });
+ 
+-test("level is an explicit zero-XP placeholder and settings persist", async () => {
++test("level reflects real profile XP and settings persist", async () => {
+   const { pg, db } = await migratedDb();
+   try {
+     const handle = api(db);
+     const levelRes = await handle.levelGet(request("/api/v1/me/level"));
+     const level = await levelRes.json();
+     assert.equal(level.level, 1);
+     assert.equal(level.totalXp, 0);
+-    assert.equal(level.source, "placeholder");
++    assert.equal(level.source, "progression_v1");
++    assert.equal(level.title, "Phàm Nhân");
++    await db.update(schema.profiles).set({ totalXp: 400 }).where(eq(schema.profiles.userId, "opaque|reader-1"));
++    const raised = await (await handle.levelGet(request("/api/v1/me/level"))).json();
++    assert.equal(raised.level, 3);
++    assert.equal(raised.totalXp, 400);
+ 
+     const put = await handle.settingsPut(request("/api/v1/me/settings", {
+       method: "PUT",
+       headers: { "content-type": "application/json" },
+       body: JSON.stringify({ mode: "horizontal", fit: false, bg: "sepia", speed: 4 }),
+     }));
+     assert.equal(put.status, 200);
+     const get = await handle.settingsGet(request("/api/v1/me/settings"));
+diff --git a/web/scripts/community.test.mjs b/web/scripts/community.test.mjs
+index e4ea71c..9c37e1f 100644
+--- a/web/scripts/community.test.mjs
++++ b/web/scripts/community.test.mjs
+@@ -20,18 +20,20 @@ const DAY = 86_400_000;
+ let now = Date.parse("2026-07-01T12:00:00.000Z");
+ const MIGRATIONS = [
+   "0000_application.sql",
+   "0001_account_data.sql",
+   "0002_comments_moderation.sql",
+   "0003_community_cursor_scrub.sql",
+   "0004_notification_feed_cursor.sql",
+   "0005_notification_pending.sql",
++  "0006_progression.sql",
+ ];
+-const LEGACY_MIGRATIONS = MIGRATIONS.slice(0, 3);
++// Keep the pre-0003 comment schema while satisfying the current Drizzle shape.
++const LEGACY_MIGRATIONS = [...MIGRATIONS.slice(0, 3), "0006_progression.sql"];
+ 
+ async function migratedDb(files = MIGRATIONS) {
+   const pg = new PGlite();
+   const db = drizzle(pg, { schema });
+   for (const file of files) {
+     try {
+       await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
+     } catch (error) {
+diff --git a/web/scripts/database.test.mjs b/web/scripts/database.test.mjs
+index 5c95f41..1f53934 100644
+--- a/web/scripts/database.test.mjs
++++ b/web/scripts/database.test.mjs
+@@ -10,16 +10,17 @@ const { profiles } = await import("../lib/db/schema.ts");
+ 
+ const migrationUrls = [
+   new URL("../drizzle/0000_application.sql", import.meta.url),
+   new URL("../drizzle/0001_account_data.sql", import.meta.url),
+   new URL("../drizzle/0002_comments_moderation.sql", import.meta.url),
+   new URL("../drizzle/0003_community_cursor_scrub.sql", import.meta.url),
+   new URL("../drizzle/0004_notification_feed_cursor.sql", import.meta.url),
+   new URL("../drizzle/0005_notification_pending.sql", import.meta.url),
++  new URL("../drizzle/0006_progression.sql", import.meta.url),
+ ];
+ 
+ async function freshDatabase() {
+   const db = new PGlite();
+   let sql = "";
+   for (const url of migrationUrls) {
+     const next = await readFile(fileURLToPath(url), "utf8");
+     sql += `${next}\n`;
+@@ -43,23 +44,28 @@ test("application migrations own account tables and never touch Neon Auth tables
+     assert.deepEqual(
+       tables.rows.map((row) => `${row.table_schema}.${row.table_name}`),
+       [
+         "public.action_events",
+         "public.chapter_progress",
+         "public.comment_reports",
+         "public.comment_threads",
+         "public.comments",
++        "public.cultivation_realms",
+         "public.library_entries",
+         "public.notification_cursors",
+         "public.notification_pending",
+         "public.notifications",
+         "public.profiles",
++        "public.reader_checkpoints",
+         "public.reader_preferences",
++        "public.reader_sessions",
++        "public.reading_completions",
+         "public.user_roles",
++        "public.xp_events",
+       ],
+       "only application-owned account tables may be created",
+     );
+ 
+     const columns = await db.query(`
+       SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'profiles'
+@@ -68,16 +74,17 @@ test("application migrations own account tables and never touch Neon Auth tables
+     assert.deepEqual(columns.rows, [
+       { column_name: "user_id", data_type: "text", is_nullable: "NO" },
+       { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO" },
+       { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
+       { column_name: "username", data_type: "text", is_nullable: "YES" },
+       { column_name: "display_name", data_type: "text", is_nullable: "YES" },
+       { column_name: "avatar_url", data_type: "text", is_nullable: "YES" },
+       { column_name: "total_xp", data_type: "integer", is_nullable: "NO" },
++      { column_name: "level", data_type: "integer", is_nullable: "NO" },
+     ]);
+ 
+     const pk = await db.query(`
+       SELECT a.attname
+       FROM pg_index i
+       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+       WHERE i.indrelid = 'public.profiles'::regclass AND i.indisprimary
+     `);
+@@ -150,25 +157,54 @@ test("application tables enforce ownership keys, unique usernames and cascade cl
+       db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-2';"),
+       /duplicate key|unique/i,
+     );
+ 
+     await db.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
+     for (const table of [
+       "user_roles", "library_entries", "reader_preferences", "chapter_progress",
+       "comments", "comment_reports", "notification_cursors", "notification_pending", "notifications", "action_events",
++      "reader_sessions", "reading_completions", "xp_events",
+     ]) {
+       const rows = await db.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
+       assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
+     }
+   } finally {
+     await db.close();
+   }
+ });
+ 
++test("realm seed and XP ledger uniqueness match the progression contract", async () => {
++  const { db } = await freshDatabase();
++  try {
++    const realms = await db.query("SELECT key, min_level, max_level, name FROM cultivation_realms ORDER BY min_level");
++    assert.equal(realms.rows.length, 13);
++    assert.deepEqual(realms.rows.map((row) => [row.min_level, row.max_level, row.name]), [
++      [1, 9, "Phàm Nhân"], [10, 49, "Luyện Khí"], [50, 99, "Trúc Cơ"],
++      [100, 199, "Kim Đan"], [200, 299, "Nguyên Anh"], [300, 399, "Hóa Thần"],
++      [400, 499, "Luyện Hư"], [500, 599, "Hợp Thể"], [600, 699, "Đại Thừa"],
++      [700, 799, "Độ Kiếp"], [800, 899, "Chân Tiên"], [900, 999, "Tiên Vương"],
++      [1000, 1000, "Tiên Đế"],
++    ]);
++    await db.exec("INSERT INTO profiles (user_id) VALUES ('u1');");
++    await db.exec("INSERT INTO reading_completions (user_id, chapter_id, manga_id, language, page_count, last_page_seen, reader_session_id, completed_at) VALUES ('u1','c1','m1','vi',10,10,'s1',100);");
++    await assert.rejects(
++      db.exec("INSERT INTO reading_completions (user_id, chapter_id, manga_id, language, page_count, last_page_seen, reader_session_id, completed_at) VALUES ('u1','c1','m1','en',10,10,'s2',200);"),
++      /duplicate key|unique/i,
++    );
++    await db.exec("INSERT INTO xp_events (id, user_id, event_type, chapter_id, amount, rule_version) VALUES ('x1','u1','chapter_complete','c1',100,'progression_v1');");
++    await assert.rejects(
++      db.exec("INSERT INTO xp_events (id, user_id, event_type, chapter_id, amount, rule_version) VALUES ('x2','u1','chapter_complete','c1',100,'progression_v1');"),
++      /duplicate key|unique/i,
++    );
++  } finally {
++    await db.close();
++  }
++});
++
+ test("Drizzle schema and database config stay application-only and lazy", () => {
+   assert.equal(getTableName(profiles), "profiles");
+   const keys = Object.keys(profiles);
+   assert.ok(keys.includes("userId"));
+   assert.ok(!keys.some((key) => /auth|session|account/i.test(key)));
+   assert.throws(
+     () => readDatabaseConfig({}),
+     (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("DATABASE_URL"),
+diff --git a/web/scripts/notification-feed.test.mjs b/web/scripts/notification-feed.test.mjs
+index e82df79..037ff23 100644
+--- a/web/scripts/notification-feed.test.mjs
++++ b/web/scripts/notification-feed.test.mjs
+@@ -68,17 +68,17 @@ function makeChapter(index, published) {
+     },
+     relationships: [{ type: "manga", id: MANGA_ID }],
+   };
+ }
+ 
+ const MIGRATIONS = [
+   "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
+   "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
+-  "0005_notification_pending.sql",
++  "0005_notification_pending.sql", "0006_progression.sql",
+ ];
+ 
+ async function migratedDb(files = MIGRATIONS) {
+   const pg = new PGlite();
+   const db = drizzle(pg, { schema });
+   for (const file of files) {
+     try {
+       await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
+@@ -413,17 +413,17 @@ test("upstream 10,000 offset wall reports partial instead of silent success", as
+   }
+ });
+ 
+ test("0005 backfill replays same-publish legacy rows without duplicate notifications", async () => {
+   const original = chapters;
+   const legacy = BASE + 148 * DAY;
+   try {
+     chapters = ["v", "w", "z"].map((suffix, index) => tied(`tie-${suffix}`, legacy, 9500 + index));
+-    const { pg, db } = await migratedDb(MIGRATIONS.slice(0, 5));
++    const { pg, db } = await migratedDb([...MIGRATIONS.slice(0, 5), "0006_progression.sql"]);
+     try {
+       await seedReader(db);
+       // Legacy cursor shape: migrations through 0004 have no cohort columns.
+       await pg.exec(`INSERT INTO notification_cursors
+         (user_id, manga_id, language, last_publish, last_chapter_id, scan_publish, scan_offset)
+         VALUES ('opaque|reader', '${MANGA_ID}', 'vi', ${legacy}, 'tie-v', ${legacy}, 0)`);
+       await db.insert(schema.notifications).values({
+         id: "legacy-v", userId: "opaque|reader", type: "new_chapter",
+diff --git a/web/scripts/progression-playwright.test.mjs b/web/scripts/progression-playwright.test.mjs
+new file mode 100644
+index 0000000..532fa43
+--- /dev/null
++++ b/web/scripts/progression-playwright.test.mjs
+@@ -0,0 +1,262 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { createHash } from "node:crypto";
++import { existsSync, mkdirSync, writeFileSync } from "node:fs";
++import { connect } from "node:net";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
++import { pagePng } from "./image-fixtures.mjs";
++
++const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const MANGA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
++const CHAPTER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
++const SHOT_DIR = join(webDir, ".test-screenshots");
++
++let contentFixture;
++let authFixture;
++let axum;
++let next;
++let browser;
++let baseUrl;
++let cacheDir;
++let pageErrors = [];
++
++function waitForTcp(port, deadlineMs = 20_000) {
++  return new Promise((resolve, reject) => {
++    const deadline = Date.now() + deadlineMs;
++    const attempt = () => {
++      const socket = connect({ host: "127.0.0.1", port });
++      socket.once("connect", () => { socket.destroy(); resolve(); });
++      socket.once("error", (error) => {
++        socket.destroy();
++        if (Date.now() > deadline) reject(error);
++        else setTimeout(attempt, 100);
++      });
++    };
++    attempt();
++  });
++}
++
++function json(res, body) {
++  res.writeHead(200, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++function seed(url, bytes) {
++  const key = createHash("sha256").update(url).digest("hex");
++  writeFileSync(join(cacheDir, `${key}.png`), bytes);
++}
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  mkdirSync(SHOT_DIR, { recursive: true });
++  cacheDir = join(webDir, ".test-cache", `progression-${process.pid}`);
++  mkdirSync(cacheDir, { recursive: true });
++  const pages = [1, 2, 3, 4].map((index) => `https://uploads.mangadex.org/data/${CHAPTER}/page-${index}.png`);
++  pages.forEach((url, index) => seed(url, pagePng(index)));
++
++  const chapter = {
++    id: CHAPTER,
++    attributes: {
++      chapter: "1", volume: null, title: "Chương 1", pages: 4, externalUrl: null,
++      translatedLanguage: "vi", readableAt: "2026-11-21T00:00:00Z",
++    },
++    relationships: [{ type: "manga", id: MANGA }],
++  };
++  contentFixture = await startHttpServer((req, res) => {
++    const url = req.url ?? "";
++    if (url.startsWith("/at-home/server/")) {
++      return json(res, {
++        baseUrl: "https://uploads.mangadex.org",
++        chapter: { hash: CHAPTER, data: ["page-1.png", "page-2.png", "page-3.png", "page-4.png"], dataSaver: [] },
++      });
++    }
++    if (url.startsWith("/chapter/")) {
++      return json(res, { result: "ok", response: "entity", data: chapter });
++    }
++    if (url.includes("/feed?")) {
++      return json(res, { total: 1, data: [chapter] });
++    }
++    if (url.startsWith("/statistics/manga?")) {
++      return json(res, { statistics: { [MANGA]: { rating: { bayesian: 8.5 }, follows: 10 } } });
++    }
++    if (url.startsWith("/manga/")) {
++      return json(res, { data: { id: MANGA, attributes: {
++        title: { vi: "Fixture Manga" }, status: "ongoing", year: 2026, description: { vi: "Progression fixture" }, tags: [],
++      }, relationships: [] } });
++    }
++    return json(res, { total: 0, data: [] });
++  });
++
++  const axumPort = await freePort();
++  const axumUrl = `http://127.0.0.1:${axumPort}`;
++  const binary = join(repoDir, "target", "debug", process.platform === "win32" ? "server.exe" : "server");
++  assert.ok(existsSync(binary), "build Axum first: cargo build -p server");
++  axum = spawn(binary, [], {
++    cwd: repoDir,
++    env: { ...process.env, PORT: String(axumPort), MANGADEX_API_ORIGIN: contentFixture.baseUrl, CACHE_DIR: cacheDir, DIST_DIR: join(webDir, "public") },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  await waitForTcp(axumPort);
++
++  authFixture = await startHttpServer((req, res) => {
++    if (req.url?.includes("get-session")) {
++      const signedIn = (req.headers.cookie ?? "").includes("session_token=fixture");
++      res.writeHead(200, { "content-type": "application/json" });
++      res.end(JSON.stringify(signedIn ? {
++        session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
++        user: { id: "google|opaque-42", name: "Fixture Reader", email: "reader@example.com", emailVerified: true, image: null },
++      } : { session: null, user: null }));
++      return;
++    }
++    res.writeHead(200, {
++      "content-type": "application/json",
++      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
++    });
++    res.end(JSON.stringify({ ok: true }));
++  });
++
++  next = await startNext({
++    RUST_CONTENT_API_ORIGIN: axumUrl,
++    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++    READER_TICKET_SECRET: "fixture-reader-secret-with-at-least-32-chars",
++  });
++  baseUrl = next.baseUrl;
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(next?.child);
++  if (axum && axum.exitCode === null) axum.kill("SIGKILL");
++  await authFixture?.close();
++  await contentFixture?.close();
++});
++
++async function signedInContext() {
++  const signIn = await browser.newContext({ viewport: { width: 1280, height: 800 } });
++  const signPage = await signIn.newPage();
++  await signPage.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
++  await signPage.locator('input[type="email"]').fill("reader@example.com");
++  await signPage.locator('input[type="password"]').fill("fixture-password");
++  await signPage.getByRole("button", { name: "Đăng nhập", exact: true }).click();
++  await signPage.getByText("Đã đăng nhập").waitFor({ timeout: 15_000 });
++  const cookies = await signIn.cookies();
++  await signIn.close();
++  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
++  await context.addCookies(cookies);
++  return context;
++}
++
++async function fixtureProgress(context, calls) {
++  await context.route("**/api/v1/me/settings", (route) => route.fulfill({
++    status: 200, contentType: "application/json",
++    body: JSON.stringify({ mode: "vertical", fit: true, bg: "light", speed: 3 }),
++  }));
++  await context.route("**/api/v1/me/progress", (route) => route.fulfill({
++    status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }),
++  }));
++  await context.route("**/api/v1/reader-sessions", (route) => route.fulfill({
++    status: 200, contentType: "application/json",
++    body: JSON.stringify({
++      ticket: "fixture-ticket", chapterId: CHAPTER, mangaId: MANGA, lang: "vi",
++      pageCount: 4, requiredPages: 4, minimumElapsedMs: 10_000, expiresAt: Date.now() + 1_800_000,
++    }),
++  }));
++  await context.route("**/api/v1/progress/checkpoint", (route) => {
++    const body = JSON.parse(route.request().postData() ?? "{}");
++    calls.checkpoints.push(body.pages ?? []);
++    const seen = [...new Set(calls.checkpoints.flat())];
++    return route.fulfill({
++      status: 200, contentType: "application/json",
++      body: JSON.stringify({ seenPages: seen, complete: seen.length >= 4 }),
++    });
++  });
++  await context.route("**/api/v1/progress/complete", (route) => {
++    calls.completions += 1;
++    return route.fulfill({
++      status: 200, contentType: "application/json",
++      body: JSON.stringify({
++        awarded: true, xp: 100, level: 2, totalXp: 200, title: "Luyện Khí", chapterId: CHAPTER,
++      }),
++    });
++  });
++}
++
++async function scrollToPage(page, index) {
++  await page.evaluate((target) => {
++    const image = [...document.querySelectorAll(`.reader-page[data-index="${target}"]`)]
++      .find((candidate) => candidate.getBoundingClientRect().height > 0);
++    if (!image) throw new Error(`no visible reader page ${target}`);
++    const top = image.getBoundingClientRect().top + window.scrollY;
++    window.scrollTo(0, top - window.innerHeight * 0.26);
++  }, index);
++}
++
++test("real WASM reader reports only visible decoded pages and shows server-awarded completion", async () => {
++  const context = await signedInContext();
++  const calls = { checkpoints: [], completions: 0 };
++  await fixtureProgress(context, calls);
++  const page = await context.newPage();
++  page.on("pageerror", (error) => pageErrors.push(error.message));
++  await page.goto(`${baseUrl}/read/${CHAPTER}?manga=${MANGA}&lang=vi`, { waitUntil: "networkidle" });
++  await page.locator(".reader-page[data-index='3']").waitFor();
++  for (let index = 0; index < 4; index += 1) {
++    await scrollToPage(page, index);
++    await page.waitForTimeout(450);
++  }
++  const deadline = Date.now() + 10_000;
++  while (new Set(calls.checkpoints.flat()).size < 4 && Date.now() < deadline) {
++    await page.waitForTimeout(200);
++  }
++  assert.ok(new Set(calls.checkpoints.flat()).size >= 4, JSON.stringify(calls.checkpoints));
++
++  // A hidden document must not produce further evidence before completion.
++  await page.evaluate(() => {
++    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
++    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
++    document.dispatchEvent(new Event("visibilitychange"));
++  });
++  const before = calls.checkpoints.flat().length;
++  await scrollToPage(page, 0);
++  await page.waitForTimeout(3_500);
++  assert.equal(calls.checkpoints.flat().length, before, "background tab never sends checkpoints");
++  await page.evaluate(() => {
++    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
++    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
++    document.dispatchEvent(new Event("visibilitychange"));
++  });
++
++  await page.waitForFunction(() => document.querySelector(".reader-award") !== null, null, { timeout: 25_000 });
++  const banner = await page.locator(".reader-award").textContent();
++  assert.match(banner ?? "", /\+100 XP · Cấp 2 · Luyện Khí/, "award text comes only from the server fixture");
++  assert.ok(calls.completions >= 1);
++  const reported = calls.checkpoints.flat();
++  assert.ok(reported.length >= 4, `expected four observed pages, got ${JSON.stringify(calls.checkpoints)}`);
++  assert.ok(reported.every((value) => Number.isInteger(value) && value >= 1 && value <= 4),
++    `out-of-range page reported: ${JSON.stringify(calls.checkpoints)}`);
++  await page.screenshot({ path: join(SHOT_DIR, "progression-award.png") });
++  await context.close();
++});
++
++test("guest reading makes no progression API calls even with local history", async () => {
++  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
++  const calls = { checkpoints: [], completions: 0 };
++  await fixtureProgress(context, calls);
++  const page = await context.newPage();
++  page.on("pageerror", (error) => pageErrors.push(error.message));
++  await page.goto(`${baseUrl}/read/${CHAPTER}?manga=${MANGA}&lang=vi`, { waitUntil: "networkidle" });
++  await page.locator(".reader-page[data-index='3']").waitFor();
++  for (let index = 0; index < 4; index += 1) {
++    await scrollToPage(page, index);
++    await page.waitForTimeout(350);
++  }
++  assert.deepEqual(calls.checkpoints, []);
++  assert.equal(calls.completions, 0);
++  assert.equal(await page.locator(".reader-award").count(), 0);
++  await context.close();
++  assert.deepEqual(pageErrors, [], `browser errors: ${pageErrors.join("; ")}`);
++});
+diff --git a/web/scripts/progression.test.mjs b/web/scripts/progression.test.mjs
+new file mode 100644
+index 0000000..7574918
+--- /dev/null
++++ b/web/scripts/progression.test.mjs
+@@ -0,0 +1,535 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import { after, before, test } from "node:test";
++import { fileURLToPath } from "node:url";
++import { PGlite } from "@electric-sql/pglite";
++import { eq } from "drizzle-orm";
++import { drizzle } from "drizzle-orm/pglite";
++import { startNext, stop } from "./test-helpers.mjs";
++
++// Task 8 RED/GREEN harness. Real SQL migrations run in embedded PostgreSQL and
++// identity comes from the real Neon SDK session fixture. No production bypass:
++// the clock, content fixture and failure hook exist only on this test factory.
++const progression = await import("../lib/progression.ts");
++const apiModule = await import("../lib/progression-api.ts");
++const { identityFromSession } = await import("../lib/auth/identity.ts");
++const schema = await import("../lib/db/schema.ts");
++const meService = await import("../lib/me/service.ts");
++
++const MANGA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
++const CHAPTER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
++const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc";
++const SECRET = "fixture-reader-secret-with-at-least-32-chars";
++const T0 = Date.parse("2026-11-21T10:00:00.000Z");
++let now = T0;
++
++const migrationFiles = [
++  "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
++  "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
++  "0005_notification_pending.sql", "0006_progression.sql",
++];
++
++async function migratedDb() {
++  const pg = new PGlite();
++  const db = drizzle(pg, { schema });
++  for (const file of migrationFiles) {
++    const url = new URL(`../drizzle/${file}`, import.meta.url);
++    await pg.exec(await readFile(fileURLToPath(url), "utf8"));
++  }
++  return { pg, db };
++}
++
++function content(overrides = {}) {
++  return {
++    async chapterMetadata(id) {
++      return {
++        id, manga_id: MANGA, lang: "vi", pages: 10, external_url: null, unavailable: false,
++        chapter: "1", title: "Chương 1",
++        ...(overrides.metadata ?? {}),
++      };
++    },
++    async pages() {
++      return { pages: Array.from({ length: overrides.imageCount ?? 10 }, (_, index) => `/api/content/img?u=p${index}`) };
++    },
++  };
++}
++
++function request(path, body, origin = "http://localhost") {
++  return new Request(`http://localhost${path}`, {
++    method: "POST",
++    headers: { "content-type": "application/json", origin },
++    body: JSON.stringify(body ?? {}),
++  });
++}
++
++function api(db, user, overrides = {}) {
++  return apiModule.createProgressionApi({
++    db: () => db,
++    identity: async () => user,
++    now: () => now,
++    content: () => (overrides.content ?? content)(),
++    secret: () => (overrides.secret ?? (() => SECRET))(),
++    hooks: overrides.hooks,
++  });
++}
++
++async function json(res) {
++  return { status: res.status, body: await res.json(), headers: res.headers };
++}
++
++async function openSession(handler, user) {
++  assert.ok(typeof user?.id === "string");
++  const res = await json(await handler.sessionPost(request("/api/v1/reader-sessions", {
++    chapterId: CHAPTER, mangaId: MANGA, lang: "vi",
++  })));
++  assert.equal(res.status, 200, JSON.stringify(res.body));
++  assert.equal(res.headers.get("cache-control"), "private, no-store");
++  return res.body;
++}
++
++async function checkpoints(handler, ticket, pages) {
++  return json(await handler.checkpointPost(request("/api/v1/progress/checkpoint", { ticket, pages })));
++}
++
++let authFixture;
++let configuredNext;
++let realIdentity;
++
++before(async () => {
++  authFixture = await (await import("./test-helpers.mjs")).startHttpServer((req, res) => {
++    if (req.url?.includes("get-session")) {
++      res.writeHead(200, { "content-type": "application/json" });
++      res.end(JSON.stringify({
++        session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(now + 86_400_000).toISOString() },
++        user: { id: "google|opaque-42", name: "Fixture Reader", email: "reader@example.com", emailVerified: true, image: null },
++      }));
++      return;
++    }
++    res.writeHead(200, {
++      "content-type": "application/json",
++      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
++    });
++    res.end(JSON.stringify({ ok: true }));
++  });
++  configuredNext = await startNext({
++    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++  });
++  await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
++  });
++  const sessionRes = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`, {
++    headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
++  });
++  realIdentity = identityFromSession(await sessionRes.json());
++  assert.equal(realIdentity.id, "google|opaque-42");
++});
++
++after(async () => {
++  await stop(configuredNext?.child);
++  await authFixture?.close();
++});
++
++// Step 1: pure contract.
++test("all 13 Vietnamese realms and adjacent boundaries match the platform spec", () => {
++  const boundaries = [
++    [1, "Phàm Nhân"], [10, "Luyện Khí"], [50, "Trúc Cơ"], [100, "Kim Đan"],
++    [200, "Nguyên Anh"], [300, "Hóa Thần"], [400, "Luyện Hư"], [500, "Hợp Thể"],
++    [600, "Đại Thừa"], [700, "Độ Kiếp"], [800, "Chân Tiên"], [900, "Tiên Vương"],
++    [1000, "Tiên Đế"],
++  ];
++  assert.equal(progression.REALMS.length, 13);
++  for (const [level, title] of boundaries) {
++    assert.equal(progression.realmForLevel(level).name, title, `level ${level}`);
++    if (level > 1) assert.notEqual(progression.realmForLevel(level - 1).name, title, `level ${level - 1}`);
++    if (level < 1000) assert.equal(progression.realmForLevel(level + 1).name, title, `level ${level + 1}`);
++  }
++  assert.equal(progression.realmForLevel(9).name, "Phàm Nhân");
++  assert.equal(progression.realmForLevel(49).name, "Luyện Khí");
++  assert.equal(progression.realmForLevel(999).name, "Tiên Vương");
++});
++
++test("level formula clamps to 1..1000 and uses progression_v1", () => {
++  assert.equal(progression.PROGRESSION_RULE_VERSION, "progression_v1");
++  assert.equal(progression.XP_PER_CHAPTER, 100);
++  assert.equal(progression.levelFromXp(-500), 1);
++  assert.equal(progression.levelFromXp(0), 1);
++  assert.equal(progression.levelFromXp(199), 1);
++  assert.equal(progression.levelFromXp(200), 2);
++  assert.equal(progression.levelFromXp(199_800), 1000);
++  assert.equal(progression.levelFromXp(500_000), 1000);
++  const snapshot = progression.progressionForXp(400);
++  assert.equal(snapshot.level, 3);
++  assert.equal(snapshot.title, "Phàm Nhân");
++  assert.equal(snapshot.ruleVersion, "progression_v1");
++});
++
++test("coverage is distinct, bounded and elapsed time uses required pages", () => {
++  assert.equal(progression.requiredPages(10), 8);
++  assert.equal(progression.requiredPages(11), 9);
++  assert.equal(progression.minimumElapsedMs(10), 16_000);
++  assert.equal(progression.minimumElapsedMs(4), 10_000);
++  const merged = progression.mergePages([9, 2, 2], [10, 9, 11, 0, 1], 10);
++  assert.deepEqual(merged, [1, 2, 9, 10], "out-of-range and duplicate pages never enter the union");
++});
++
++test("production route fails closed without READER_TICKET_SECRET", async () => {
++  const res = await fetch(`${configuredNext.baseUrl}/api/v1/reader-sessions`, {
++    method: "POST",
++    headers: {
++      "content-type": "application/json",
++      origin: configuredNext.baseUrl,
++      cookie: "__Secure-neon-auth.session_token=fixture",
++    },
++    body: JSON.stringify({ chapterId: CHAPTER, mangaId: MANGA, lang: "vi" }),
++  });
++  assert.equal(res.status, 503);
++  assert.equal((await res.json()).error.code, "READER_TICKET_NOT_CONFIGURED");
++  assert.equal(res.headers.get("cache-control"), "private, no-store");
++});
++
++// Step 3: signed tickets and authoritative metadata.
++test("missing secret fails closed; forged, expired and mismatched tickets are rejected", async () => {
++  const { pg, db } = await migratedDb();
++  const user = realIdentity;
++  try {
++    const denied = await json(await api(db, user, { secret: () => apiModule.readTicketSecret({}) })
++      .sessionPost(request("/api/v1/reader-sessions", { chapterId: CHAPTER, mangaId: MANGA, lang: "vi" })));
++    assert.equal(denied.status, 503);
++    assert.equal(denied.body.error.code, "READER_TICKET_NOT_CONFIGURED");
++
++    const session = await openSession(api(db, user), user);
++    assert.ok(typeof session.ticket === "string" && session.ticket.split(".").length === 3);
++    const forged = await json(await api(db, user).checkpointPost(
++      request("/api/v1/progress/checkpoint", { ticket: session.ticket.slice(0, -2) + "xy", pages: [1] })));
++    assert.equal(forged.status, 401);
++    assert.equal(forged.body.error.code, "INVALID_TICKET");
++
++    const nowBefore = now;
++    now = now + 31 * 60_000;
++    const expired = await json(await api(db, user).checkpointPost(
++      request("/api/v1/progress/checkpoint", { ticket: session.ticket, pages: [1] })));
++    assert.equal(expired.status, 401);
++    now = nowBefore;
++
++    const other = await json(await api(db, { ...realIdentity, id: "google|opaque-99" })
++      .checkpointPost(request("/api/v1/progress/checkpoint", { ticket: session.ticket, pages: [1] })));
++    assert.equal(other.status, 403, "a ticket bound to another persisted user is refused");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("ticket claims bind user, chapter, manga, language, count and expiry", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const session = await openSession(api(db, realIdentity), realIdentity);
++    const claims = await apiModule.verifyTicket(session.ticket, SECRET, now);
++    assert.equal(claims.sub, realIdentity.id);
++    assert.equal(claims.cid, CHAPTER);
++    assert.equal(claims.mid, MANGA);
++    assert.equal(claims.lang, "vi");
++    assert.equal(claims.pages, 10);
++    assert.equal(claims.exp - claims.iat, 30 * 60);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("upstream ownership, zero pages, external and unavailable chapters never yield a ticket", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const cases = [
++      [{ metadata: { manga_id: "other-manga" } }, "CONTENT_MISMATCH"],
++      [{ metadata: { lang: "en" } }, "CONTENT_MISMATCH"],
++      [{ metadata: { id: OTHER } }, "CONTENT_MISMATCH"],
++      [{ metadata: { pages: 0 }, imageCount: 0 }, "CONTENT_UNAVAILABLE"],
++      [{ metadata: { external_url: "https://example.com" } }, "CONTENT_UNAVAILABLE"],
++      [{ metadata: { unavailable: true } }, "CONTENT_UNAVAILABLE"],
++      [{ imageCount: 9 }, "CONTENT_MISMATCH"],
++    ];
++    for (const [override, code] of cases) {
++      const res = await json(await api(db, realIdentity, { content: () => content(override) })
++        .sessionPost(request("/api/v1/reader-sessions", { chapterId: CHAPTER, mangaId: MANGA, lang: "vi" })));
++      assert.equal(res.status, 409, JSON.stringify(res));
++      assert.equal(res.body.error.code, code, JSON.stringify(res));
++    }
++    const badId = await json(await api(db, realIdentity).sessionPost(
++      request("/api/v1/reader-sessions", { chapterId: "not-a-uuid", mangaId: MANGA, lang: "vi" })));
++    assert.equal(badId.status, 400);
++    const spoofed = await json(await api(db, realIdentity).checkpointPost(
++      request("/api/v1/progress/checkpoint", { ticket: "x", pages: [1], percent: 100, pageCount: 1, totalXp: 999, role: "admin" })));
++    assert.equal(spoofed.status, 400);
++  } finally {
++    await pg.close();
++  }
++});
++
++// Step 4: monotone incremental coverage and rate limits.
++test("checkpoints keep a distinct monotone union; legacy lastPageSeen means one page", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handler = api(db, realIdentity);
++    const session = await openSession(handler, realIdentity);
++    const first = await checkpoints(handler, session.ticket, [3, 3, 10]);
++    assert.equal(first.status, 200, JSON.stringify(first.body));
++    assert.deepEqual(first.body.seenPages, [3, 10]);
++    const outOfRange = await checkpoints(handler, session.ticket, [0, 11]);
++    assert.equal(outOfRange.status, 400);
++    const second = await checkpoints(handler, session.ticket, [4]);
++    assert.deepEqual(second.body.seenPages, [3, 4, 10]);
++    const legacy = await json(await handler.checkpointPost(request("/api/v1/progress/checkpoint", {
++      ticket: session.ticket, lastPageSeen: 5,
++    })));
++    assert.deepEqual(legacy.body.seenPages, [3, 4, 5, 10], "one legacy page never implies 1..5");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("checkpoint rate limit is durable at 20 per account per minute", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handler = api(db, realIdentity);
++    const session = await openSession(handler, realIdentity);
++    let last;
++    for (let index = 0; index < 20; index += 1) {
++      last = await checkpoints(handler, session.ticket, [(index % 10) + 1]);
++      assert.equal(last.status, 200, `request ${index + 1}: ${JSON.stringify(last.body)}`);
++    }
++    const denied = await checkpoints(handler, session.ticket, [1]);
++    assert.equal(denied.status, 429);
++    assert.equal(denied.body.error.code, "RATE_LIMITED");
++    const events = await pg.query("select count(*)::int as n from action_events where action = 'reader_checkpoint'");
++    assert.equal(events.rows[0].n, 20, "rejected requests leave no durable event");
++  } finally {
++    await pg.close();
++  }
++});
++
++// Step 5: completion, XP and atomicity.
++async function validCoverage(handler, ticket, count = 10) {
++  const pages = Array.from({ length: count }, (_, index) => index + 1);
++  return checkpoints(handler, ticket, pages);
++}
++
++test("insufficient coverage and insufficient elapsed time award nothing", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handler = api(db, realIdentity);
++    const session = await openSession(handler, realIdentity);
++    await checkpoints(handler, session.ticket, [1, 2, 3, 4, 5, 6, 7]);
++    now = T0 + 16_000;
++    let res = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: session.ticket })));
++    assert.equal(res.status, 409);
++    assert.equal(res.body.error.code, "COVERAGE_INSUFFICIENT");
++    const more = await checkpoints(handler, session.ticket, [8]);
++    assert.equal(more.status, 200);
++    now = T0 + 10_000;
++    res = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: session.ticket })));
++    assert.equal(res.status, 429);
++    assert.equal(res.body.error.code, "TOO_FAST");
++    now = T0 + 16_000;
++    res = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: session.ticket })));
++    assert.equal(res.status, 200, JSON.stringify(res.body));
++    assert.equal(res.body.awarded, true);
++    assert.equal(res.body.xp, 100);
++    now = T0;
++  } finally {
++    await pg.close();
++  }
++});
++
++test("duplicate completions across sessions and languages never double XP", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handler = api(db, realIdentity);
++    const first = await openSession(handler, realIdentity);
++    await validCoverage(handler, first.ticket);
++    now = T0 + 16_000;
++    const awarded = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: first.ticket })));
++    assert.equal(awarded.body.awarded, true);
++    const retry = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: first.ticket })));
++    assert.equal(retry.body.awarded, false);
++    assert.equal(retry.body.totalXp, 100);
++    assert.equal(retry.body.level, 1);
++    now = T0;
++
++    const secondHandler = api(db, realIdentity, {
++      content: () => ({ ...content(), async chapterMetadata(id) {
++        return { ...(await content().chapterMetadata(id)), lang: "en" };
++      } }),
++    });
++    const secondRes = await json(await secondHandler.sessionPost(request("/api/v1/reader-sessions", {
++      chapterId: CHAPTER, mangaId: MANGA, lang: "en",
++    })));
++    assert.equal(secondRes.status, 200, JSON.stringify(secondRes.body));
++    const second = secondRes.body;
++    await validCoverage(secondHandler, second.ticket);
++    now = T0 + 16_000;
++    const otherLang = await json(await secondHandler
++      .completePost(request("/api/v1/progress/complete", { ticket: second.ticket })));
++    assert.equal(otherLang.body.awarded, false);
++    assert.equal(otherLang.body.totalXp, 100);
++    now = T0;
++
++    const completions = await pg.query("select count(*)::int as n from reading_completions");
++    const events = await pg.query("select count(*)::int as n from xp_events");
++    assert.equal(completions.rows[0].n, 1);
++    assert.equal(events.rows[0].n, 1);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("concurrent completions of different chapters serialize profile totals and level-up events", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const user = realIdentity;
++    const sessions = [];
++    for (const id of [CHAPTER, OTHER]) {
++      const handler = api(db, user, { content: () => ({
++        ...content(),
++        async chapterMetadata(chapterId) { return { ...(await content().chapterMetadata(chapterId)), id: chapterId }; },
++      }) });
++      const res = await json(await handler.sessionPost(request("/api/v1/reader-sessions", {
++        chapterId: id, mangaId: MANGA, lang: "vi",
++      })));
++      assert.equal(res.status, 200);
++      sessions.push(res.body.ticket);
++    }
++    const handler = api(db, user);
++    for (const ticket of sessions) await validCoverage(handler, ticket);
++    now = T0 + 16_000;
++    const results = await Promise.all(sessions.map(async (ticket) =>
++      json(await handler.completePost(request("/api/v1/progress/complete", { ticket })))));
++    assert.deepEqual(results.map((res) => res.status), [200, 200]);
++    assert.equal(results.filter((res) => res.body.awarded).length, 2);
++    const profiles = await pg.query("select total_xp, level from profiles where user_id = $1", [user.id]);
++    assert.equal(profiles.rows[0].total_xp, 200);
++    assert.equal(profiles.rows[0].level, 2);
++    const events = await pg.query("select count(*)::int as n from xp_events where user_id = $1", [user.id]);
++    assert.equal(events.rows[0].n, 2);
++    const notifications = await pg.query("select event_key from notifications where user_id = $1", [user.id]);
++    assert.deepEqual(notifications.rows.map((row) => row.event_key), ["level:2"]);
++    const roles = await pg.query("select role from user_roles where user_id = $1", [user.id]);
++    assert.deepEqual(roles.rows, [], "XP never grants a role");
++    now = T0;
++  } finally {
++    await pg.close();
++  }
++});
++
++test("injected failure rolls back completion, event, progress, profile and notification together", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    let fail = false;
++    const handler = api(db, realIdentity, { hooks: {
++      beforeCommit: async () => { if (fail) throw new Error("injected database failure"); },
++    } });
++    const session = await openSession(handler, realIdentity);
++    await validCoverage(handler, session.ticket);
++    now = T0 + 16_000;
++    fail = true;
++    const failed = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: session.ticket })));
++    assert.equal(failed.status, 500);
++    assert.equal(failed.body.error.code, "INTERNAL_ERROR");
++    // Checkpoints were committed earlier as progressive evidence; only this
++    // completion transaction's writes must disappear together.
++    for (const table of ["reading_completions", "xp_events", "chapter_progress", "notifications"]) {
++      const rows = await pg.query(`select count(*)::int as n from ${table}`);
++      assert.equal(rows.rows[0].n, 0, `${table} must be empty after rollback`);
++    }
++    const checkpoints = await pg.query("select count(*)::int as n from reader_checkpoints");
++    assert.equal(checkpoints.rows[0].n, 10);
++    const profile = await pg.query("select total_xp, level from profiles");
++    assert.equal(profile.rows[0].total_xp, 0);
++    assert.equal(profile.rows[0].level, 1);
++    fail = false;
++    const retry = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: session.ticket })));
++    assert.equal(retry.body.awarded, true);
++    now = T0;
++  } finally {
++    await pg.close();
++  }
++});
++
++test("session route has a durable abuse limit and missing metadata fails closed", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handler = api(db, realIdentity);
++    let last;
++    for (let index = 0; index < 30; index += 1) {
++      last = await json(await handler.sessionPost(request("/api/v1/reader-sessions", {
++        chapterId: CHAPTER, mangaId: MANGA, lang: "vi",
++      })));
++      assert.equal(last.status, 200);
++    }
++    const denied = await json(await handler.sessionPost(request("/api/v1/reader-sessions", {
++      chapterId: CHAPTER, mangaId: MANGA, lang: "vi",
++    })));
++    assert.equal(denied.status, 429);
++
++    const missing = await json(await api(db, realIdentity, {
++      content: () => ({ async chapterMetadata() { return undefined; }, async pages() { return { pages: [] }; } }),
++    }).sessionPost(request("/api/v1/reader-sessions", { chapterId: CHAPTER, mangaId: MANGA, lang: "vi" })));
++    assert.equal(missing.status, 429, "abuse limit applies before metadata parsing");
++
++    const clean = await migratedDb();
++    try {
++      const noMetadata = await json(await api(clean.db, realIdentity, {
++        content: () => ({ async chapterMetadata() { return undefined; }, async pages() { return { pages: [] }; } }),
++      }).sessionPost(request("/api/v1/reader-sessions", { chapterId: CHAPTER, mangaId: MANGA, lang: "vi" })));
++      assert.equal(noMetadata.status, 503);
++      assert.equal(noMetadata.body.error.code, "CONTENT_METADATA_UNAVAILABLE");
++    } finally {
++      await clean.pg.close();
++    }
++  } finally {
++    await pg.close();
++  }
++});
++
++test("guest imports only merge local history and never create XP or completions", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    await meService.ensureProfile(db, realIdentity, { now, allowlist: [] });
++    const summary = await meService.importGuest(db, realIdentity.id, {
++      library: [], history: [{
++        mangaId: MANGA, chapterId: CHAPTER, lang: "vi", page: 10, total: 10,
++        chapter: "1", title: "local", coverFile: null, ts: now,
++      }], settings: null, skipped: 0,
++    }, now);
++    assert.equal(summary.progressInserted, 1);
++    for (const table of ["reading_completions", "xp_events", "reader_checkpoints"]) {
++      const rows = await pg.query(`select count(*)::int as n from ${table}`);
++      assert.equal(rows.rows[0].n, 0, `${table} must stay empty for guest imports`);
++    }
++    const profile = await pg.query("select total_xp, level from profiles");
++    assert.equal(profile.rows[0].total_xp, 0);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("real SDK session identity is opaque and role checks remain independent of XP", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    assert.equal(realIdentity.id, "google|opaque-42");
++    const profile = await meService.ensureProfile(db, realIdentity, { now, allowlist: [] });
++    assert.equal(profile.level, 1);
++    now = T0 + 199_800;
++    await db.update(schema.profiles).set({ totalXp: 199_800 }).where(eq(schema.profiles.userId, realIdentity.id));
++    const level = await meService.getLevel(db, realIdentity.id);
++    assert.equal(level.level, 1000);
++    assert.equal(level.title, "Tiên Đế");
++    assert.equal(level.source, "progression_v1");
++    const roles = await pg.query("select role from user_roles");
++    assert.deepEqual(roles.rows, [], "XP alone never populates a role");
++    now = T0;
++  } finally {
++    await pg.close();
++  }
++});

@@ -50,7 +50,7 @@ The standard SDD workspace helper cannot resolve Windows-linked-worktree paths, 
 - [x] Task 6: User profile, library, progress and guest merge (local, reviewed)
 - [x] Task 7: Comments, reports, moderation and in-app notifications (local, reviewed)
 - [x] Task 8: Progression, cultivation titles and anti-abuse (local, reviewed)
-- [ ] Task 9: CI, security, observability and Phase 1–2 release gate
+- [x] Task 9: CI, security, observability and Phase 1–2 release gate (local, reviewed)
 
 ## Completed tasks
 
@@ -93,6 +93,13 @@ The standard SDD workspace helper cannot resolve Windows-linked-worktree paths, 
 - Task 8: complete (0c4a5e4..6a1496f, local scope review clean). External provider/Neon/browser SQL and live concurrency remain unverified.
 - Task 8: minor (deferred to final review): concurrent ordinary PUT /me/progress can still race a first-time completion over current page; completion lock serializes completions only. Keep as release review item, no fix loop because no failing test/requirement proven broken.
 - Task 9: in progress, base6a1496f; implementer owns deterministic CI, security/observability, release gate docs and release report; cloud deployment stays paused.
+- Task 9: implementation commit 902f77c; report claims secret-free CI with WASM rebuild, Next/Axum headers, health/readiness, redacted structured logs, bounded metrics, secret scan and runbooks; local gate aggregate116/116, browser23/23, Rust50 tests, lint0 errors, build/typecheck pass. Independent spec/quality review dispatched; do not mark complete before verdict. External cloud gates and 4 moderate npm advisories remain unverified.
+- Task 9: review Needs fixes, 0 Critical / 2 Important: redaction misses opaque Bearer tokens and multi-value Cookie entries; deployment rollback lacks Vercel promote/rollback step. Fix round1 dispatched to original implementer.
+- Task 9: fix round 1/5 (all important findings and controller-ruled gate fixes addressed, 0 important open; commit a74b7db7d2032b51d5b3e1e05ed310a900398faa; scoped re-review PASS, focused observability/whitespace8/8).
+- Task 9: complete (6a1496f..a74b7db, local scope review clean). Report aggregate121/121 and browser23/23 from implementation; external gates remain unverified.
+- Task 9: minor (deferred to final review): JSON-object credential field pairs can bypass redaction if future code logs serialized credentials; README fmt-scope doc inconsistency; secret scan text allowlist not binary/generated-artifact scanner; next/font network build dependency; readiness DB concurrency/auth invalid-config names; npm4 moderate advisories.
+- Final whole-branch review: complete, merge-base fc7389b..a74b7db; verdict Ready to merge YES, 0 Critical / 0 Important. All deferred minors triaged as parked with rulings or Cannot verify; no cross-task ownership/migration/privacy break. Recommended cheap follow-ups before release (not merge blockers): reset cached rejected WASM import promise, cap/scale XP elapsed floor vs 30-minute ticket for >~1124-page chapters, fix infra/deployment.md whitespace command path after cd web.
+- Ruling: also fix three cheap false-gate items in the same round: CI `git diff --check` is vacuous on a clean checkout, fmt omits maintained reader-wasm, and healthcheck echoes operator-supplied URL credentials/query. Cost if wrong: slightly wider CI/docs diff; avoids claiming checks that inspect nothing. Other minors stay deferred to final review.
 - Task 7: minor (deferred to final review): replies capped at 500 without pagination; rejected self/duplicate reports do not consume hourly quota; refresh holds SQL transaction across upstream calls; stray ignored test argument; missing explicit public-comments test with auth unconfigured. Fix round 1 should add the missing guest assertion as nearby coverage without broadening feature scope.
 - Task 6: minor (deferred to final review): forwarded-host origin guard trusts proxy overrides; import arrays silently truncated without skipped count; AuthPanel copy claims local test mode even when real mail configured.
 - Ruling: group Task 6 minors sharing the reader/account sync fix area into round 1 — failed restore permanently marks chapter settled, early authenticated click writes guest storage while session status is loading, and deleteProgress removes rows across languages. Cost if wrong: slightly wider fix diff; avoids silent data loss on the same code paths.

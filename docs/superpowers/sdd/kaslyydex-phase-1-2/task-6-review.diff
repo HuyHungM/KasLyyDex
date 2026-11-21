@@ -1,0 +1,4221 @@
+d9692b7 feat: add synced user reading data UI
+af66bd9 feat: add account API routes with session ownership and CSRF guards
+c99b42c feat: add synced account schema and services
+ web/.env.example                                |   4 +
+ web/app/api/v1/me/import/route.ts               |   5 +
+ web/app/api/v1/me/level/route.ts                |   5 +
+ web/app/api/v1/me/library/[mangaId]/route.ts    |  11 +
+ web/app/api/v1/me/library/route.ts              |   5 +
+ web/app/api/v1/me/progress/[chapterId]/route.ts |  11 +
+ web/app/api/v1/me/progress/route.ts             |   5 +
+ web/app/api/v1/me/route.ts                      |   9 +
+ web/app/api/v1/me/settings/route.ts             |   9 +
+ web/app/globals.css                             |  25 ++
+ web/app/tai-khoan/cai-dat/page.tsx              |  14 +
+ web/app/tai-khoan/lich-su/page.tsx              |  14 +
+ web/app/tai-khoan/page.tsx                      |  14 +
+ web/app/tu-truyen/page.tsx                      |   2 +-
+ web/components/account/AccountPage.tsx          |  21 +
+ web/components/account/AuthPanel.tsx            | 137 +++++++
+ web/components/account/GuestImportPanel.tsx     |  71 ++++
+ web/components/account/HistoryView.tsx          |  54 +++
+ web/components/account/ProfileForm.tsx          |  76 ++++
+ web/components/account/SettingsForm.tsx         | 103 +++++
+ web/components/continue-reading.tsx             |  97 +++--
+ web/components/header.tsx                       |   3 +
+ web/components/library-view.tsx                 |  96 ++++-
+ web/components/manga-actions.tsx                |  50 ++-
+ web/components/reader/ReaderClient.tsx          |  54 ++-
+ web/components/site-shell.tsx                   |   2 +
+ web/drizzle/0001_account_data.sql               |  58 +++
+ web/drizzle/meta/0001_snapshot.json             | 461 ++++++++++++++++++++++
+ web/drizzle/meta/_journal.json                  |   7 +
+ web/lib/account/client.ts                       | 178 +++++++++
+ web/lib/auth/identity.ts                        |  39 ++
+ web/lib/contracts.ts                            |  46 +++
+ web/lib/db/client.ts                            |   2 +
+ web/lib/db/schema.ts                            |  68 +++-
+ web/lib/me/handlers.ts                          | 198 ++++++++++
+ web/lib/me/service.ts                           | 459 ++++++++++++++++++++++
+ web/lib/merge.ts                                | 102 +++++
+ web/lib/validators.ts                           | 374 ++++++++++++++++++
+ web/package.json                                |   4 +-
+ web/scripts/account-playwright.test.mjs         | 128 +++++++
+ web/scripts/account.test.mjs                    | 484 ++++++++++++++++++++++++
+ web/scripts/database.test.mjs                   |  62 ++-
+ 42 files changed, 3495 insertions(+), 72 deletions(-)
+diff --git a/web/.env.example b/web/.env.example
+index 2b4625e..b9f038a 100644
+--- a/web/.env.example
++++ b/web/.env.example
+@@ -1,14 +1,18 @@
+ # Neon Managed Auth (server-only; never prefix with NEXT_PUBLIC_)
+ NEON_AUTH_BASE_URL=
+ NEON_AUTH_COOKIE_SECRET=
+ 
+ # Application database (server-only; pooled pg/Drizzle)
+ DATABASE_URL=
+ 
++# Optional operator bootstrap: comma-separated verified auth emails allowed to
++# receive the admin role. Client input never grants roles.
++OPERATOR_EMAIL_ALLOWLIST=
++
+ # Google OAuth is configured on the Neon branch; values are owner-supplied.
+ GOOGLE_CLIENT_ID=
+ GOOGLE_CLIENT_SECRET=
+ 
+ # Same-origin browser content boundary -> Axum content service
+ RUST_CONTENT_API_ORIGIN=
+ NEXT_PUBLIC_APP_URL=
+diff --git a/web/app/api/v1/me/import/route.ts b/web/app/api/v1/me/import/route.ts
+new file mode 100644
+index 0000000..72f16d4
+--- /dev/null
++++ b/web/app/api/v1/me/import/route.ts
+@@ -0,0 +1,5 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++export function POST(request: Request) {
++  return wrapMeRoute((api, req) => api.importPost(req), request);
++}
+diff --git a/web/app/api/v1/me/level/route.ts b/web/app/api/v1/me/level/route.ts
+new file mode 100644
+index 0000000..5c65ab1
+--- /dev/null
++++ b/web/app/api/v1/me/level/route.ts
+@@ -0,0 +1,5 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++export function GET(request: Request) {
++  return wrapMeRoute((api, req) => api.levelGet(req), request);
++}
+diff --git a/web/app/api/v1/me/library/[mangaId]/route.ts b/web/app/api/v1/me/library/[mangaId]/route.ts
+new file mode 100644
+index 0000000..7a0a47e
+--- /dev/null
++++ b/web/app/api/v1/me/library/[mangaId]/route.ts
+@@ -0,0 +1,11 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++type Context = { params: Promise<{ mangaId: string }> };
++
++export function PUT(request: Request, context: Context) {
++  return wrapMeRoute(async (api, req) => api.libraryPut(req, await context.params), request);
++}
++
++export function DELETE(request: Request, context: Context) {
++  return wrapMeRoute(async (api, req) => api.libraryDelete(req, await context.params), request);
++}
+diff --git a/web/app/api/v1/me/library/route.ts b/web/app/api/v1/me/library/route.ts
+new file mode 100644
+index 0000000..62966ef
+--- /dev/null
++++ b/web/app/api/v1/me/library/route.ts
+@@ -0,0 +1,5 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++export function GET(request: Request) {
++  return wrapMeRoute((api, req) => api.libraryGet(req), request);
++}
+diff --git a/web/app/api/v1/me/progress/[chapterId]/route.ts b/web/app/api/v1/me/progress/[chapterId]/route.ts
+new file mode 100644
+index 0000000..5173665
+--- /dev/null
++++ b/web/app/api/v1/me/progress/[chapterId]/route.ts
+@@ -0,0 +1,11 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++type Context = { params: Promise<{ chapterId: string }> };
++
++export function PUT(request: Request, context: Context) {
++  return wrapMeRoute(async (api, req) => api.progressPut(req, await context.params), request);
++}
++
++export function DELETE(request: Request, context: Context) {
++  return wrapMeRoute(async (api, req) => api.progressDelete(req, await context.params), request);
++}
+diff --git a/web/app/api/v1/me/progress/route.ts b/web/app/api/v1/me/progress/route.ts
+new file mode 100644
+index 0000000..ab050ef
+--- /dev/null
++++ b/web/app/api/v1/me/progress/route.ts
+@@ -0,0 +1,5 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++export function GET(request: Request) {
++  return wrapMeRoute((api, req) => api.progressGet(req), request);
++}
+diff --git a/web/app/api/v1/me/route.ts b/web/app/api/v1/me/route.ts
+new file mode 100644
+index 0000000..6a169c5
+--- /dev/null
++++ b/web/app/api/v1/me/route.ts
+@@ -0,0 +1,9 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++export function GET(request: Request) {
++  return wrapMeRoute((api, req) => api.meGet(req), request);
++}
++
++export function PATCH(request: Request) {
++  return wrapMeRoute((api, req) => api.mePatch(req), request);
++}
+diff --git a/web/app/api/v1/me/settings/route.ts b/web/app/api/v1/me/settings/route.ts
+new file mode 100644
+index 0000000..69bc412
+--- /dev/null
++++ b/web/app/api/v1/me/settings/route.ts
+@@ -0,0 +1,9 @@
++import { wrapMeRoute } from "@/lib/me/handlers";
++
++export function GET(request: Request) {
++  return wrapMeRoute((api, req) => api.settingsGet(req), request);
++}
++
++export function PUT(request: Request) {
++  return wrapMeRoute((api, req) => api.settingsPut(req), request);
++}
+diff --git a/web/app/globals.css b/web/app/globals.css
+index 7951405..3c314dd 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -339,8 +339,33 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+   @keyframes breathe { 50% { opacity: .57; } }
+   .skel, .reader-skel { animation: breathe 1.6s ease-in-out infinite; }
+   .feature-copy { animation: feature-in .32s ease-out both; }
+   @keyframes feature-in { from { opacity: 0; transform: translateY(6px); } }
+   :is(.btn, .icon-btn, .nav-btn):active:not(:disabled) { transform: translateY(1px); }
+   .card-cover img { transition: transform .2s ease; }
+   .card:hover img { transform: scale(1.045); }
+ }
++
++/* Account flows: compact, text-first forms that survive the dark/light theme. */
++.account-grid { display: grid; gap: 18px; max-width: 760px; }
++.account-card { padding: 22px; width: 100%; }
++.account-card h2 { font-size: 1.25rem; margin-bottom: 10px; }
++.account-form { display: grid; gap: 12px; margin: 16px 0; }
++.account-form label { display: grid; gap: 6px; font-size: .9rem; color: var(--muted); }
++.account-form input, .account-form select {
++  width: 100%; border: 1px solid var(--line); border-radius: 9px;
++  background: var(--bg); color: var(--text); padding: 10px 12px; font: inherit;
++}
++.account-form input:focus, .account-form select:focus { outline: 2px solid var(--solid); outline-offset: 1px; }
++.account-form .account-check { display: flex; align-items: center; gap: 8px; }
++.account-form .account-check input { width: auto; }
++.account-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); }
++.account-tabs button { border: 0; background: transparent; color: var(--muted); padding: 8px 4px; cursor: pointer; }
++.account-tabs button.active { color: var(--text); border-bottom: 2px solid var(--solid); }
++.account-hint { color: var(--muted); font-size: .88rem; line-height: 1.5; }
++.account-error { color: #ff8c7a; font-size: .9rem; }
++.history-list { display: grid; gap: 10px; }
++.history-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
++.history-row span { display: grid; gap: 4px; }
++.history-row small { color: var(--muted); }
++.history-row img { width: 42px; height: 56px; object-fit: cover; border-radius: 6px; }
++.history-row progress { width: 120px; accent-color: var(--solid); }
+diff --git a/web/app/tai-khoan/cai-dat/page.tsx b/web/app/tai-khoan/cai-dat/page.tsx
+new file mode 100644
+index 0000000..80caf8b
+--- /dev/null
++++ b/web/app/tai-khoan/cai-dat/page.tsx
+@@ -0,0 +1,14 @@
++import SettingsForm from "@/components/account/SettingsForm";
++
++export const metadata = { title: "Cài đặt đọc" };
++
++export default function SettingsRoute() {
++  return (
++    <main className="wrap catalog-page">
++      <div className="page-intro">
++        <div><h1>Cài đặt đọc</h1><p>Đồng bộ với tài khoản, hoặc lưu trên thiết bị khi đọc ở chế độ khách.</p></div>
++      </div>
++      <SettingsForm />
++    </main>
++  );
++}
+diff --git a/web/app/tai-khoan/lich-su/page.tsx b/web/app/tai-khoan/lich-su/page.tsx
+new file mode 100644
+index 0000000..96107de
+--- /dev/null
++++ b/web/app/tai-khoan/lich-su/page.tsx
+@@ -0,0 +1,14 @@
++import HistoryView from "@/components/account/HistoryView";
++
++export const metadata = { title: "Lịch sử đọc" };
++
++export default function HistoryRoute() {
++  return (
++    <main className="wrap catalog-page">
++      <div className="page-intro">
++        <div><h1>Lịch sử đọc</h1><p>Trang hiện tại có thể lùi lại khi đọc lại; mục đã đọc xa nhất được giữ riêng.</p></div>
++      </div>
++      <HistoryView />
++    </main>
++  );
++}
+diff --git a/web/app/tai-khoan/page.tsx b/web/app/tai-khoan/page.tsx
+new file mode 100644
+index 0000000..0e0c4ea
+--- /dev/null
++++ b/web/app/tai-khoan/page.tsx
+@@ -0,0 +1,14 @@
++import AccountPage from "@/components/account/AccountPage";
++
++export const metadata = { title: "Tài khoản" };
++
++export default function AccountRoute() {
++  return (
++    <main className="wrap catalog-page">
++      <div className="page-intro">
++        <div><h1>Tài khoản</h1><p>Đăng nhập bằng email/mật khẩu hoặc Google để đồng bộ tủ truyện và tiến độ đọc.</p></div>
++      </div>
++      <AccountPage />
++    </main>
++  );
++}
+diff --git a/web/app/tu-truyen/page.tsx b/web/app/tu-truyen/page.tsx
+index 3b7e863..cfb1510 100644
+--- a/web/app/tu-truyen/page.tsx
++++ b/web/app/tu-truyen/page.tsx
+@@ -1,14 +1,14 @@
+ import LibraryView from "@/components/library-view";
+ 
+ export const metadata = { title: "Tủ truyện" };
+ 
+ export default function LibraryPage() {
+   return (
+     <main className="wrap catalog-page">
+       <div className="page-intro">
+-        <div><h1>Tủ truyện</h1><p>Truyện bạn theo dõi, lưu trên thiết bị này.</p></div>
++        <div><h1>Tủ truyện</h1><p>Truyện bạn theo dõi — đồng bộ với tài khoản khi đăng nhập, hoặc lưu trên thiết bị này khi đọc khách.</p></div>
+       </div>
+       <LibraryView />
+     </main>
+   );
+ }
+diff --git a/web/components/account/AccountPage.tsx b/web/components/account/AccountPage.tsx
+new file mode 100644
+index 0000000..db5d66f
+--- /dev/null
++++ b/web/components/account/AccountPage.tsx
+@@ -0,0 +1,21 @@
++"use client";
++
++import AuthPanel from "@/components/account/AuthPanel";
++import ProfileForm from "@/components/account/ProfileForm";
++import GuestImportPanel from "@/components/account/GuestImportPanel";
++import { useAccountSession } from "@/lib/account/client";
++
++export default function AccountPage() {
++  const { session } = useAccountSession();
++  return (
++    <div className="account-grid">
++      <AuthPanel />
++      {session.status === "authenticated" ? (
++        <>
++          <ProfileForm />
++          <GuestImportPanel />
++        </>
++      ) : null}
++    </div>
++  );
++}
+diff --git a/web/components/account/AuthPanel.tsx b/web/components/account/AuthPanel.tsx
+new file mode 100644
+index 0000000..6f454bc
+--- /dev/null
++++ b/web/components/account/AuthPanel.tsx
+@@ -0,0 +1,137 @@
++"use client";
++
++import Link from "next/link";
++import { useState } from "react";
++import { authClient, signInWithGoogle } from "@/lib/auth/client";
++import { signOutAccount, useAccountSession } from "@/lib/account/client";
++
++type Mode = "sign-in" | "sign-up";
++
++export default function AuthPanel() {
++  const { session, refresh } = useAccountSession();
++  const [mode, setMode] = useState<Mode>("sign-in");
++  const [email, setEmail] = useState("");
++  const [password, setPassword] = useState("");
++  const [name, setName] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [message, setMessage] = useState<string | null>(null);
++
++  if (session.status === "loading") return <div className="surface account-card">Đang kiểm tra phiên đăng nhập…</div>;
++
++  if (session.status === "unconfigured") {
++    return (
++      <div className="surface account-card" role="status">
++        <h2>Chưa bật đăng nhập</h2>
++        <p>{session.message}</p>
++        <p className="account-hint">
++          Bạn vẫn có thể đọc và lưu truyện ở chế độ khách trên thiết bị này. Không có phiên giả hoặc dữ liệu mẫu được tạo.
++        </p>
++      </div>
++    );
++  }
++
++  if (session.status === "error") {
++    return (
++      <div className="surface account-card" role="alert">
++        <h2>Không đọc được phiên đăng nhập</h2>
++        <p>{session.message}</p>
++        <button type="button" className="btn" onClick={() => void refresh()}>Thử lại</button>
++      </div>
++    );
++  }
++
++  if (session.status === "authenticated") {
++    return (
++      <div className="surface account-card">
++        <h2>Đã đăng nhập</h2>
++        <p className="account-hint">
++          {session.user?.email ?? "Tài khoản"} · {session.user?.emailVerified ? "email đã xác thực" : "email chưa xác thực"}
++        </p>
++        <div className="actions">
++          <Link href="/tai-khoan/cai-dat" className="btn">Cài đặt đọc</Link>
++          <Link href="/tai-khoan/lich-su" className="btn">Lịch sử đọc</Link>
++          <button
++            type="button"
++            className="btn"
++            disabled={busy}
++            onClick={async () => {
++              setBusy(true);
++              setMessage(null);
++              try {
++                await signOutAccount();
++              } catch (error) {
++                setMessage(error instanceof Error ? error.message : "Không thể đăng xuất.");
++              } finally {
++                setBusy(false);
++              }
++            }}
++          >
++            {busy ? "Đang đăng xuất…" : "Đăng xuất"}
++          </button>
++        </div>
++        {message ? <p className="account-error" role="alert">{message}</p> : null}
++      </div>
++    );
++  }
++
++  async function submit(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setBusy(true);
++    setMessage(null);
++    try {
++      const result = mode === "sign-in"
++        ? await authClient.signIn.email({ email, password })
++        : await authClient.signUp.email({ email, password, name: name || email.split("@")[0] });
++      if (result?.error) throw new Error(result.error.message ?? "Đăng nhập thất bại.");
++      await refresh();
++      setPassword("");
++    } catch (error) {
++      setMessage(error instanceof Error ? error.message : "Đăng nhập thất bại.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function google() {
++    setBusy(true);
++    setMessage(null);
++    try {
++      const result = await signInWithGoogle("/tai-khoan");
++      if (result?.error) throw new Error(result.error.message ?? "Google đăng nhập thất bại.");
++      if (result?.data?.url) window.location.assign(result.data.url);
++      else await refresh();
++    } catch (error) {
++      setMessage(error instanceof Error ? error.message : "Google đăng nhập thất bại.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  return (
++    <div className="surface account-card">
++      <div className="account-tabs" role="tablist" aria-label="Chế độ tài khoản">
++        <button type="button" role="tab" aria-selected={mode === "sign-in"} className={mode === "sign-in" ? "active" : ""} onClick={() => setMode("sign-in")}>Đăng nhập</button>
++        <button type="button" role="tab" aria-selected={mode === "sign-up"} className={mode === "sign-up" ? "active" : ""} onClick={() => setMode("sign-up")}>Đăng ký</button>
++      </div>
++      <form className="account-form" onSubmit={(event) => void submit(event)}>
++        {mode === "sign-up" && (
++          <label>Tên hiển thị
++            <input value={name} onChange={(event) => setName(event.target.value)} maxLength={60} autoComplete="name" />
++          </label>
++        )}
++        <label>Email
++          <input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" />
++        </label>
++        <label>Mật khẩu
++          <input type="password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "sign-in" ? "current-password" : "new-password"} />
++        </label>
++        <button type="submit" className="btn btn-primary" disabled={busy}>
++          {busy ? "Đang gửi…" : mode === "sign-in" ? "Đăng nhập" : "Tạo tài khoản"}
++        </button>
++      </form>
++      <button type="button" className="btn" disabled={busy} onClick={() => void google()}>Tiếp tục với Google</button>
++      {message ? <p className="account-error" role="alert">{message}</p> : null}
++      <p className="account-hint">Không có email xác thực hoặc Google trong chế độ thử nghiệm local; lỗi từ nhà cung cấp sẽ hiển thị ở đây.</p>
++    </div>
++  );
++}
+diff --git a/web/components/account/GuestImportPanel.tsx b/web/components/account/GuestImportPanel.tsx
+new file mode 100644
+index 0000000..d2c7d7a
+--- /dev/null
++++ b/web/components/account/GuestImportPanel.tsx
+@@ -0,0 +1,71 @@
++"use client";
++
++import { useState } from "react";
++import type { ImportSummaryDto } from "@/lib/contracts";
++import { getHistory, getLibrary, getSettings } from "@/lib/guest";
++import { accountMutate, useAccountSession } from "@/lib/account/client";
++
++export default function GuestImportPanel() {
++  const { session } = useAccountSession();
++  const [busy, setBusy] = useState(false);
++  const [result, setResult] = useState<ImportSummaryDto | null>(null);
++  const [error, setError] = useState<string | null>(null);
++  // Read on every render: after login the local data is still the user's own.
++  const localLibrary = getLibrary();
++  const localHistory = getHistory();
++  const localSettings = getSettings();
++
++  if (session.status !== "authenticated") return null;
++
++  async function importNow() {
++    setBusy(true);
++    setError(null);
++    setResult(null);
++    try {
++      setResult(await accountMutate<ImportSummaryDto>("/api/v1/me/import", "POST", {
++        library: localLibrary.map((entry) => ({
++          mangaId: entry.mangaId,
++          title: entry.title,
++          coverFile: entry.coverFile,
++          lang: entry.lang,
++          followedAt: entry.followedAt,
++        })),
++        history: localHistory.map((entry) => ({
++          mangaId: entry.mangaId,
++          chapterId: entry.chapterId,
++          lang: entry.lang,
++          page: entry.page ?? 1,
++          total: entry.total ?? entry.page ?? 1,
++          chapter: entry.chapter,
++          title: entry.title,
++          coverFile: entry.coverFile,
++          ts: entry.ts,
++        })),
++        settings: localSettings,
++      }));
++    } catch (cause) {
++      setError(cause instanceof Error ? cause.message : "Không nhập được dữ liệu khách.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  const hasLocal = localLibrary.length > 0 || localHistory.length > 0;
++  return (
++    <div className="surface account-card">
++      <h2>Nhập dữ liệu từ chế độ khách</h2>
++      <p className="account-hint">
++        Tủ truyện: {localLibrary.length} · Lịch sử: {localHistory.length}. Dữ liệu trên thiết bị này không bị xóa; nhập lại nhiều lần không tạo bản trùng.
++      </p>
++      <button type="button" className="btn" disabled={busy || !hasLocal} onClick={() => void importNow()}>
++        {busy ? "Đang nhập…" : hasLocal ? "Nhập vào tài khoản" : "Không có dữ liệu khách để nhập"}
++      </button>
++      {error ? <p className="account-error" role="alert">{error}</p> : null}
++      {result ? (
++        <p className="account-hint" role="status">
++          Đã nhập {result.libraryInserted} tủ truyện, {result.progressInserted} tiến độ mới, cập nhật {result.progressUpdated} mục; bỏ qua {result.skipped} mục không hợp lệ hoặc cũ hơn máy chủ. Dữ liệu gốc vẫn giữ lại.
++        </p>
++      ) : null}
++    </div>
++  );
++}
+diff --git a/web/components/account/HistoryView.tsx b/web/components/account/HistoryView.tsx
+new file mode 100644
+index 0000000..70925fa
+--- /dev/null
++++ b/web/components/account/HistoryView.tsx
+@@ -0,0 +1,54 @@
++"use client";
++
++import Link from "next/link";
++import { useSyncExternalStore } from "react";
++import { coverImageUrl, type ProgressEntryDto } from "@/lib/contracts";
++import { chapterLabel } from "@/lib/format";
++import { getHistory, subscribe, type GuestHistory } from "@/lib/guest";
++import { useAccountSession, useRemoteResource } from "@/lib/account/client";
++
++const NO_HISTORY: GuestHistory[] = [];
++
++function LocalHistory() {
++  const entries = useSyncExternalStore(subscribe, getHistory, () => NO_HISTORY);
++  if (entries.length === 0) return <div className="surface empty"><h2>Chưa có lịch sử đọc</h2><p>Mở một chương để bắt đầu.</p></div>;
++  return (
++    <div className="history-list">
++      {entries.map((entry) => (
++        <Link key={`${entry.mangaId}:${entry.chapterId}`} href={`/read/${encodeURIComponent(entry.chapterId)}?manga=${encodeURIComponent(entry.mangaId)}&lang=${encodeURIComponent(entry.lang)}`} className="history-row">
++          <span><strong>{entry.mangaTitle}</strong><small>{chapterLabel(entry.chapter)} · thiết bị này</small></span>
++          {entry.total ? <progress max={entry.total} value={entry.page ?? 1} /> : null}
++        </Link>
++      ))}
++    </div>
++  );
++}
++
++function SyncedHistory() {
++  const remote = useRemoteResource<{ items: ProgressEntryDto[] }>("/api/v1/me/progress");
++  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải lịch sử…</div>;
++  if (remote.error || !remote.data) {
++    return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được lịch sử."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;
++  }
++  if (remote.data.items.length === 0) return <div className="surface empty"><h2>Chưa có lịch sử đọc</h2><p>Tiến độ sẽ được đồng bộ khi bạn mở truyện.</p></div>;
++  return (
++    <div className="history-list">
++      {remote.data.items.map((item) => (
++        <Link key={`${item.mangaId}:${item.chapterId}:${item.lang}`} href={`/read/${encodeURIComponent(item.chapterId)}?manga=${encodeURIComponent(item.mangaId)}&lang=${encodeURIComponent(item.lang)}`} className="history-row">
++          <span>
++            <strong>{item.title ?? item.mangaId}</strong>
++            <small>{chapterLabel(item.chapter)} · đã đọc tới trang {item.maxPage}/{item.total}</small>
++          </span>
++          {item.coverFile ? <img src={coverImageUrl({ id: item.mangaId, cover_file: item.coverFile }, 96) ?? ""} alt="" loading="lazy" /> : null}
++          <progress max={item.total} value={item.page} />
++        </Link>
++      ))}
++    </div>
++  );
++}
++
++export default function HistoryView() {
++  const { session } = useAccountSession();
++  if (session.status === "authenticated") return <SyncedHistory />;
++  return <LocalHistory />;
++}
+diff --git a/web/components/account/ProfileForm.tsx b/web/components/account/ProfileForm.tsx
+new file mode 100644
+index 0000000..efc796a
+--- /dev/null
++++ b/web/components/account/ProfileForm.tsx
+@@ -0,0 +1,76 @@
++"use client";
++
++import { useState } from "react";
++import type { AccountProfileDto } from "@/lib/contracts";
++import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
++
++function ProfileFields({ profile, onSaved }: { profile: AccountProfileDto; onSaved: () => void }) {
++  const [username, setUsername] = useState(profile.username ?? "");
++  const [displayName, setDisplayName] = useState(profile.displayName ?? "");
++  const [avatarUrl, setAvatarUrl] = useState(profile.avatarUrl ?? "");
++  const [busy, setBusy] = useState(false);
++  const [message, setMessage] = useState<string | null>(null);
++
++  async function submit(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setBusy(true);
++    setMessage(null);
++    try {
++      await accountMutate("/api/v1/me", "PATCH", {
++        username: username.trim() || null,
++        displayName: displayName.trim() || null,
++        avatarUrl: avatarUrl.trim() || null,
++      });
++      setMessage("Đã lưu hồ sơ.");
++      onSaved();
++    } catch (error) {
++      setMessage(error instanceof Error ? error.message : "Không lưu được hồ sơ.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  return (
++    <form className="account-form" onSubmit={(event) => void submit(event)}>
++      <label>Tên người dùng
++        <input value={username} onChange={(event) => setUsername(event.target.value)} maxLength={24} placeholder="3–24 ký tự a-z, 0-9, ., _" />
++      </label>
++      <label>Tên hiển thị
++        <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} />
++      </label>
++      <label>Ảnh đại diện (https)
++        <input type="url" value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} maxLength={512} placeholder="https://…" />
++      </label>
++      <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu hồ sơ"}</button>
++      {message ? <p className={message.startsWith("Đã") ? "account-hint" : "account-error"} role="status">{message}</p> : null}
++    </form>
++  );
++}
++
++export default function ProfileForm() {
++  const { session } = useAccountSession();
++  const remote = useRemoteResource<{ profile: AccountProfileDto }>(
++    session.status === "authenticated" ? "/api/v1/me" : null,
++  );
++
++  if (session.status !== "authenticated") return null;
++  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải hồ sơ…</div>;
++  if (remote.error || !remote.data) {
++    return (
++      <div className="surface account-card" role="alert">
++        <p>{remote.error ?? "Không tải được hồ sơ."}</p>
++        <button type="button" className="btn" onClick={remote.reload}>Thử lại</button>
++      </div>
++    );
++  }
++  const { profile } = remote.data;
++  return (
++    <div className="surface account-card">
++      <h2>Hồ sơ</h2>
++      <p className="account-hint">
++        Cấp {profile.level} · {profile.totalXp} XP — điểm kinh nghiệm chỉ là giá trị giữ chỗ cho đến khi ghi nhận hoàn thành chương.
++      </p>
++      <ProfileFields key={`${profile.id}:${profile.username ?? ""}:${profile.displayName ?? ""}`} profile={profile} onSaved={remote.reload} />
++    </div>
++  );
++}
+diff --git a/web/components/account/SettingsForm.tsx b/web/components/account/SettingsForm.tsx
+new file mode 100644
+index 0000000..b69f26b
+--- /dev/null
++++ b/web/components/account/SettingsForm.tsx
+@@ -0,0 +1,103 @@
++"use client";
++
++import { useState } from "react";
++import type { ReaderSettingsDto } from "@/lib/validators";
++import { getSettings, saveSettings, type ReaderSettings } from "@/lib/guest";
++import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
++
++function SettingsFields({
++  value,
++  onSave,
++}: {
++  value: ReaderSettingsDto;
++  onSave: (next: ReaderSettingsDto) => Promise<string>;
++}) {
++  const [mode, setMode] = useState(value.mode);
++  const [bg, setBg] = useState(value.bg);
++  const [fit, setFit] = useState(value.fit);
++  const [speed, setSpeed] = useState(value.speed);
++  const [busy, setBusy] = useState(false);
++  const [message, setMessage] = useState<string | null>(null);
++
++  async function submit(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setBusy(true);
++    setMessage(null);
++    try {
++      setMessage(await onSave({ mode, bg, fit, speed }));
++    } catch (error) {
++      setMessage(error instanceof Error ? error.message : "Không lưu được cài đặt.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  return (
++    <form className="account-form" onSubmit={(event) => void submit(event)}>
++      <label>Chế độ đọc
++        <select value={mode} onChange={(event) => setMode(event.target.value as ReaderSettingsDto["mode"])}>
++          <option value="vertical">Cuộn dọc</option>
++          <option value="horizontal">Chuyển trang</option>
++        </select>
++      </label>
++      <label>Nền
++        <select value={bg} onChange={(event) => setBg(event.target.value as ReaderSettingsDto["bg"])}>
++          <option value="light">Sáng</option>
++          <option value="sepia">Ngà</option>
++          <option value="dark">Tối</option>
++        </select>
++      </label>
++      <label className="account-check"><input type="checkbox" checked={fit} onChange={(event) => setFit(event.target.checked)} /> Vừa khung hình</label>
++      <label>Tốc độ cuộn
++        <input type="number" min={1} max={5} value={speed} onChange={(event) => setSpeed(Number(event.target.value))} />
++      </label>
++      <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu cài đặt"}</button>
++      {message ? <p className="account-hint" role="status">{message}</p> : null}
++    </form>
++  );
++}
++
++function GuestSettings() {
++  const [settings, setSettings] = useState<ReaderSettingsDto>(() => getSettings() as ReaderSettingsDto);
++  return (
++    <div className="surface account-card">
++      <h2>Cài đặt đọc</h2>
++      <p className="account-hint">Chế độ khách: cài đặt chỉ lưu trên thiết bị này. Đăng nhập để đồng bộ giữa các máy.</p>
++      <SettingsFields key="guest" value={settings} onSave={async (next) => {
++        saveSettings(next as ReaderSettings);
++        setSettings(next);
++        return "Đã lưu trên thiết bị này.";
++      }} />
++    </div>
++  );
++}
++
++export default function SettingsForm() {
++  const { session } = useAccountSession();
++  const remote = useRemoteResource<ReaderSettingsDto>(
++    session.status === "authenticated" ? "/api/v1/me/settings" : null,
++  );
++
++  if (session.status === "loading") return <div className="surface account-card">Đang kiểm tra phiên đăng nhập…</div>;
++  if (session.status !== "authenticated") return <GuestSettings />;
++  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải cài đặt…</div>;
++  if (remote.error || !remote.data) {
++    return (
++      <div className="surface account-card" role="alert">
++        <p>{remote.error ?? "Không tải được cài đặt."}</p>
++        <button type="button" className="btn" onClick={remote.reload}>Thử lại</button>
++      </div>
++    );
++  }
++  return (
++    <div className="surface account-card">
++      <h2>Cài đặt đọc</h2>
++      <p className="account-hint">Cài đặt được lưu trong tài khoản và áp dụng lại khi mở truyện trên thiết bị khác.</p>
++      <SettingsFields key="server" value={remote.data} onSave={async (next) => {
++        await accountMutate("/api/v1/me/settings", "PUT", next);
++        remote.reload();
++        return "Đã lưu vào tài khoản.";
++      }} />
++    </div>
++  );
++}
+diff --git a/web/components/continue-reading.tsx b/web/components/continue-reading.tsx
+index d5707fd..62ed5eb 100644
+--- a/web/components/continue-reading.tsx
++++ b/web/components/continue-reading.tsx
+@@ -1,50 +1,87 @@
+ "use client";
+ 
+ import Link from "next/link";
+ import { useSyncExternalStore } from "react";
+-import { coverImageUrl } from "@/lib/contracts";
++import { coverImageUrl, type ProgressEntryDto } from "@/lib/contracts";
+ import { chapterLabel } from "@/lib/format";
+ import { getHistory, subscribe, type GuestHistory } from "@/lib/guest";
+ import { SectionTitle } from "@/components/manga-card";
++import { useAccountSession, useRemoteResource } from "@/lib/account/client";
+ 
+ const EMPTY: GuestHistory[] = [];
+ 
++function Card({ to, mangaId, title, chapter, cover, page, total }: {
++  to: string;
++  mangaId: string;
++  title: string;
++  chapter: string | null;
++  cover: string | null;
++  page: number | null;
++  total: number | null;
++}) {
++  return (
++    <Link href={to} className="continue-card">
++      <div className="continue-cover">
++        {cover ? <img src={coverImageUrl({ id: mangaId, cover_file: cover }, 256) ?? ""} alt="" loading="lazy" decoding="async" /> : null}
++      </div>
++      <div className="continue-meta">
++        <p className="cc-title">{title}</p>
++        <p className="cc-ch">{chapterLabel(chapter)}</p>
++        {total && total > 0 ? <progress aria-label="Tiến độ đọc chương" max={total} value={page ?? 1} /> : null}
++      </div>
++    </Link>
++  );
++}
++
+ export default function ContinueReading() {
+-  // useSyncExternalStore reads localStorage during hydration without a
+-  // setState-in-effect (and without a hydration mismatch).
+-  const list = useSyncExternalStore(subscribe, getHistory, () => EMPTY);
+-  if (list.length === 0) return null;
++  const history = useSyncExternalStore(subscribe, getHistory, () => EMPTY);
++  const { session } = useAccountSession();
++  const remote = useRemoteResource<{ items: ProgressEntryDto[] }>(
++    session.status === "authenticated" ? "/api/v1/me/progress" : null,
++  );
++
++  if (session.status !== "authenticated") {
++    if (history.length === 0) return null;
++    return (
++      <section className="section">
++        <SectionTitle>Đọc tiếp</SectionTitle>
++        <div className="continue-grid">
++          {history.slice(0, 6).map((entry) => (
++            <Card
++              key={entry.mangaId}
++              to={`/read/${encodeURIComponent(entry.chapterId)}?manga=${encodeURIComponent(entry.mangaId)}&lang=${encodeURIComponent(entry.lang)}`}
++              mangaId={entry.mangaId}
++              title={entry.mangaTitle}
++              chapter={entry.chapter}
++              cover={entry.coverFile}
++              page={entry.page}
++              total={entry.total}
++            />
++          ))}
++        </div>
++      </section>
++    );
++  }
+ 
++  const items = (remote.data?.items ?? []).slice(0, 6);
++  if (items.length === 0) return null;
+   return (
+     <section className="section">
+-      <SectionTitle>Đọc tiếp</SectionTitle>
++      <SectionTitle>Đọc tiếp · đã đồng bộ</SectionTitle>
+       <div className="continue-grid">
+-        {list.slice(0, 6).map((entry) => (
+-          <Link
+-            key={entry.mangaId}
+-            href={`/read/${entry.chapterId}?manga=${encodeURIComponent(entry.mangaId)}&lang=${entry.lang}`}
+-            className="continue-card"
+-          >
+-            <div className="continue-cover">
+-              {entry.coverFile && (
+-                <img
+-                  src={coverImageUrl({ id: entry.mangaId, cover_file: entry.coverFile }, 256) ?? ""}
+-                  alt=""
+-                  loading="lazy"
+-                  decoding="async"
+-                />
+-              )}
+-            </div>
+-            <div className="continue-meta">
+-              <p className="cc-title">{entry.mangaTitle}</p>
+-              <p className="cc-ch">{chapterLabel(entry.chapter)}</p>
+-              {entry.total && entry.total > 0 ? (
+-                <progress aria-label="Tiến độ đọc chương" max={entry.total} value={entry.page ?? 1} />
+-              ) : null}
+-            </div>
+-          </Link>
++        {items.map((entry) => (
++          <Card
++            key={`${entry.mangaId}:${entry.chapterId}:${entry.lang}`}
++            to={`/read/${encodeURIComponent(entry.chapterId)}?manga=${encodeURIComponent(entry.mangaId)}&lang=${encodeURIComponent(entry.lang)}`}
++            mangaId={entry.mangaId}
++            title={entry.title ?? entry.mangaId}
++            chapter={entry.chapter}
++            cover={entry.coverFile}
++            page={entry.page}
++            total={entry.total}
++          />
+         ))}
+       </div>
+     </section>
+   );
+ }
+diff --git a/web/components/header.tsx b/web/components/header.tsx
+index 616e5d3..c2525aa 100644
+--- a/web/components/header.tsx
++++ b/web/components/header.tsx
+@@ -50,16 +50,19 @@ export default function Header() {
+           <Suspense fallback={<div className="h-9 w-full max-w-md rounded-full bg-panel" />}>
+             <SearchForm />
+           </Suspense>
+         </div>
+         <nav className="order-2 ml-auto flex items-center gap-4 text-sm text-muted sm:order-3">
+           <Link href="/" className="transition hover:text-paper">
+             Trang chủ
+           </Link>
++          <Link href="/tai-khoan" className="transition hover:text-paper">
++            Tài khoản
++          </Link>
+           <a
+             href="https://mangadex.org"
+             target="_blank"
+             rel="noopener noreferrer"
+             className="hidden transition hover:text-paper sm:block"
+           >
+             MangaDex ↗
+           </a>
+diff --git a/web/components/library-view.tsx b/web/components/library-view.tsx
+index 6b5bd20..f83aac1 100644
+--- a/web/components/library-view.tsx
++++ b/web/components/library-view.tsx
+@@ -1,55 +1,117 @@
+ "use client";
+ 
+ import Link from "next/link";
+-import { useSyncExternalStore } from "react";
+-import { coverImageUrl } from "@/lib/contracts";
++import { useSyncExternalStore, useState } from "react";
++import { coverImageUrl, type LibraryEntryDto } from "@/lib/contracts";
++import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+ import { getLibrary, subscribe, toggleLibrary, type GuestLibraryEntry } from "@/lib/guest";
+ 
+ const EMPTY: GuestLibraryEntry[] = [];
+ 
+-export default function LibraryView() {
++function LocalLibrary() {
+   const library = useSyncExternalStore(subscribe, getLibrary, () => EMPTY);
+-
+-  if (library.length === 0) {
+-    return (
+-      <div className="surface empty">
+-        <h2>Tủ truyện còn trống</h2>
+-        <p>Thêm truyện từ trang chi tiết để theo dõi chương mới và đọc tiếp tại đây.</p>
+-        <Link href="/" className="btn btn-primary">Khám phá truyện</Link>
+-      </div>
+-    );
+-  }
+-
++  if (library.length === 0) return <EmptyLibrary />;
+   return (
+     <div className="shelf-grid">
+       {library.map((entry) => (
+         <div key={entry.mangaId} className="surface shelf-card">
+           <Link href={`/manga/${encodeURIComponent(entry.mangaId)}`} className="shelf-story">
+             <div className="card-cover">
+               {entry.coverFile ? (
+                 <img src={coverImageUrl({ id: entry.mangaId, cover_file: entry.coverFile }) ?? ""} alt="" loading="lazy" />
+               ) : (
+                 <div className="no-cover" aria-hidden="true">Chưa có bìa</div>
+               )}
+             </div>
+             <div>
+               <strong>{entry.title}</strong>
+-              <p className="cc-ch">
+-                {entry.lastChapterId ? `Chương mới: ${entry.lastChapterId}` : "Chưa đọc"}
+-              </p>
++              <p className="cc-ch">{entry.lastChapterId ? `Chương mới: ${entry.lastChapterId}` : "Chưa đọc"}</p>
+             </div>
+           </Link>
+           <div className="actions">
+             <button
+               type="button"
+               className="btn"
+               onClick={() => toggleLibrary({ mangaId: entry.mangaId, title: entry.title, coverFile: entry.coverFile, lang: entry.lang })}
+             >
+               Bỏ theo dõi
+             </button>
+           </div>
+         </div>
+       ))}
+     </div>
+   );
+ }
++
++function EmptyLibrary() {
++  return (
++    <div className="surface empty">
++      <h2>Tủ truyện còn trống</h2>
++      <p>Thêm truyện từ trang chi tiết để theo dõi chương mới và đọc tiếp tại đây.</p>
++      <Link href="/" className="btn btn-primary">Khám phá truyện</Link>
++    </div>
++  );
++}
++
++function SyncedLibrary() {
++  const remote = useRemoteResource<{ items: LibraryEntryDto[] }>("/api/v1/me/library");
++  const [busy, setBusy] = useState<string | null>(null);
++  const [error, setError] = useState<string | null>(null);
++
++  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải tủ truyện…</div>;
++  if (remote.error || !remote.data) {
++    return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được tủ truyện."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;
++  }
++  if (remote.data.items.length === 0) return <EmptyLibrary />;
++  return (
++    <>
++      {error ? <p className="account-error" role="alert">{error}</p> : null}
++      <div className="shelf-grid">
++        {remote.data.items.map((entry) => (
++          <div key={entry.mangaId} className="surface shelf-card">
++            <Link href={`/manga/${encodeURIComponent(entry.mangaId)}`} className="shelf-story">
++              <div className="card-cover">
++                {entry.coverFile ? (
++                  <img src={coverImageUrl({ id: entry.mangaId, cover_file: entry.coverFile }) ?? ""} alt="" loading="lazy" />
++                ) : (
++                  <div className="no-cover" aria-hidden="true">Chưa có bìa</div>
++                )}
++              </div>
++              <div>
++                <strong>{entry.title}</strong>
++                <p className="cc-ch">{entry.lastChapterId ? `Chương mới: ${entry.lastChapterId}` : "Chưa đọc"}</p>
++              </div>
++            </Link>
++            <div className="actions">
++              <button
++                type="button"
++                className="btn"
++                disabled={busy === entry.mangaId}
++                onClick={async () => {
++                  setBusy(entry.mangaId);
++                  setError(null);
++                  try {
++                    await accountMutate(`/api/v1/me/library/${encodeURIComponent(entry.mangaId)}`, "DELETE");
++                    remote.reload();
++                  } catch (cause) {
++                    setError(cause instanceof Error ? cause.message : "Không bỏ theo dõi được.");
++                  } finally {
++                    setBusy(null);
++                  }
++                }}
++              >
++                {busy === entry.mangaId ? "Đang xóa…" : "Bỏ theo dõi"}
++              </button>
++            </div>
++          </div>
++        ))}
++      </div>
++    </>
++  );
++}
++
++export default function LibraryView() {
++  const { session } = useAccountSession();
++  if (session.status === "authenticated") return <SyncedLibrary />;
++  return <LocalLibrary />;
++}
+diff --git a/web/components/manga-actions.tsx b/web/components/manga-actions.tsx
+index f7cd622..a1a2864 100644
+--- a/web/components/manga-actions.tsx
++++ b/web/components/manga-actions.tsx
+@@ -1,13 +1,15 @@
+ "use client";
+ 
+ import Link from "next/link";
+-import { useSyncExternalStore } from "react";
++import { useState, useSyncExternalStore } from "react";
++import type { LibraryEntryDto, ProgressEntryDto } from "@/lib/contracts";
+ import { chapterLabel } from "@/lib/format";
++import { useAccountSession, useRemoteResource, accountMutate } from "@/lib/account/client";
+ import {
+   getHistory, getLibrary, subscribe, toggleLibrary, type GuestHistory, type GuestLibraryEntry,
+ } from "@/lib/guest";
+ 
+ type Props = {
+   mangaId: string;
+   title: string;
+   coverFile: string | null;
+@@ -18,36 +20,64 @@ type Props = {
+ };
+ 
+ const NO_HISTORY: GuestHistory[] = [];
+ const NO_LIBRARY: GuestLibraryEntry[] = [];
+ 
+ export default function MangaActions({ mangaId, title, coverFile, lang, firstChapterId, firstChapterLabel, hasExternal }: Props) {
+   const history = useSyncExternalStore(subscribe, getHistory, () => NO_HISTORY);
+   const library = useSyncExternalStore(subscribe, getLibrary, () => NO_LIBRARY);
+-  const resume = history.find((entry) => entry.mangaId === mangaId);
+-  const followed = library.some((entry) => entry.mangaId === mangaId);
++  const { session } = useAccountSession();
++  const authed = session.status === "authenticated";
++  const remoteLibrary = useRemoteResource<{ items: LibraryEntryDto[] }>(authed ? "/api/v1/me/library" : null);
++  const remoteProgress = useRemoteResource<{ items: ProgressEntryDto[] }>(authed ? "/api/v1/me/progress" : null);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  const localResume = history.find((entry) => entry.mangaId === mangaId);
++  const remoteResume = remoteProgress.data?.items.find((entry) => entry.mangaId === mangaId) ?? null;
++  const resume = authed && remoteResume
++    ? { chapterId: remoteResume.chapterId, lang: remoteResume.lang, chapter: remoteResume.chapter }
++    : localResume;
++  const followed = authed
++    ? Boolean(remoteLibrary.data?.items.some((entry) => entry.mangaId === mangaId))
++    : library.some((entry) => entry.mangaId === mangaId);
++
++  async function toggleFollow() {
++    if (!authed) {
++      toggleLibrary({ mangaId, title, coverFile, lang });
++      return;
++    }
++    setBusy(true);
++    setError(null);
++    try {
++      const url = `/api/v1/me/library/${encodeURIComponent(mangaId)}`;
++      if (followed) await accountMutate(url, "DELETE");
++      else await accountMutate(url, "PUT", { title, coverFile, lang, status: "reading" });
++      remoteLibrary.reload();
++    } catch (cause) {
++      setError(cause instanceof Error ? cause.message : "Không cập nhật được tủ truyện.");
++    } finally {
++      setBusy(false);
++    }
++  }
+ 
+   return (
+     <div className="actions">
+       {firstChapterId ? (
+         <Link href={`/read/${firstChapterId}?manga=${encodeURIComponent(mangaId)}&lang=${lang}`} className="btn btn-primary">
+           Đọc từ đầu · {firstChapterLabel}
+         </Link>
+       ) : (
+         <span className="btn btn-disabled">{hasExternal ? "Chapter chỉ có ở nguồn ngoài" : "Chưa có chapter"}</span>
+       )}
+       {resume && (
+-        <Link href={`/read/${resume.chapterId}?manga=${encodeURIComponent(mangaId)}&lang=${resume.lang}`} className="btn">
++        <Link href={`/read/${encodeURIComponent(resume.chapterId)}?manga=${encodeURIComponent(mangaId)}&lang=${encodeURIComponent(resume.lang)}`} className="btn">
+           Đọc tiếp · {chapterLabel(resume.chapter)}
+         </Link>
+       )}
+-      <button
+-        type="button"
+-        className="btn"
+-        aria-pressed={followed}
+-        onClick={() => toggleLibrary({ mangaId, title, coverFile, lang })}
+-      >
++      <button type="button" className="btn" aria-pressed={followed} disabled={busy} onClick={() => void toggleFollow()}>
+         {followed ? "✓ Đang theo dõi" : "+ Thêm vào tủ truyện"}
+       </button>
++      {error ? <span className="account-error" role="alert">{error}</span> : null}
+     </div>
+   );
+ }
+diff --git a/web/components/reader/ReaderClient.tsx b/web/components/reader/ReaderClient.tsx
+index 3826e59..27206ed 100644
+--- a/web/components/reader/ReaderClient.tsx
++++ b/web/components/reader/ReaderClient.tsx
+@@ -1,15 +1,17 @@
+ "use client";
+ 
+ import Link from "next/link";
+ import { useRouter } from "next/navigation";
+ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+ import type { ReaderWasm } from "@/generated/reader-wasm";
+-import type { ChapterDto, MangaSummaryDto } from "@/lib/contracts";
++import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
++import type { ReaderSettingsDto } from "@/lib/validators";
++import { accountGet, accountMutate, useAccountSession } from "@/lib/account/client";
+ import {
+   DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
+   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
+ } from "@/lib/guest";
+ import ReaderPages from "./ReaderPages";
+ import ReaderToolbar from "./ReaderToolbar";
+ 
+ type Props = {
+@@ -38,17 +40,19 @@ export default function ReaderClient(props: Props) {
+ 
+ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Props) {
+   const router = useRouter();
+   const root = useRef<HTMLDivElement>(null);
+   const pagesContainer = useRef<HTMLDivElement>(null);
+   const wasm = useRef<ReaderWasm | null>(null);
+   const savedChapter = useRef("");
+   const prefetched = useRef("");
++  const settledRemote = useRef("");
+   const settleUntil = useRef(0);
++  const { session } = useAccountSession();
+ 
+   const [page, setPage] = useState(0);
+   const [progress, setProgress] = useState(0);
+   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
+   const [wasmError, setWasmError] = useState<string | null>(null);
+   const [wasmAttempt, setWasmAttempt] = useState(0);
+   const [loaded, setLoaded] = useState(false);
+   const [running, setRunning] = useState(false);
+@@ -161,16 +165,56 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+     if (!loaded || total === 0) return;
+     const state = wasm.current;
+     if (!state) return;
+     const history = getHistoryFor(manga.id);
+     if (!history || history.chapterId !== chapter.id) return;
+     saveProgress(chapter.id, state.pageIndex() + 1, state.totalPages());
+   }, [loaded, page, total, chapter.id, manga.id]);
+ 
++  // Authenticated reading re-applies server settings and position through the
++  // same Rust state machine; guests keep the local-only path untouched.
++  useEffect(() => {
++    const key = `${chapter.id}|${lang}`;
++    if (session.status !== "authenticated" || !loaded || total === 0 || settledRemote.current === key) return;
++    settledRemote.current = key;
++    void Promise.all([
++      accountGet<ReaderSettingsDto>("/api/v1/me/settings"),
++      accountGet<{ items: ProgressEntryDto[] }>("/api/v1/me/progress"),
++    ]).then(([prefs, history]) => {
++      const state = wasm.current;
++      if (!state) return;
++      state.applySettingsJson(JSON.stringify(prefs));
++      const match = history.items.find((item) => item.mangaId === manga.id && item.chapterId === chapter.id && item.lang === lang);
++      if (match) {
++        const target = Math.min(Math.max(match.page - 1, 0), state.totalPages() - 1);
++        if (target > state.pageIndex()) {
++          state.setPage(target);
++          settleUntil.current = Date.now() + 800;
++        }
++      }
++      syncFromWasm();
++    }).catch(() => undefined);
++  }, [session.status, loaded, total, chapter.id, manga.id, lang, syncFromWasm]);
++
++  useEffect(() => {
++    if (session.status !== "authenticated" || !loaded || total === 0) return;
++    const state = wasm.current;
++    if (!state) return;
++    void accountMutate(`/api/v1/me/progress/${encodeURIComponent(chapter.id)}`, "PUT", {
++      mangaId: manga.id,
++      lang,
++      page: state.pageIndex() + 1,
++      total: state.totalPages(),
++      chapter: chapter.chapter,
++      title: chapter.title,
++      coverFile: manga.cover_file,
++    }).catch(() => undefined);
++  }, [session.status, loaded, page, total, chapter, manga, lang]);
++
+   // One-off restoration scroll on chapter load and when returning to vertical
+   // mode. It is deliberately independent from the observer and from `page`, so
+   // normal scrolling (and auto-scroll) is never snapped back.
+   useEffect(() => {
+     if (!loaded || settings.mode !== "vertical" || total === 0) return;
+     const target = wasm.current?.pageIndex() ?? 0;
+     if (target === 0) return;
+     pagesContainer.current
+@@ -217,21 +261,25 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+       if (patch.bg) state.setBackground(patch.bg);
+       if (typeof patch.fit === "boolean") state.setFit(patch.fit);
+       if (patch.speed) state.setSpeed(patch.speed);
+     } catch {
+       return;
+     }
+     syncFromWasm();
+     try {
+-      saveSettings(normalizeSettings(JSON.parse(state.settingsJson())));
++      const current = normalizeSettings(JSON.parse(state.settingsJson()));
++      saveSettings(current);
++      if (session.status === "authenticated") {
++        void accountMutate("/api/v1/me/settings", "PUT", current).catch(() => undefined);
++      }
+     } catch {
+       // Settings are cosmetic; a corrupt snapshot must not stop reading.
+     }
+-  }, [syncFromWasm]);
++  }, [syncFromWasm, session.status]);
+ 
+   useEffect(() => {
+     const onKey = (event: KeyboardEvent) => {
+       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.defaultPrevented) return;
+       const element = event.target instanceof Element ? event.target : null;
+       if (element?.closest("input, select, textarea, button, [contenteditable]")) return;
+       const direction: -1 | 1 | null = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : null;
+       if (!direction) return;
+diff --git a/web/components/site-shell.tsx b/web/components/site-shell.tsx
+index 52e2cef..36e7f62 100644
+--- a/web/components/site-shell.tsx
++++ b/web/components/site-shell.tsx
+@@ -5,28 +5,30 @@ import { usePathname } from "next/navigation";
+ import SiteHeader from "@/components/site-header";
+ 
+ const LINKS = [
+   { href: "/", label: "Trang chủ", icon: "home", exact: true },
+   { href: "/search", label: "Khám phá", icon: "search", mobileHidden: true },
+   { href: "/the-loai", label: "Thể loại", icon: "genres" },
+   { href: "/bxh", label: "Xếp hạng", icon: "rank" },
+   { href: "/tu-truyen", label: "Tủ truyện", icon: "bookmark" },
++  { href: "/tai-khoan", label: "Tài khoản", icon: "user" },
+ ];
+ 
+ export function NavIcon({ name }: { name: string }) {
+   const paths: Record<string, string> = {
+     home: "M3 10 12 3l9 7v10h-6v-6H9v6H3z",
+     genres: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
+     rank: "M7 4h10v5a5 5 0 0 1-10 0z M7 6H4a3 3 0 0 0 3 5 M17 6h3a3 3 0 0 1-3 5 M12 14v6m-4 0h8",
+     bookmark: "M6 4h12v16l-6-4-6 4z",
+     search: "M18 10a8 8 0 1 0-16 0 8 8 0 0 0 16 0z m-2 6 5 5",
+     sun: "M16 12a4 4 0 1 0-8 0 4 4 0 0 0 8 0z M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M19 5l-1.5 1.5m-11 11L5 19",
+     moon: "M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10Z",
+     book: "M12 5v15M3 4h4a5 5 0 0 1 5 3 5 5 0 0 1 5-3h4v14h-4a6 6 0 0 0-5 2 6 6 0 0 0-5-2H3z",
++    user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0",
+   };
+   return (
+     <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+       <path d={paths[name] ?? paths.book} />
+     </svg>
+   );
+ }
+ 
+diff --git a/web/drizzle/0001_account_data.sql b/web/drizzle/0001_account_data.sql
+new file mode 100644
+index 0000000..5546727
+--- /dev/null
++++ b/web/drizzle/0001_account_data.sql
+@@ -0,0 +1,58 @@
++CREATE TABLE "chapter_progress" (
++	"user_id" text NOT NULL,
++	"manga_id" text NOT NULL,
++	"chapter_id" text NOT NULL,
++	"language" text DEFAULT 'vi' NOT NULL,
++	"chapter" text,
++	"title" text,
++	"cover_file" text,
++	"page" integer NOT NULL,
++	"max_page" integer NOT NULL,
++	"total" integer NOT NULL,
++	"last_read_at" bigint NOT NULL,
++	"revision" integer DEFAULT 1 NOT NULL,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "chapter_progress_user_id_manga_id_chapter_id_language_pk" PRIMARY KEY("user_id","manga_id","chapter_id","language")
++);
++--> statement-breakpoint
++CREATE TABLE "library_entries" (
++	"user_id" text NOT NULL,
++	"manga_id" text NOT NULL,
++	"title" text NOT NULL,
++	"cover_file" text,
++	"lang" text DEFAULT 'vi' NOT NULL,
++	"status" text DEFAULT 'reading' NOT NULL,
++	"followed_at" bigint NOT NULL,
++	"last_chapter_id" text,
++	"last_read_publish" bigint DEFAULT 0 NOT NULL,
++	"revision" integer DEFAULT 1 NOT NULL,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "library_entries_user_id_manga_id_pk" PRIMARY KEY("user_id","manga_id")
++);
++--> statement-breakpoint
++CREATE TABLE "reader_preferences" (
++	"user_id" text PRIMARY KEY NOT NULL,
++	"mode" text DEFAULT 'vertical' NOT NULL,
++	"fit" boolean DEFAULT true NOT NULL,
++	"bg" text DEFAULT 'light' NOT NULL,
++	"speed" integer DEFAULT 3 NOT NULL,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
++);
++--> statement-breakpoint
++CREATE TABLE "user_roles" (
++	"user_id" text NOT NULL,
++	"role" text NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "user_roles_user_id_role_pk" PRIMARY KEY("user_id","role")
++);
++--> statement-breakpoint
++ALTER TABLE "profiles" ADD COLUMN "username" text;--> statement-breakpoint
++ALTER TABLE "profiles" ADD COLUMN "display_name" text;--> statement-breakpoint
++ALTER TABLE "profiles" ADD COLUMN "avatar_url" text;--> statement-breakpoint
++ALTER TABLE "profiles" ADD COLUMN "total_xp" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
++ALTER TABLE "chapter_progress" ADD CONSTRAINT "chapter_progress_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "library_entries" ADD CONSTRAINT "library_entries_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "reader_preferences" ADD CONSTRAINT "reader_preferences_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "user_roles" ADD CONSTRAINT "user_roles_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++CREATE INDEX "chapter_progress_user_recent_idx" ON "chapter_progress" USING btree ("user_id","last_read_at");--> statement-breakpoint
++CREATE UNIQUE INDEX "profiles_username_key" ON "profiles" USING btree ("username");
+\ No newline at end of file
+diff --git a/web/drizzle/meta/0001_snapshot.json b/web/drizzle/meta/0001_snapshot.json
+new file mode 100644
+index 0000000..657a682
+--- /dev/null
++++ b/web/drizzle/meta/0001_snapshot.json
+@@ -0,0 +1,461 @@
++{
++  "id": "908cca23-c262-4af8-921e-162ca89ab681",
++  "prevId": "22dd94d3-dbf5-4b57-905f-0faf2655144b",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.chapter_progress": {
++      "name": "chapter_progress",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "chapter": {
++          "name": "chapter",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "page": {
++          "name": "page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "max_page": {
++          "name": "max_page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "total": {
++          "name": "total",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_read_at": {
++          "name": "last_read_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "chapter_progress_user_recent_idx": {
++          "name": "chapter_progress_user_recent_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "last_read_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "chapter_progress_user_id_profiles_user_id_fk": {
++          "name": "chapter_progress_user_id_profiles_user_id_fk",
++          "tableFrom": "chapter_progress",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "chapter_progress_user_id_manga_id_chapter_id_language_pk": {
++          "name": "chapter_progress_user_id_manga_id_chapter_id_language_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "chapter_id",
++            "language"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.library_entries": {
++      "name": "library_entries",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "lang": {
++          "name": "lang",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'reading'"
++        },
++        "followed_at": {
++          "name": "followed_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_chapter_id": {
++          "name": "last_chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "last_read_publish": {
++          "name": "last_read_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "library_entries_user_id_profiles_user_id_fk": {
++          "name": "library_entries_user_id_profiles_user_id_fk",
++          "tableFrom": "library_entries",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "library_entries_user_id_manga_id_pk": {
++          "name": "library_entries_user_id_manga_id_pk",
++          "columns": [
++            "user_id",
++            "manga_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.profiles": {
++      "name": "profiles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "username": {
++          "name": "username",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "display_name": {
++          "name": "display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "avatar_url": {
++          "name": "avatar_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "total_xp": {
++          "name": "total_xp",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "profiles_username_key": {
++          "name": "profiles_username_key",
++          "columns": [
++            {
++              "expression": "username",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.reader_preferences": {
++      "name": "reader_preferences",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "mode": {
++          "name": "mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vertical'"
++        },
++        "fit": {
++          "name": "fit",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": true
++        },
++        "bg": {
++          "name": "bg",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'light'"
++        },
++        "speed": {
++          "name": "speed",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 3
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "reader_preferences_user_id_profiles_user_id_fk": {
++          "name": "reader_preferences_user_id_profiles_user_id_fk",
++          "tableFrom": "reader_preferences",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.user_roles": {
++      "name": "user_roles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "role": {
++          "name": "role",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "user_roles_user_id_profiles_user_id_fk": {
++          "name": "user_roles_user_id_profiles_user_id_fk",
++          "tableFrom": "user_roles",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "user_roles_user_id_role_pk": {
++          "name": "user_roles_user_id_role_pk",
++          "columns": [
++            "user_id",
++            "role"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {},
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/web/drizzle/meta/_journal.json b/web/drizzle/meta/_journal.json
+index acd92bc..523a4d9 100644
+--- a/web/drizzle/meta/_journal.json
++++ b/web/drizzle/meta/_journal.json
+@@ -3,11 +3,18 @@
+   "dialect": "postgresql",
+   "entries": [
+     {
+       "idx": 0,
+       "version": "7",
+       "when": 1795224965478,
+       "tag": "0000_application",
+       "breakpoints": true
++    },
++    {
++      "idx": 1,
++      "version": "7",
++      "when": 1795234527968,
++      "tag": "0001_account_data",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/web/lib/account/client.ts b/web/lib/account/client.ts
+new file mode 100644
+index 0000000..7d4d573
+--- /dev/null
++++ b/web/lib/account/client.ts
+@@ -0,0 +1,178 @@
++"use client";
++
++import { useCallback, useEffect, useSyncExternalStore, useState } from "react";
++import { authClient } from "@/lib/auth/client";
++
++export type AccountUser = {
++  id: string;
++  name: string | null;
++  email: string | null;
++  emailVerified: boolean;
++  image: string | null;
++};
++
++export type SessionState = {
++  status: "loading" | "guest" | "authenticated" | "unconfigured" | "error";
++  user: AccountUser | null;
++  message: string | null;
++};
++
++const LOADING: SessionState = { status: "loading", user: null, message: null };
++const listeners = new Set<() => void>();
++let snapshot: SessionState = LOADING;
++let started = false;
++
++function publish(next: SessionState): void {
++  snapshot = next;
++  for (const listener of listeners) listener();
++}
++
++function getSnapshot(): SessionState {
++  return snapshot;
++}
++
++function subscribe(listener: () => void): () => void {
++  listeners.add(listener);
++  return () => listeners.delete(listener);
++}
++
++export class AccountApiError extends Error {
++  readonly status: number;
++  readonly code: string;
++
++  constructor(status: number, code: string, message: string) {
++    super(message);
++    this.status = status;
++    this.code = code;
++  }
++}
++
++export async function parseAccountResponse<T>(response: Response): Promise<T> {
++  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
++  if (!response.ok) {
++    const error = payload?.error && typeof payload.error === "object"
++      ? payload.error as { code?: string; message?: string }
++      : null;
++    throw new AccountApiError(
++      response.status,
++      error?.code ?? "REQUEST_FAILED",
++      error?.message ?? "Yêu cầu không thành công.",
++    );
++  }
++  return payload as T;
++}
++
++async function loadSession(): Promise<void> {
++  try {
++    const response = await fetch("/api/auth/get-session", { credentials: "same-origin", cache: "no-store" });
++    if (response.status === 503) {
++      const payload = await response.json().catch(() => null) as { error?: { code?: string } } | null;
++      if (payload?.error?.code === "AUTH_NOT_CONFIGURED") {
++        publish({
++          status: "unconfigured",
++          user: null,
++          message: "Chưa cấu hình đăng nhập. Cần NEON_AUTH_BASE_URL và NEON_AUTH_COOKIE_SECRET trên máy chủ.",
++        });
++        return;
++      }
++      publish({ status: "error", user: null, message: "Dịch vụ xác thực tạm thời không sẵn sàng." });
++      return;
++    }
++    const payload = await parseAccountResponse<{ user?: Record<string, unknown> | null }>(response);
++    const user = payload.user;
++    if (!user || typeof user.id !== "string") {
++      publish({ status: "guest", user: null, message: null });
++      return;
++    }
++    publish({
++      status: "authenticated",
++      user: {
++        id: user.id,
++        name: typeof user.name === "string" ? user.name : null,
++        email: typeof user.email === "string" ? user.email : null,
++        emailVerified: user.emailVerified === true,
++        image: typeof user.image === "string" ? user.image : null,
++      },
++      message: null,
++    });
++  } catch {
++    publish({ status: "error", user: null, message: "Không đọc được phiên đăng nhập." });
++  }
++}
++
++export async function refreshSession(): Promise<SessionState> {
++  await loadSession();
++  return snapshot;
++}
++
++export function useAccountSession() {
++  const state = useSyncExternalStore(subscribe, getSnapshot, () => LOADING);
++  useEffect(() => {
++    if (started) return;
++    started = true;
++    void loadSession();
++  }, []);
++  return { session: state, refresh: refreshSession };
++}
++
++export async function accountGet<T>(path: string): Promise<T> {
++  const response = await fetch(path, { credentials: "same-origin", cache: "no-store" });
++  return parseAccountResponse<T>(response);
++}
++
++export async function accountMutate<T>(path: string, method: "PUT" | "PATCH" | "POST" | "DELETE", body?: unknown): Promise<T> {
++  const response = await fetch(path, {
++    method,
++    credentials: "same-origin",
++    cache: "no-store",
++    headers: body === undefined ? undefined : { "content-type": "application/json" },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  });
++  return parseAccountResponse<T>(response);
++}
++
++export type RemoteState<T> = {
++  data: T | null;
++  loading: boolean;
++  error: string | null;
++  reload: () => void;
++};
++
++/// Client-side fetch without setState directly in an effect: the async loader
++/// is the only place that updates React state.
++export function useRemoteResource<T>(path: string | null): RemoteState<T> {
++  const [data, setData] = useState<T | null>(null);
++  const [loading, setLoading] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++  const [revision, setRevision] = useState(0);
++
++  const load = useCallback(async () => {
++    if (!path) return;
++    setLoading(true);
++    try {
++      setData(await accountGet<T>(path));
++      setError(null);
++    } catch (cause) {
++      setData(null);
++      setError(cause instanceof Error ? cause.message : "Không tải được dữ liệu.");
++    } finally {
++      setLoading(false);
++    }
++  }, [path]);
++
++  useEffect(() => {
++    let alive = true;
++    void Promise.resolve().then(async () => {
++      if (alive) await load();
++    });
++    return () => { alive = false; };
++  }, [load, revision]);
++
++  return { data, loading, error, reload: () => setRevision((value) => value + 1) };
++}
++
++export async function signOutAccount(): Promise<void> {
++  const result = await authClient.signOut();
++  if (result?.error) throw new Error(result.error.message ?? "Không thể đăng xuất.");
++  await refreshSession();
++}
+diff --git a/web/lib/auth/identity.ts b/web/lib/auth/identity.ts
+new file mode 100644
+index 0000000..d0de946
+--- /dev/null
++++ b/web/lib/auth/identity.ts
+@@ -0,0 +1,39 @@
++// The only bridge from a managed-auth session to application account data.
++// The id is opaque and comes exclusively from the verified session response.
++
++export type AccountIdentity = {
++  id: string;
++  email: string | null;
++  emailVerified: boolean;
++  name: string | null;
++  image: string | null;
++  sessionId: string;
++};
++
++type Loose = Record<string, unknown>;
++
++function obj(value: unknown): Loose {
++  return value && typeof value === "object" && !Array.isArray(value) ? (value as Loose) : {};
++}
++
++function text(value: unknown): string | null {
++  return typeof value === "string" && value.trim() ? value.trim() : null;
++}
++
++export function identityFromSession(data: unknown): AccountIdentity | null {
++  const payload = obj(data);
++  if (!payload.session || !payload.user) return null;
++  const session = obj(payload.session);
++  const user = obj(payload.user);
++  const id = text(user.id);
++  // An expired/invalid session has no user; never synthesize one.
++  if (!id || id.length > 256) return null;
++  return {
++    id,
++    email: text(user.email),
++    emailVerified: user.emailVerified === true,
++    name: text(user.name),
++    image: text(user.image),
++    sessionId: text(session.id) ?? "",
++  };
++}
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index 48356c9..5ca3029 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -1,10 +1,56 @@
+ // Browser-safe contracts shared by the Next BFF and later native clients.
+ 
++// Account DTOs are browser-safe: no email, role or privileged state leaks into
++// public content components.
++export type AccountProfileDto = {
++  id: string;
++  username: string | null;
++  displayName: string | null;
++  avatarUrl: string | null;
++  level: number;
++  totalXp: number;
++};
++
++export type LibraryEntryDto = {
++  mangaId: string;
++  title: string;
++  coverFile: string | null;
++  lang: string;
++  status: string;
++  followedAt: number;
++  lastChapterId: string | null;
++  lastReadPublish: number;
++  revision: number;
++};
++
++export type ProgressEntryDto = {
++  mangaId: string;
++  chapterId: string;
++  lang: string;
++  chapter: string | null;
++  title: string | null;
++  coverFile: string | null;
++  page: number;
++  total: number;
++  maxPage: number;
++  lastReadAt: number;
++  revision: number;
++};
++
++export type ImportSummaryDto = {
++  libraryInserted: number;
++  libraryUpdated: number;
++  progressInserted: number;
++  progressUpdated: number;
++  skipped: number;
++  settingsApplied: boolean;
++};
++
+ export type ApiErrorEnvelope = {
+   error: {
+     code: string;
+     message: string;
+     details: Record<string, string>;
+   };
+ };
+ 
+diff --git a/web/lib/db/client.ts b/web/lib/db/client.ts
+index a066f91..2eb5fe6 100644
+--- a/web/lib/db/client.ts
++++ b/web/lib/db/client.ts
+@@ -48,15 +48,17 @@ export function databaseErrorResponse(error: unknown): Response | null {
+   return Response.json(errorEnvelope(error.code, error.message, details), { status: 503 });
+ }
+ 
+ function connect(url: string) {
+   const pool = new Pool({ connectionString: url, max: 5 });
+   return { pool, db: drizzle({ client: pool, schema }) };
+ }
+ 
++export type AppDatabase = ReturnType<typeof connect>["db"];
++
+ let connection: ReturnType<typeof connect> | undefined;
+ 
+ // Pool creation stays lazy so builds and public routes need no DATABASE_URL.
+ export function getDatabase() {
+   if (!connection) connection = connect(readDatabaseConfig().url);
+   return connection.db;
+ }
+diff --git a/web/lib/db/schema.ts b/web/lib/db/schema.ts
+index 9e40ae3..1f4f1d4 100644
+--- a/web/lib/db/schema.ts
++++ b/web/lib/db/schema.ts
+@@ -1,10 +1,70 @@
+-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
++import { bigint, boolean, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
+ 
+-// Application-owned table only. Neon Managed Auth owns its identity/session
+-// tables in its own schema and they are never managed from this file.
++// Application-owned tables only. Neon Managed Auth owns its identity/session
++// tables in its own schema and they are never managed from this file. Opaque
++// auth user ids stay text: never parse them as UUIDs or derive trust from them.
+ export const profiles = pgTable("profiles", {
+-  // Opaque Managed Auth user id: never assume a UUID or parse this value.
+   userId: text("user_id").primaryKey(),
++  // Stored normalized (trimmed + lowercase); the unique index is the final guard.
++  username: text("username"),
++  displayName: text("display_name"),
++  avatarUrl: text("avatar_url"),
++  // Placeholder only until Task 8 owns XP events. Never client-writable.
++  totalXp: integer("total_xp").default(0).notNull(),
+   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [uniqueIndex("profiles_username_key").on(table.username)]);
++
++// Roles are explicitly bootstrapped from a verified allowlisted auth email.
++export const userRoles = pgTable("user_roles", {
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  role: text("role").notNull(),
++  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [primaryKey({ columns: [table.userId, table.role] })]);
++
++export const libraryEntries = pgTable("library_entries", {
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  mangaId: text("manga_id").notNull(),
++  title: text("title").notNull(),
++  coverFile: text("cover_file"),
++  lang: text("lang").notNull().default("vi"),
++  status: text("status").notNull().default("reading"),
++  // Milliseconds since epoch, server-owned for normal writes; imported client
++  // times are bounded before they reach this column.
++  followedAt: bigint("followed_at", { mode: "number" }).notNull(),
++  lastChapterId: text("last_chapter_id"),
++  lastReadPublish: bigint("last_read_publish", { mode: "number" }).notNull().default(0),
++  revision: integer("revision").notNull().default(1),
++  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [primaryKey({ columns: [table.userId, table.mangaId] })]);
++
++export const chapterProgress = pgTable("chapter_progress", {
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  mangaId: text("manga_id").notNull(),
++  chapterId: text("chapter_id").notNull(),
++  language: text("language").notNull().default("vi"),
++  chapter: text("chapter"),
++  title: text("title"),
++  coverFile: text("cover_file"),
++  // `page` is the current position and may move backward for rereads.
++  page: integer("page").notNull(),
++  // `maxPage` is the furthest observed page and never regresses; Task 8 will
++  // derive completion checkpoints from it, never from a client percentage.
++  maxPage: integer("max_page").notNull(),
++  total: integer("total").notNull(),
++  lastReadAt: bigint("last_read_at", { mode: "number" }).notNull(),
++  revision: integer("revision").notNull().default(1),
++  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [
++  primaryKey({ columns: [table.userId, table.mangaId, table.chapterId, table.language] }),
++  index("chapter_progress_user_recent_idx").on(table.userId, table.lastReadAt),
++]);
++
++export const readerPreferences = pgTable("reader_preferences", {
++  userId: text("user_id").primaryKey().references(() => profiles.userId, { onDelete: "cascade" }),
++  mode: text("mode").notNull().default("vertical"),
++  fit: boolean("fit").notNull().default(true),
++  bg: text("bg").notNull().default("light"),
++  speed: integer("speed").notNull().default(3),
++  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+ });
+diff --git a/web/lib/me/handlers.ts b/web/lib/me/handlers.ts
+new file mode 100644
+index 0000000..692afbc
+--- /dev/null
++++ b/web/lib/me/handlers.ts
+@@ -0,0 +1,198 @@
++import "server-only";
++
++import type { AppDatabase } from "../db/client";
++import { DatabaseConfigurationError, getDatabase } from "../db/client";
++import { AuthConfigurationError, getAuth } from "../auth/server";
++import { identityFromSession, type AccountIdentity } from "../auth/identity";
++import { errorEnvelope } from "../contracts";
++import {
++  boundedClientTime,
++  parseImportPayload,
++  parseLibraryInput,
++  parseProfilePatch,
++  parseProgressInput,
++  parseResourceId,
++  parseSettingsInput,
++  readJson,
++  requireOrigin,
++  ValidationError,
++} from "../validators";
++import { ServiceError, ensureProfile, getLevel, importGuest, listLibrary, listProgress, putLibrary, putProgress, deleteLibrary, deleteProgress, getSettings, putSettings, updateProfile } from "./service";
++
++export type MeDeps = {
++  db: () => AppDatabase;
++  identity: () => Promise<AccountIdentity | null>;
++  now: () => number;
++  allowlist: readonly string[];
++};
++
++export function privateJson(data: unknown, status = 200): Response {
++  return Response.json(data, {
++    status,
++    headers: {
++      "cache-control": "private, no-store",
++      vary: "Cookie",
++      "x-content-type-options": "nosniff",
++    },
++  });
++}
++
++export function errorToResponse(error: unknown): Response {
++  if (error instanceof ValidationError) {
++    return privateJson(errorEnvelope(error.code, error.message), error.status);
++  }
++  if (error instanceof ServiceError) {
++    return privateJson(errorEnvelope(error.code, error.message), error.status);
++  }
++  if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
++    const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
++    if (error.missing.length > 0) details.missing = error.missing.join(",");
++    return privateJson(errorEnvelope(error.code, error.message, details), 503);
++  }
++  return privateJson(errorEnvelope("INTERNAL_ERROR", "Account request failed."), 500);
++}
++
++/// Testable account API factory. Production route files supply the real pooled
++/// database and managed-session resolver; tests supply PGlite plus an identity
++/// obtained from the real SDK fixture. No header/env bypass exists here.
++export function createMeApi(deps: MeDeps) {
++  const now = () => deps.now();
++  const db = () => deps.db();
++
++  async function withUser(
++    request: Request,
++    action: (user: AccountIdentity) => Promise<Response>,
++    mutate = false,
++  ): Promise<Response> {
++    try {
++      if (mutate) requireOrigin(request);
++      const user = await deps.identity();
++      if (!user) {
++        return privateJson(errorEnvelope("UNAUTHENTICATED", "Sign in to access account data."), 401);
++      }
++      await ensureProfile(db(), user, { now: now(), allowlist: deps.allowlist });
++      return await action(user);
++    } catch (error) {
++      return errorToResponse(error);
++    }
++  }
++
++  return {
++    meGet: (request: Request) => withUser(request, async (user) => {
++      const profile = await ensureProfile(db(), user, { now: now(), allowlist: deps.allowlist });
++      const settings = await getSettings(db(), user.id);
++      return privateJson({ profile, settings });
++    }),
++
++    mePatch: (request: Request) => withUser(request, async (user) => {
++      const patch = parseProfilePatch(await readJson(request));
++      const profile = await updateProfile(db(), user.id, patch, now());
++      return privateJson({ profile });
++    }, true),
++
++    levelGet: (request: Request) => withUser(request, async () => privateJson(getLevel())),
++
++    libraryGet: (request: Request) => withUser(request, async (user) => {
++      const items = await listLibrary(db(), user.id);
++      return privateJson({ items });
++    }),
++
++    libraryPut: (request: Request, params: { mangaId: string }) => withUser(request, async (user) => {
++      const mangaId = parseResourceId(params.mangaId, "mangaId");
++      const input = parseLibraryInput(await readJson(request));
++      const item = await putLibrary(db(), user.id, mangaId, input, now());
++      return privateJson({ item });
++    }, true),
++
++    libraryDelete: (request: Request, params: { mangaId: string }) => withUser(request, async (user) => {
++      const mangaId = parseResourceId(params.mangaId, "mangaId");
++      const deleted = await deleteLibrary(db(), user.id, mangaId);
++      if (!deleted) return privateJson(errorEnvelope("NOT_FOUND", "Library entry not found."), 404);
++      return privateJson({ deleted: true });
++    }, true),
++
++    progressGet: (request: Request) => withUser(request, async (user) => {
++      const items = await listProgress(db(), user.id);
++      return privateJson({ items });
++    }),
++
++    progressPut: (request: Request, params: { chapterId: string }) => withUser(request, async (user) => {
++      const chapterId = parseResourceId(params.chapterId, "chapterId");
++      const input = parseProgressInput(await readJson(request));
++      const item = await putProgress(db(), user.id, chapterId, input, now());
++      return privateJson({ item });
++    }, true),
++
++    progressDelete: (request: Request, params: { chapterId: string }) => withUser(request, async (user) => {
++      const chapterId = parseResourceId(params.chapterId, "chapterId");
++      const deleted = await deleteProgress(db(), user.id, chapterId);
++      if (!deleted) return privateJson(errorEnvelope("NOT_FOUND", "Progress entry not found."), 404);
++      return privateJson({ deleted: true });
++    }, true),
++
++    settingsGet: (request: Request) => withUser(request, async (user) => {
++      const settings = await getSettings(db(), user.id);
++      return privateJson(settings);
++    }),
++
++    settingsPut: (request: Request) => withUser(request, async (user) => {
++      const settings = parseSettingsInput(await readJson(request));
++      return privateJson(await putSettings(db(), user.id, settings, now()));
++    }, true),
++
++    importPost: (request: Request) => withUser(request, async (user) => {
++      const body = await readJson(request);
++      const timestamp = now();
++      const payload = parseImportPayload(body, timestamp);
++      // The bounded timestamp is enforced per item; this is a defensive check
++      // that the server clock itself is usable.
++      if (boundedClientTime(timestamp, timestamp) === null) {
++        throw new ValidationError(400, "INVALID_INPUT", "Server timestamp is invalid.");
++      }
++      const summary = await importGuest(db(), user.id, payload, timestamp);
++      return privateJson(summary);
++    }, true),
++  };
++}
++
++export function resolveSessionIdentity(data: unknown): AccountIdentity | null {
++  return identityFromSession(data);
++}
++
++function readOperatorAllowlist(env: NodeJS.ProcessEnv = process.env): string[] {
++  return (env.OPERATOR_EMAIL_ALLOWLIST ?? "")
++    .split(",")
++    .map((email) => email.trim().toLowerCase())
++    .filter(Boolean);
++}
++
++/// Production wiring only: the user id comes from the real managed-auth
++/// session cookie, never from a header or request body.
++export function productionMeApi() {
++  return createMeApi({
++    db: () => getDatabase(),
++    identity: async () => {
++      try {
++        const { data, error } = await getAuth().getSession();
++        if (error) return null;
++        return identityFromSession(data);
++      } catch (error) {
++        if (error instanceof AuthConfigurationError) throw error;
++        throw new ServiceError(503, "AUTH_UNAVAILABLE", "Managed authentication is temporarily unavailable.");
++      }
++    },
++    now: () => Date.now(),
++    allowlist: readOperatorAllowlist(),
++  });
++}
++
++export async function wrapMeRoute(
++  run: (api: ReturnType<typeof createMeApi>, request: Request) => Promise<Response>,
++  request: Request,
++): Promise<Response> {
++  try {
++    return await run(productionMeApi(), request);
++  } catch (error) {
++    return errorToResponse(error);
++  }
++}
+diff --git a/web/lib/me/service.ts b/web/lib/me/service.ts
+new file mode 100644
+index 0000000..2a406f4
+--- /dev/null
++++ b/web/lib/me/service.ts
+@@ -0,0 +1,459 @@
++import "server-only";
++
++import { and, desc, eq, sql } from "drizzle-orm";
++import type { AppDatabase } from "../db/client";
++import * as tables from "../db/schema";
++import type { AccountIdentity } from "../auth/identity";
++import { roleFromVerifiedAllowlist } from "../validators";
++import type {
++  ImportHistoryItem,
++  ImportLibraryItem,
++  LibraryInput,
++  ProgressInput,
++  ReaderSettingsDto,
++} from "../validators";
++import { mergeLibrary, mergeProgress } from "../merge";
++
++export class ServiceError extends Error {
++  readonly status: number;
++  readonly code: string;
++
++  constructor(status: number, code: string, message: string) {
++    super(message);
++    this.name = "ServiceError";
++    this.status = status;
++    this.code = code;
++  }
++}
++
++function uniqueViolation(error: unknown): boolean {
++  if (!error || typeof error !== "object") return false;
++  const code = "code" in error ? String((error as { code: unknown }).code) : "";
++  const message = `${"message" in error ? String((error as { message: unknown }).message) : ""} ${
++    "cause" in error && error.cause && typeof error.cause === "object" && "message" in error.cause
++      ? String((error.cause as { message: unknown }).message)
++      : ""
++  }`;
++  return code === "23505" || /duplicate key|unique constraint/i.test(message);
++}
++
++function date(ms: number): Date {
++  return new Date(Number.isFinite(ms) ? ms : Date.now());
++}
++
++const excluded = (column: string) => sql.raw(`excluded."${column}"`);
++
++export type ProfileDto = {
++  id: string;
++  username: string | null;
++  displayName: string | null;
++  avatarUrl: string | null;
++  level: number;
++  totalXp: number;
++};
++
++export type LibraryDto = {
++  mangaId: string;
++  title: string;
++  coverFile: string | null;
++  lang: string;
++  status: string;
++  followedAt: number;
++  lastChapterId: string | null;
++  lastReadPublish: number;
++  revision: number;
++};
++
++export type ProgressDto = {
++  mangaId: string;
++  chapterId: string;
++  lang: string;
++  chapter: string | null;
++  title: string | null;
++  coverFile: string | null;
++  page: number;
++  total: number;
++  maxPage: number;
++  lastReadAt: number;
++  revision: number;
++};
++
++export type ImportSummary = {
++  libraryInserted: number;
++  libraryUpdated: number;
++  progressInserted: number;
++  progressUpdated: number;
++  skipped: number;
++  settingsApplied: boolean;
++};
++
++function profileDto(row: typeof tables.profiles.$inferSelect): ProfileDto {
++  return {
++    id: row.userId,
++    username: row.username,
++    displayName: row.displayName,
++    avatarUrl: row.avatarUrl,
++    // Explicit placeholder: Task 8 owns XP events and realm titles.
++    level: 1,
++    totalXp: row.totalXp,
++  };
++}
++
++function libraryDto(row: typeof tables.libraryEntries.$inferSelect): LibraryDto {
++  return {
++    mangaId: row.mangaId,
++    title: row.title,
++    coverFile: row.coverFile,
++    lang: row.lang,
++    status: row.status,
++    followedAt: row.followedAt,
++    lastChapterId: row.lastChapterId,
++    lastReadPublish: row.lastReadPublish,
++    revision: row.revision,
++  };
++}
++
++function progressDto(row: typeof tables.chapterProgress.$inferSelect): ProgressDto {
++  return {
++    mangaId: row.mangaId,
++    chapterId: row.chapterId,
++    lang: row.language,
++    chapter: row.chapter,
++    title: row.title,
++    coverFile: row.coverFile,
++    page: row.page,
++    total: row.total,
++    maxPage: row.maxPage,
++    lastReadAt: row.lastReadAt,
++    revision: row.revision,
++  };
++}
++
++/// Creates the application profile on first authenticated use. Role bootstrap
++/// is the only path to elevated privileges and requires a verified allowlisted
++/// email from the managed session, never a request field.
++export async function ensureProfile(
++  db: AppDatabase,
++  identity: AccountIdentity,
++  options: { now: number; allowlist: readonly string[] },
++): Promise<ProfileDto> {
++  await db.insert(tables.profiles).values({
++    userId: identity.id,
++    createdAt: date(options.now),
++    updatedAt: date(options.now),
++  }).onConflictDoNothing();
++
++  const role = roleFromVerifiedAllowlist(identity, options.allowlist);
++  if (role) {
++    await db.insert(tables.userRoles).values({ userId: identity.id, role }).onConflictDoNothing();
++  }
++  const rows = await db.select().from(tables.profiles).where(eq(tables.profiles.userId, identity.id)).limit(1);
++  if (rows.length === 0) throw new ServiceError(500, "PROFILE_UNAVAILABLE", "Account profile could not be loaded.");
++  return profileDto(rows[0]);
++}
++
++export async function updateProfile(
++  db: AppDatabase,
++  userId: string,
++  patch: { username?: string | null; displayName?: string | null; avatarUrl?: string | null },
++  now: number,
++): Promise<ProfileDto> {
++  const values: Partial<typeof tables.profiles.$inferInsert> = { updatedAt: date(now) };
++  if (Object.hasOwn(patch, "username")) values.username = patch.username ?? null;
++  if (Object.hasOwn(patch, "displayName")) values.displayName = patch.displayName ?? null;
++  if (Object.hasOwn(patch, "avatarUrl")) values.avatarUrl = patch.avatarUrl ?? null;
++  try {
++    await db.update(tables.profiles).set(values).where(eq(tables.profiles.userId, userId));
++  } catch (error) {
++    if (uniqueViolation(error)) throw new ServiceError(409, "USERNAME_TAKEN", "That username is already in use.");
++    throw error;
++  }
++  const rows = await db.select().from(tables.profiles).where(eq(tables.profiles.userId, userId)).limit(1);
++  return profileDto(rows[0]);
++}
++
++export async function listLibrary(db: AppDatabase, userId: string): Promise<LibraryDto[]> {
++  const rows = await db.select().from(tables.libraryEntries)
++    .where(eq(tables.libraryEntries.userId, userId))
++    .orderBy(desc(tables.libraryEntries.followedAt))
++    .limit(200);
++  return rows.map(libraryDto);
++}
++
++export async function putLibrary(
++  db: AppDatabase,
++  userId: string,
++  mangaId: string,
++  input: LibraryInput,
++  now: number,
++): Promise<LibraryDto> {
++  await db.insert(tables.libraryEntries).values({
++    userId,
++    mangaId,
++    title: input.title,
++    coverFile: input.coverFile,
++    lang: input.lang,
++    status: input.status,
++    followedAt: now,
++    lastReadPublish: 0,
++    revision: 1,
++    updatedAt: date(now),
++  }).onConflictDoUpdate({
++    target: [tables.libraryEntries.userId, tables.libraryEntries.mangaId],
++    set: {
++      title: excluded("title"),
++      coverFile: excluded("cover_file"),
++      lang: excluded("lang"),
++      status: excluded("status"),
++      // Server owns the mutation time and monotonically increasing revision.
++      followedAt: sql`greatest(${tables.libraryEntries.followedAt}, ${excluded("followed_at")})`,
++      revision: sql`${tables.libraryEntries.revision} + 1`,
++      updatedAt: date(now),
++    },
++  });
++  const rows = await db.select().from(tables.libraryEntries)
++    .where(and(eq(tables.libraryEntries.userId, userId), eq(tables.libraryEntries.mangaId, mangaId)))
++    .limit(1);
++  return libraryDto(rows[0]);
++}
++
++export async function deleteLibrary(db: AppDatabase, userId: string, mangaId: string): Promise<boolean> {
++  const rows = await db.select().from(tables.libraryEntries)
++    .where(and(eq(tables.libraryEntries.userId, userId), eq(tables.libraryEntries.mangaId, mangaId)))
++    .limit(1);
++  if (rows.length === 0) return false;
++  await db.delete(tables.libraryEntries)
++    .where(and(eq(tables.libraryEntries.userId, userId), eq(tables.libraryEntries.mangaId, mangaId)));
++  return true;
++}
++
++export async function putProgress(
++  db: AppDatabase,
++  userId: string,
++  chapterId: string,
++  input: ProgressInput,
++  now: number,
++): Promise<ProgressDto> {
++  await db.insert(tables.chapterProgress).values({
++    userId,
++    mangaId: input.mangaId,
++    chapterId,
++    language: input.lang,
++    chapter: input.chapter,
++    title: input.title,
++    coverFile: input.coverFile,
++    page: input.page,
++    maxPage: input.page,
++    total: input.total,
++    lastReadAt: now,
++    revision: 1,
++    updatedAt: date(now),
++  }).onConflictDoUpdate({
++    target: [
++      tables.chapterProgress.userId,
++      tables.chapterProgress.mangaId,
++      tables.chapterProgress.chapterId,
++      tables.chapterProgress.language,
++    ],
++    set: {
++      // Current page may move backward for a reread; observed maximum may not.
++      page: excluded("page"),
++      maxPage: sql`greatest(${tables.chapterProgress.maxPage}, ${excluded("page")})`,
++      total: excluded("total"),
++      chapter: excluded("chapter"),
++      title: excluded("title"),
++      coverFile: excluded("cover_file"),
++      lastReadAt: sql`greatest(${tables.chapterProgress.lastReadAt} + 1, ${excluded("last_read_at")})`,
++      revision: sql`${tables.chapterProgress.revision} + 1`,
++      updatedAt: date(now),
++    },
++  });
++  const rows = await db.select().from(tables.chapterProgress).where(and(
++    eq(tables.chapterProgress.userId, userId),
++    eq(tables.chapterProgress.mangaId, input.mangaId),
++    eq(tables.chapterProgress.chapterId, chapterId),
++    eq(tables.chapterProgress.language, input.lang),
++  )).limit(1);
++  return progressDto(rows[0]);
++}
++
++export async function listProgress(db: AppDatabase, userId: string): Promise<ProgressDto[]> {
++  const rows = await db.select().from(tables.chapterProgress)
++    .where(eq(tables.chapterProgress.userId, userId))
++    .orderBy(desc(tables.chapterProgress.lastReadAt))
++    .limit(100);
++  return rows.map(progressDto);
++}
++
++export async function deleteProgress(db: AppDatabase, userId: string, chapterId: string): Promise<boolean> {
++  const rows = await db.select().from(tables.chapterProgress)
++    .where(and(eq(tables.chapterProgress.userId, userId), eq(tables.chapterProgress.chapterId, chapterId)))
++    .limit(1);
++  if (rows.length === 0) return false;
++  await db.delete(tables.chapterProgress)
++    .where(and(eq(tables.chapterProgress.userId, userId), eq(tables.chapterProgress.chapterId, chapterId)));
++  return true;
++}
++
++export function getLevel(): { level: number; totalXp: number; source: string } {
++  return { level: 1, totalXp: 0, source: "placeholder" };
++}
++
++export async function getSettings(db: AppDatabase, userId: string): Promise<ReaderSettingsDto> {
++  const rows = await db.select().from(tables.readerPreferences)
++    .where(eq(tables.readerPreferences.userId, userId)).limit(1);
++  if (rows.length === 0) return { mode: "vertical", fit: true, bg: "light", speed: 3 };
++  return { mode: rows[0].mode as ReaderSettingsDto["mode"], fit: rows[0].fit, bg: rows[0].bg as ReaderSettingsDto["bg"], speed: rows[0].speed };
++}
++
++export async function putSettings(
++  db: AppDatabase,
++  userId: string,
++  input: ReaderSettingsDto,
++  now: number,
++): Promise<ReaderSettingsDto> {
++  await db.insert(tables.readerPreferences).values({ ...input, userId, updatedAt: date(now) })
++    .onConflictDoUpdate({
++      target: tables.readerPreferences.userId,
++      set: { ...input, updatedAt: date(now) },
++    });
++  return input;
++}
++
++/// Idempotent guest merge. Uses one transaction and atomic conflict updates so
++/// duplicated or concurrent imports cannot create duplicate rows or lower the
++/// server's observed maximum.
++export async function importGuest(
++  db: AppDatabase,
++  userId: string,
++  payload: {
++    library: ImportLibraryItem[];
++    history: (ImportHistoryItem & { chapterId: string })[];
++    settings: ReaderSettingsDto | null;
++    skipped: number;
++  },
++  now: number,
++): Promise<ImportSummary> {
++  const summary: ImportSummary = {
++    libraryInserted: 0,
++    libraryUpdated: 0,
++    progressInserted: 0,
++    progressUpdated: 0,
++    skipped: payload.skipped,
++    settingsApplied: false,
++  };
++  await db.transaction(async (tx) => {
++    for (const item of payload.library) {
++      const existing = await tx.select().from(tables.libraryEntries)
++        .where(and(eq(tables.libraryEntries.userId, userId), eq(tables.libraryEntries.mangaId, item.mangaId)))
++        .limit(1);
++      const localNewer = !existing[0] || mergeLibrary(
++        {
++          mangaId: existing[0].mangaId,
++          title: existing[0].title,
++          coverFile: existing[0].coverFile,
++          lang: existing[0].lang,
++          status: existing[0].status,
++          followedAt: existing[0].followedAt,
++          lastChapterId: existing[0].lastChapterId,
++          lastReadPublish: existing[0].lastReadPublish,
++        },
++        item,
++      ).changed;
++      if (!existing[0]) summary.libraryInserted += 1;
++      else if (localNewer) summary.libraryUpdated += 1;
++      else { summary.skipped += 1; continue; }
++
++      await tx.insert(tables.libraryEntries).values({
++        userId,
++        mangaId: item.mangaId,
++        title: item.title,
++        coverFile: item.coverFile,
++        lang: item.lang,
++        status: item.status,
++        followedAt: item.followedAt,
++        lastReadPublish: 0,
++        revision: 1,
++        updatedAt: date(now),
++      }).onConflictDoUpdate({
++        target: [tables.libraryEntries.userId, tables.libraryEntries.mangaId],
++        set: {
++          title: sql`CASE WHEN ${excluded("followed_at")} > ${tables.libraryEntries.followedAt} THEN ${excluded("title")} ELSE ${tables.libraryEntries.title} END`,
++          coverFile: sql`CASE WHEN ${excluded("followed_at")} > ${tables.libraryEntries.followedAt} THEN ${excluded("cover_file")} ELSE ${tables.libraryEntries.coverFile} END`,
++          lang: sql`CASE WHEN ${excluded("followed_at")} > ${tables.libraryEntries.followedAt} THEN ${excluded("lang")} ELSE ${tables.libraryEntries.lang} END`,
++          status: sql`CASE WHEN ${tables.libraryEntries.status} = 'completed' OR ${excluded("followed_at")} <= ${tables.libraryEntries.followedAt} THEN ${tables.libraryEntries.status} ELSE ${excluded("status")} END`,
++          followedAt: sql`greatest(${tables.libraryEntries.followedAt}, ${excluded("followed_at")})`,
++          revision: sql`${tables.libraryEntries.revision} + CASE WHEN ${excluded("followed_at")} > ${tables.libraryEntries.followedAt} THEN 1 ELSE 0 END`,
++          updatedAt: date(now),
++        },
++      });
++    }
++
++    for (const item of payload.history) {
++      const existing = await tx.select().from(tables.chapterProgress).where(and(
++        eq(tables.chapterProgress.userId, userId),
++        eq(tables.chapterProgress.mangaId, item.mangaId),
++        eq(tables.chapterProgress.chapterId, item.chapterId),
++        eq(tables.chapterProgress.language, item.lang),
++      )).limit(1);
++      if (!existing[0]) summary.progressInserted += 1;
++      else {
++        const current = {
++          mangaId: existing[0].mangaId,
++          chapterId: existing[0].chapterId,
++          lang: existing[0].language,
++          page: existing[0].page,
++          maxPage: existing[0].maxPage,
++          total: existing[0].total,
++          chapter: existing[0].chapter,
++          title: existing[0].title,
++          lastReadAt: existing[0].lastReadAt,
++        };
++        if (mergeProgress(current, item).changed) summary.progressUpdated += 1;
++        else { summary.skipped += 1; continue; }
++      }
++      await tx.insert(tables.chapterProgress).values({
++        userId,
++        mangaId: item.mangaId,
++        chapterId: item.chapterId,
++        language: item.lang,
++        chapter: item.chapter,
++        title: item.title,
++        coverFile: item.coverFile ?? null,
++        page: item.page,
++        maxPage: item.page,
++        total: item.total,
++        lastReadAt: item.ts,
++        revision: 1,
++        updatedAt: date(now),
++      }).onConflictDoUpdate({
++        target: [
++          tables.chapterProgress.userId,
++          tables.chapterProgress.mangaId,
++          tables.chapterProgress.chapterId,
++          tables.chapterProgress.language,
++        ],
++        set: {
++          page: sql`CASE WHEN ${excluded("last_read_at")} > ${tables.chapterProgress.lastReadAt} THEN ${excluded("page")} ELSE ${tables.chapterProgress.page} END`,
++          maxPage: sql`CASE WHEN ${excluded("last_read_at")} > ${tables.chapterProgress.lastReadAt} THEN greatest(${tables.chapterProgress.maxPage}, ${excluded("page")}) ELSE ${tables.chapterProgress.maxPage} END`,
++          total: sql`CASE WHEN ${excluded("last_read_at")} > ${tables.chapterProgress.lastReadAt} THEN ${excluded("total")} ELSE ${tables.chapterProgress.total} END`,
++          chapter: sql`CASE WHEN ${excluded("last_read_at")} > ${tables.chapterProgress.lastReadAt} THEN ${excluded("chapter")} ELSE ${tables.chapterProgress.chapter} END`,
++          title: sql`CASE WHEN ${excluded("last_read_at")} > ${tables.chapterProgress.lastReadAt} THEN ${excluded("title")} ELSE ${tables.chapterProgress.title} END`,
++          lastReadAt: sql`greatest(${tables.chapterProgress.lastReadAt}, ${excluded("last_read_at")})`,
++          revision: sql`${tables.chapterProgress.revision} + CASE WHEN ${excluded("last_read_at")} > ${tables.chapterProgress.lastReadAt} THEN 1 ELSE 0 END`,
++          updatedAt: date(now),
++        },
++      });
++    }
++
++    if (payload.settings) {
++      await tx.insert(tables.readerPreferences).values({ ...payload.settings, userId, updatedAt: date(now) })
++        .onConflictDoUpdate({
++          target: tables.readerPreferences.userId,
++          set: { ...payload.settings, updatedAt: date(now) },
++        });
++      summary.settingsApplied = true;
++    }
++  });
++  return summary;
++}
+diff --git a/web/lib/merge.ts b/web/lib/merge.ts
+new file mode 100644
+index 0000000..4588892
+--- /dev/null
++++ b/web/lib/merge.ts
+@@ -0,0 +1,102 @@
++// Pure merge rules shared by the service and its tests. Local import data is
++// advisory: newer server state always wins, max observed page never regresses,
++// and imports never create XP, completions or roles.
++
++export type LibraryState = {
++  mangaId: string;
++  title: string;
++  coverFile: string | null;
++  lang: string;
++  status: string;
++  followedAt: number;
++  lastChapterId: string | null;
++  lastReadPublish: number;
++};
++
++export type LibraryIncoming = {
++  mangaId: string;
++  title: string;
++  coverFile: string | null;
++  lang: string;
++  status: string;
++  followedAt: number;
++};
++
++export function mergeLibrary(
++  existing: LibraryState,
++  incoming: LibraryIncoming,
++): { changed: boolean; value: LibraryState } {
++  if (incoming.followedAt <= existing.followedAt) return { changed: false, value: existing };
++  return {
++    changed: true,
++    value: {
++      ...existing,
++      title: incoming.title,
++      coverFile: incoming.coverFile,
++      lang: incoming.lang,
++      // A completed server row is never downgraded by a guest import.
++      status: existing.status === "completed" ? existing.status : incoming.status,
++      followedAt: incoming.followedAt,
++      lastChapterId: existing.lastChapterId,
++      lastReadPublish: existing.lastReadPublish,
++    },
++  };
++}
++
++export type ProgressState = {
++  mangaId: string;
++  chapterId: string;
++  lang: string;
++  page: number;
++  maxPage: number;
++  total: number;
++  chapter: string | null;
++  title: string | null;
++  lastReadAt: number;
++};
++
++export type ProgressIncoming = {
++  mangaId: string;
++  chapterId: string;
++  lang: string;
++  page: number;
++  total: number;
++  chapter: string | null;
++  title: string | null;
++  ts: number;
++};
++
++export function mergeProgress(
++  existing: ProgressState | null,
++  incoming: ProgressIncoming,
++): { changed: boolean; value: ProgressState } {
++  if (!existing) {
++    return {
++      changed: true,
++      value: {
++        mangaId: incoming.mangaId,
++        chapterId: incoming.chapterId,
++        lang: incoming.lang,
++        page: incoming.page,
++        maxPage: incoming.page,
++        total: incoming.total,
++        chapter: incoming.chapter,
++        title: incoming.title,
++        lastReadAt: incoming.ts,
++      },
++    };
++  }
++  if (incoming.ts <= existing.lastReadAt) return { changed: false, value: existing };
++  return {
++    changed: true,
++    value: {
++      ...existing,
++      page: incoming.page,
++      maxPage: Math.max(existing.maxPage, incoming.page),
++      total: incoming.total,
++      chapter: incoming.chapter,
++      title: incoming.title,
++      lastReadAt: incoming.ts,
++    },
++  };
++}
+diff --git a/web/lib/validators.ts b/web/lib/validators.ts
+new file mode 100644
+index 0000000..8b2e765
+--- /dev/null
++++ b/web/lib/validators.ts
+@@ -0,0 +1,374 @@
++// Browser-safe input boundary. Nothing here trusts client-supplied ids, roles,
++// XP, levels or timestamps; callers derive identity from the managed session.
++
++export type ReaderSettingsDto = {
++  mode: "vertical" | "horizontal";
++  fit: boolean;
++  bg: "light" | "sepia" | "dark";
++  speed: number;
++};
++
++export const DEFAULT_READER_SETTINGS: ReaderSettingsDto = {
++  mode: "vertical",
++  fit: true,
++  bg: "light",
++  speed: 3,
++};
++
++export const LIBRARY_STATUSES = ["reading", "planned", "completed", "paused", "dropped"] as const;
++export type LibraryStatus = (typeof LIBRARY_STATUSES)[number];
++
++export class ValidationError extends Error {
++  readonly status: number;
++  readonly code: string;
++
++  constructor(status: number, code: string, message: string) {
++    super(message);
++    this.name = "ValidationError";
++    this.status = status;
++    this.code = code;
++  }
++}
++
++const MAX_ID = 200;
++const MAX_TEXT = 300;
++const MAX_IMPORT_ITEMS = 200;
++const MAX_IMPORT_HISTORY = 100;
++const MAX_JSON_BYTES = 24 * 1024;
++const MAX_CLIENT_AGE_MS = 365 * 24 * 60 * 60 * 1000;
++const MAX_CLIENT_SKEW_MS = 5 * 60 * 1000;
++
++function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly string[]): void {
++  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
++  if (unknown.length > 0) {
++    throw new ValidationError(400, "INVALID_INPUT", `Unexpected field: ${unknown[0]}`);
++  }
++}
++
++function isObject(value: unknown): value is Record<string, unknown> {
++  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
++}
++
++function plainText(value: unknown, max = MAX_TEXT): string | null {
++  if (value === null || value === undefined) return null;
++  if (typeof value !== "string") throw new ValidationError(400, "INVALID_INPUT", "Expected text.");
++  const trimmed = value.trim();
++  if (trimmed.length > max || /[\u0000-\u001f\u007f]/.test(trimmed)) {
++    throw new ValidationError(400, "INVALID_INPUT", "Text is too long or contains control characters.");
++  }
++  return trimmed;
++}
++
++function requiredText(value: unknown, field: string, max = MAX_ID): string {
++  const parsed = plainText(value, max);
++  if (!parsed) throw new ValidationError(400, "INVALID_INPUT", `${field} is required.`);
++  return parsed;
++}
++
++function optionalId(value: unknown): string | null {
++  if (value === null || value === undefined || value === "") return null;
++  const parsed = plainText(value, MAX_ID);
++  if (!parsed || /[/?#]/.test(parsed)) return null;
++  return parsed;
++}
++
++function integerIn(value: unknown, min: number, max: number, field: string): number {
++  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
++    throw new ValidationError(400, "INVALID_INPUT", `${field} is out of range.`);
++  }
++  return value;
++}
++
++function language(value: unknown): string {
++  if (value === undefined || value === null || value === "") return "vi";
++  const parsed = plainText(value, 20) ?? "vi";
++  if (!/^[A-Za-z][A-Za-z-]{1,19}$/.test(parsed)) {
++    throw new ValidationError(400, "INVALID_INPUT", "Invalid language.");
++  }
++  return parsed;
++}
++
++/// Same-origin mutation guard. `Origin` must match the request's own host and
++/// scheme, including forwarded headers in a platform deployment.
++export function requireOrigin(request: Request): void {
++  if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return;
++  const origin = request.headers.get("origin");
++  if (!origin) throw new ValidationError(403, "ORIGIN_REJECTED", "Origin header is required.");
++  const url = new URL(request.url);
++  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
++  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
++  const host = forwardedHost || url.host;
++  const protocol = forwardedProto || url.protocol.replace(":", "");
++  if (origin !== `${protocol}://${host}`) {
++    throw new ValidationError(403, "ORIGIN_REJECTED", "Cross-origin mutation rejected.");
++  }
++}
++
++export async function readJson(request: Request, maxBytes = MAX_JSON_BYTES): Promise<Record<string, unknown>> {
++  const contentType = request.headers.get("content-type") ?? "";
++  if (!/^application\/json\b/i.test(contentType)) {
++    throw new ValidationError(415, "UNSUPPORTED_MEDIA_TYPE", "Expected application/json.");
++  }
++  const declared = Number(request.headers.get("content-length") ?? "0");
++  if (Number.isFinite(declared) && declared > maxBytes) {
++    throw new ValidationError(413, "PAYLOAD_TOO_LARGE", "Request body is too large.");
++  }
++  const text = await request.text();
++  if (Buffer.byteLength(text, "utf8") > maxBytes) {
++    throw new ValidationError(413, "PAYLOAD_TOO_LARGE", "Request body is too large.");
++  }
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(text);
++  } catch {
++    throw new ValidationError(400, "INVALID_JSON", "Request body is not valid JSON.");
++  }
++  if (!isObject(parsed)) throw new ValidationError(400, "INVALID_INPUT", "Expected a JSON object.");
++  return parsed;
++}
++
++/// Client timestamps may annotate local history only. Reject nan/infinity,
++/// ancient values and implausible future dates before they touch the database.
++export function boundedClientTime(value: unknown, nowMs = Date.now()): number | null {
++  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) return null;
++  if (value < nowMs - MAX_CLIENT_AGE_MS || value > nowMs + MAX_CLIENT_SKEW_MS) return null;
++  return value;
++}
++
++export function parseResourceId(value: unknown, field = "id"): string {
++  if (typeof value !== "string" || !value.trim()) {
++    throw new ValidationError(400, "INVALID_INPUT", `${field} is required.`);
++  }
++  return requiredText(value, field, MAX_ID);
++}
++
++export function normalizeUsername(value: unknown): string | null {
++  if (typeof value !== "string") return null;
++  const normalized = value.trim().toLowerCase();
++  return /^[a-z0-9._]{3,24}$/.test(normalized) ? normalized : null;
++}
++
++export function parseProfilePatch(body: Record<string, unknown>): {
++  username?: string | null;
++  displayName?: string | null;
++  avatarUrl?: string | null;
++} {
++  assertAllowedKeys(body, ["username", "displayName", "avatarUrl"]);
++  const patch: { username?: string | null; displayName?: string | null; avatarUrl?: string | null } = {};
++  if (Object.hasOwn(body, "username")) {
++    if (body.username === null || body.username === "") patch.username = null;
++    else {
++      const username = normalizeUsername(body.username);
++      if (!username) throw new ValidationError(400, "INVALID_INPUT", "Username must be 3-24 letters, digits, dots or underscores.");
++      patch.username = username;
++    }
++  }
++  if (Object.hasOwn(body, "displayName")) {
++    const displayName = plainText(body.displayName, 60);
++    if (displayName === null && body.displayName !== null) {
++      throw new ValidationError(400, "INVALID_INPUT", "Display name must be 1-60 characters.");
++    }
++    patch.displayName = displayName || null;
++  }
++  if (Object.hasOwn(body, "avatarUrl")) {
++    const avatarUrl = plainText(body.avatarUrl, 512);
++    if (avatarUrl !== null) {
++      let parsed: URL;
++      try {
++        parsed = new URL(avatarUrl);
++      } catch {
++        throw new ValidationError(400, "INVALID_INPUT", "Avatar URL is invalid.");
++      }
++      if (parsed.protocol !== "https:" || !parsed.hostname) {
++        throw new ValidationError(400, "INVALID_INPUT", "Avatar URL must be https.");
++      }
++    }
++    patch.avatarUrl = avatarUrl || null;
++  }
++  return patch;
++}
++
++export type LibraryInput = {
++  title: string;
++  coverFile: string | null;
++  lang: string;
++  status: LibraryStatus;
++};
++
++export function parseLibraryInput(body: Record<string, unknown>): LibraryInput {
++  assertAllowedKeys(body, ["title", "coverFile", "lang", "status"]);
++  const title = requiredText(body.title, "title", 200);
++  const coverFile = optionalId(body.coverFile);
++  const lang = language(body.lang);
++  const status = body.status === undefined ? "reading" : plainText(body.status, 20);
++  if (!status || !LIBRARY_STATUSES.includes(status as LibraryStatus)) {
++    throw new ValidationError(400, "INVALID_INPUT", "Unknown library status.");
++  }
++  return { title, coverFile, lang, status: status as LibraryStatus };
++}
++
++export type ProgressInput = {
++  mangaId: string;
++  lang: string;
++  page: number;
++  total: number;
++  chapter: string | null;
++  title: string | null;
++  coverFile: string | null;
++};
++
++export function parseProgressInput(body: Record<string, unknown>): ProgressInput {
++  assertAllowedKeys(body, ["mangaId", "lang", "page", "total", "chapter", "title", "coverFile"]);
++  const mangaId = parseResourceId(body.mangaId, "mangaId");
++  const lang = language(body.lang);
++  const total = integerIn(body.total, 1, 10_000, "total");
++  const page = integerIn(body.page, 1, 10_000, "page");
++  if (page > total) throw new ValidationError(400, "INVALID_INPUT", "page cannot exceed total.");
++  return {
++    mangaId,
++    lang,
++    page,
++    total,
++    chapter: optionalId(body.chapter),
++    title: plainText(body.title, 200),
++    coverFile: optionalId(body.coverFile),
++  };
++}
++
++export function parseSettingsInput(body: Record<string, unknown>): ReaderSettingsDto {
++  assertAllowedKeys(body, ["mode", "fit", "bg", "speed"]);
++  const mode = body.mode === undefined ? DEFAULT_READER_SETTINGS.mode : body.mode;
++  const bg = body.bg === undefined ? DEFAULT_READER_SETTINGS.bg : body.bg;
++  if (mode !== "vertical" && mode !== "horizontal") {
++    throw new ValidationError(400, "INVALID_INPUT", "Unknown reader mode.");
++  }
++  if (bg !== "light" && bg !== "sepia" && bg !== "dark") {
++    throw new ValidationError(400, "INVALID_INPUT", "Unknown reader background.");
++  }
++  if (body.fit !== undefined && typeof body.fit !== "boolean") {
++    throw new ValidationError(400, "INVALID_INPUT", "fit must be a boolean.");
++  }
++  return {
++    mode,
++    fit: body.fit === undefined ? DEFAULT_READER_SETTINGS.fit : body.fit,
++    bg,
++    speed: body.speed === undefined ? DEFAULT_READER_SETTINGS.speed : integerIn(body.speed, 1, 5, "speed"),
++  };
++}
++
++export type ImportLibraryItem = LibraryInput & { mangaId: string; followedAt: number };
++export type ImportHistoryItem = {
++  mangaId: string;
++  chapterId: string;
++  lang: string;
++  page: number;
++  total: number;
++  chapter: string | null;
++  title: string | null;
++  coverFile: string | null;
++  ts: number;
++};
++
++function importLibraryItem(value: unknown, nowMs: number): ImportLibraryItem | null {
++  if (!isObject(value)) return null;
++  const followedAt = boundedClientTime(value.followedAt, nowMs);
++  let mangaId: string;
++  try {
++    mangaId = parseResourceId(
++      typeof value.mangaId === "string" ? value.mangaId : undefined,
++      "mangaId",
++    );
++  } catch {
++    return null;
++  }
++  if (followedAt === null) return null;
++  try {
++    const input = parseLibraryInput({
++      title: value.title ?? mangaId,
++      coverFile: value.coverFile,
++      lang: value.lang,
++      status: value.status ?? "reading",
++    });
++    return { ...input, mangaId, followedAt };
++  } catch {
++    return null;
++  }
++}
++
++function importHistoryItem(value: unknown, nowMs: number): ImportHistoryItem | null {
++  if (!isObject(value)) return null;
++  const ts = boundedClientTime(value.ts, nowMs);
++  if (ts === null) return null;
++  try {
++    const input = parseProgressInput({
++      mangaId: value.mangaId,
++      lang: value.lang,
++      page: value.page ?? 1,
++      total: value.total ?? value.page ?? 1,
++      chapter: value.chapter,
++      title: value.title,
++      coverFile: value.coverFile,
++    });
++    return { ...input, chapterId: "", ts } as ImportHistoryItem;
++  } catch {
++    return null;
++  }
++}
++
++export function parseImportPayload(body: Record<string, unknown>, nowMs = Date.now()): {
++  library: ImportLibraryItem[];
++  history: (ImportHistoryItem & { chapterId: string })[];
++  settings: ReaderSettingsDto | null;
++  skipped: number;
++  invalid: number;
++} {
++  assertAllowedKeys(body, ["library", "history", "settings"]);
++  let skipped = 0;
++  const arrays: Record<string, unknown[]> = {};
++  for (const field of ["library", "history"] as const) {
++    const value = body[field];
++    if (value === undefined) arrays[field] = [];
++    else if (!Array.isArray(value)) {
++      throw new ValidationError(400, "INVALID_INPUT", `${field} must be an array.`);
++    } else arrays[field] = value.slice(0, field === "library" ? MAX_IMPORT_ITEMS : MAX_IMPORT_HISTORY);
++  }
++  const library = arrays.library
++    .map((item) => importLibraryItem(item, nowMs))
++    .filter((item): item is ImportLibraryItem => {
++      if (!item) skipped += 1;
++      return item !== null;
++    });
++
++  // History entries need a chapter id, which is a path parameter in the
++  // normal progress API but part of the local payload during an import.
++  const history = arrays.history.flatMap((raw) => {
++    if (!isObject(raw) || typeof raw.chapterId !== "string" || !raw.chapterId.trim()) {
++      skipped += 1;
++      return [];
++    }
++    const parsed = importHistoryItem(raw, nowMs);
++    if (!parsed) {
++      skipped += 1;
++      return [];
++    }
++    return [{ ...parsed, chapterId: raw.chapterId.trim().slice(0, MAX_ID) }];
++  });
++
++  let settings: ReaderSettingsDto | null = null;
++  if (body.settings !== undefined) {
++    if (!isObject(body.settings)) throw new ValidationError(400, "INVALID_INPUT", "settings must be an object.");
++    settings = parseSettingsInput(body.settings);
++  }
++  return { library, history, settings, skipped, invalid: skipped };
++}
++
++/// Explicit operator configuration only. A client never sends a role, and an
++/// unverified email can never bootstrap one.
++export function roleFromVerifiedAllowlist(
++  identity: { email: string | null; emailVerified: boolean },
++  allowlist: readonly string[],
++): "admin" | null {
++  if (!identity.emailVerified || !identity.email || allowlist.length === 0) return null;
++  const allowed = new Set(allowlist.map((email) => email.trim().toLowerCase()).filter(Boolean));
++  return allowed.has(identity.email.trim().toLowerCase()) ? "admin" : null;
++}
+diff --git a/web/package.json b/web/package.json
+index 71a76ad..55f2b1e 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -8,17 +8,19 @@
+     "prebuild": "npm run build:wasm",
+     "build": "next build",
+     "start": "next start",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+-    "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs"
++    "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs",
++    "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
++    "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs"
+   },
+   "dependencies": {
+     "@neon/auth": "^0.8.2",
+     "drizzle-orm": "^0.45.4",
+     "jose": "^6.2.18",
+     "next": "16.4.6",
+     "pg": "^8.23.1",
+     "react": "19.3.0",
+diff --git a/web/scripts/account-playwright.test.mjs b/web/scripts/account-playwright.test.mjs
+new file mode 100644
+index 0000000..ee2eb44
+--- /dev/null
++++ b/web/scripts/account-playwright.test.mjs
+@@ -0,0 +1,128 @@
++import assert from "node:assert/strict";
++import { existsSync } from "node:fs";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
++
++const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const SHOT_DIR = join(webDir, ".test-screenshots");
++
++let unconfigured;
++let configured;
++let authFixture;
++let browser;
++let pageErrors = [];
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++  unconfigured = await startNext();
++  authFixture = await startHttpServer((req, res, body) => {
++    if (req.url?.includes("get-session")) {
++      if ((req.headers.cookie ?? "").includes("session_token=fixture")) {
++        res.writeHead(200, { "content-type": "application/json" });
++        res.end(JSON.stringify({
++          session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
++          user: { id: "google|opaque-42", name: "Fixture Reader", email: "reader@example.com", emailVerified: true, image: null },
++        }));
++      } else {
++        res.writeHead(200, { "content-type": "application/json" });
++        res.end(JSON.stringify({ session: null, user: null }));
++      }
++      return;
++    }
++    if (req.url?.includes("sign-in/") || req.url?.includes("sign-up/")) {
++      res.writeHead(200, {
++        "content-type": "application/json",
++        "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
++      });
++      res.end(JSON.stringify({ ok: true, body }));
++      return;
++    }
++    if (req.url?.includes("sign-out")) {
++      res.writeHead(200, {
++        "content-type": "application/json",
++        "set-cookie": "__Secure-neon-auth.session_token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
++      });
++      res.end(JSON.stringify({ ok: true }));
++      return;
++    }
++    res.writeHead(200, { "content-type": "application/json" });
++    res.end(JSON.stringify({ ok: true }));
++  });
++  configured = await startNext({
++    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++  });
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(configured?.child);
++  await stop(unconfigured?.child);
++  await authFixture?.close();
++});
++
++async function open(baseUrl, viewport = { width: 1280, height: 800 }) {
++  const context = await browser.newContext({ viewport, colorScheme: "dark" });
++  const page = await context.newPage();
++  page.on("pageerror", (error) => pageErrors.push(error.message));
++  return { context, page, baseUrl };
++}
++
++test("auth-not-configured is explicit and guest account pages stay usable", async () => {
++  const { context, page, baseUrl } = await open(unconfigured.baseUrl);
++  await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
++  await page.getByText("Chưa bật đăng nhập").waitFor();
++  assert.equal(await page.locator('input[type="email"]').count(), 0, "no inert sign-in form when unconfigured");
++  assert.match(await page.locator(".account-card").first().innerText(), /NEON_AUTH_BASE_URL/);
++  await page.screenshot({ path: join(SHOT_DIR, "account-unconfigured.png") });
++
++  await page.goto(`${baseUrl}/tai-khoan/cai-dat`, { waitUntil: "networkidle" });
++  await page.locator("select").first().selectOption("horizontal");
++  await page.locator("select").nth(1).selectOption("dark");
++  await page.getByRole("button", { name: "Lưu cài đặt" }).click();
++  await page.getByText("Đã lưu trên thiết bị này.").waitFor();
++  await page.reload({ waitUntil: "networkidle" });
++  assert.equal(await page.locator("select").first().inputValue(), "horizontal");
++  assert.equal(await page.locator("select").nth(1).inputValue(), "dark");
++
++  await page.evaluate(() => {
++    localStorage.setItem("truyenviet:history", JSON.stringify([{
++      mangaId: "m-local", mangaTitle: "Truyện địa phương", chapterId: "c-local", chapter: "3",
++      title: "Chương 3", coverFile: null, lang: "vi", ts: Date.now(), page: 3, total: 12,
++    }]));
++    localStorage.setItem("truyenviet:library", JSON.stringify([{
++      mangaId: "m-local", title: "Truyện địa phương", coverFile: null, lang: "vi", followedAt: Date.now(),
++    }]));
++  });
++  await page.goto(`${baseUrl}/tai-khoan/lich-su`, { waitUntil: "networkidle" });
++  await page.getByText("Truyện địa phương").waitFor();
++  await page.goto(`${baseUrl}/tu-truyen`, { waitUntil: "networkidle" });
++  assert.ok(await page.getByText("Truyện địa phương").count() >= 1);
++  assert.ok(await page.getByRole("link", { name: /Tài khoản/ }).count() >= 1);
++  await context.close();
++});
++
++test("real Neon SDK sign-in through a loopback auth fixture reaches the account UI", async () => {
++  const { context, page, baseUrl } = await open(configured.baseUrl);
++  await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
++  const email = page.locator('input[type="email"]');
++  await email.waitFor();
++  await email.fill("reader@example.com");
++  await page.locator('input[type="password"]').fill("fixture-password");
++  await page.getByRole("button", { name: "Đăng nhập", exact: true }).click();
++  await page.getByText("Đã đăng nhập").waitFor({ timeout: 15_000 });
++  assert.ok((await page.locator(".account-card").first().innerText()).includes("reader@example.com"));
++  await page.screenshot({ path: join(SHOT_DIR, "account-authenticated.png") });
++
++  await page.getByRole("button", { name: "Đăng xuất" }).click();
++  await page.locator('input[type="email"]').waitFor({ timeout: 15_000 });
++  assert.equal(await page.getByText("Đã đăng nhập").count(), 0);
++  await context.close();
++});
++
++test("no browser page errors were produced by account flows", () => {
++  assert.deepEqual(pageErrors, []);
++});
+diff --git a/web/scripts/account.test.mjs b/web/scripts/account.test.mjs
+new file mode 100644
+index 0000000..9783cbd
+--- /dev/null
++++ b/web/scripts/account.test.mjs
+@@ -0,0 +1,484 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import { after, before, test } from "node:test";
++import { fileURLToPath } from "node:url";
++import { PGlite } from "@electric-sql/pglite";
++import { eq } from "drizzle-orm";
++import { drizzle } from "drizzle-orm/pglite";
++import { startNext, stop } from "./test-helpers.mjs";
++
++// RED/GREEN harness for Task 6. The app DB is real SQL in embedded PGlite;
++// authentication is exercised through the real Neon SDK against a local HTTP
++// fixture. Nothing here injects a production header or in-memory user store.
++const validators = await import("../lib/validators.ts");
++const merge = await import("../lib/merge.ts");
++const { identityFromSession } = await import("../lib/auth/identity.ts");
++const service = await import("../lib/me/service.ts");
++const { createMeApi } = await import("../lib/me/handlers.ts");
++const schema = await import("../lib/db/schema.ts");
++
++const DAY = 86_400_000;
++let now = Date.parse("2026-06-01T12:00:00.000Z");
++
++async function migratedDb() {
++  const pg = new PGlite();
++  const db = drizzle(pg, { schema });
++  for (const file of ["0000_application.sql", "0001_account_data.sql"]) {
++    const url = new URL(`../drizzle/${file}`, import.meta.url);
++    await pg.exec(await readFile(fileURLToPath(url), "utf8"));
++  }
++  return { pg, db };
++}
++
++function identity(id = "opaque|reader-1", overrides = {}) {
++  return {
++    id,
++    email: "reader@example.com",
++    emailVerified: true,
++    name: "Reader",
++    image: null,
++    sessionId: "session-opaque",
++    ...overrides,
++  };
++}
++
++function request(path, init = {}, origin = "http://localhost") {
++  const headers = { origin, ...(init.headers ?? {}) };
++  return new Request(`http://localhost${path}`, { ...init, headers });
++}
++
++function api(db, user = identity(), overrides = {}) {
++  return createMeApi({
++    db: () => db,
++    identity: async () => user,
++    now: () => now,
++    allowlist: overrides.allowlist ?? [],
++  });
++}
++
++let configuredNext;
++let unconfiguredNext;
++let authFixture;
++let fixtureSession;
++
++before(async () => {
++  unconfiguredNext = await startNext();
++  // Loopback managed-auth fixture: the SAME SDK proxy used in production sends
++  // the requests and rewrites the session cookies; no fake session is minted by
++  // application code.
++  const { startHttpServer } = await import("./test-helpers.mjs");
++  authFixture = await startHttpServer((req, res, body) => {
++    if (req.url?.includes("get-session")) {
++      res.writeHead(200, { "content-type": "application/json" });
++      res.end(JSON.stringify({
++        session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(now + DAY).toISOString() },
++        user: {
++          id: "google|opaque-42",
++          name: "Fixture Reader",
++          email: "reader@example.com",
++          emailVerified: true,
++          image: null,
++        },
++      }));
++      return;
++    }
++    if (req.url?.includes("sign-in/email")) {
++      res.writeHead(200, {
++        "content-type": "application/json",
++        "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
++      });
++      res.end(JSON.stringify({ ok: true }));
++      return;
++    }
++    res.writeHead(200, { "content-type": "application/json" });
++    res.end(JSON.stringify({ ok: true, body }));
++  });
++  configuredNext = await startNext({
++      NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
++      NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++    });
++    const signIn = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
++    });
++    assert.equal(signIn.status, 200);
++    const sessionRes = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`, {
++      headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
++    });
++    assert.equal(sessionRes.status, 200);
++    fixtureSession = await sessionRes.json();
++    assert.equal(fixtureSession.user.id, "google|opaque-42");
++});
++
++after(async () => {
++  await stop(configuredNext?.child);
++  await stop(unconfiguredNext?.child);
++  await authFixture?.close();
++});
++
++test("server routes fail closed when auth or database configuration is absent", async () => {
++  const noAuth = await fetch(`${unconfiguredNext.baseUrl}/api/v1/me`);
++  assert.equal(noAuth.status, 503);
++  assert.equal((await noAuth.json()).error.code, "AUTH_NOT_CONFIGURED");
++  assert.equal(noAuth.headers.get("cache-control"), "private, no-store");
++
++  const noDatabase = await fetch(`${configuredNext.baseUrl}/api/v1/me`, {
++    headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
++  });
++  assert.equal(noDatabase.status, 503);
++  assert.equal((await noDatabase.json()).error.code, "DATABASE_NOT_CONFIGURED");
++
++  const crossOrigin = await fetch(`${configuredNext.baseUrl}/api/v1/me/library/m1`, {
++    method: "PUT",
++    headers: {
++      "content-type": "application/json",
++      origin: "https://evil.example",
++      cookie: "__Secure-neon-auth.session_token=fixture",
++    },
++    body: JSON.stringify({ title: "One", lang: "vi", status: "reading", coverFile: null }),
++  });
++  assert.equal(crossOrigin.status, 403);
++  assert.equal((await crossOrigin.json()).error.code, "ORIGIN_REJECTED");
++});
++
++test("validators reject cross-origin mutations, oversize bodies and implausible timestamps", () => {
++  assert.throws(
++    () => validators.requireOrigin(request("/api/v1/me", { method: "PATCH" }, "http://evil.example")),
++    (error) => error.status === 403,
++  );
++  assert.doesNotThrow(() => validators.requireOrigin(request("/api/v1/me", { method: "PATCH" })));
++  assert.equal(validators.boundedClientTime(Number.NaN, now), null);
++  assert.equal(validators.boundedClientTime(now + DAY, now), null);
++  assert.equal(validators.boundedClientTime(now - 3 * 365 * DAY, now), null);
++  assert.equal(validators.boundedClientTime(now - 1000, now), now - 1000);
++  assert.equal(validators.normalizeUsername("  Reader.One "), "reader.one");
++  assert.equal(validators.normalizeUsername("a!"), null);
++});
++
++test("readJson enforces content type and a small body limit", async () => {
++  await assert.rejects(
++    validators.readJson(request("/api/v1/me", {
++      method: "PATCH",
++      headers: { "content-type": "text/plain" },
++      body: "{}",
++    })),
++    (error) => error.status === 415,
++  );
++  const big = { displayName: "x".repeat(30_000) };
++  await assert.rejects(
++    validators.readJson(request("/api/v1/me", {
++      method: "PATCH",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify(big),
++    })),
++    (error) => error.status === 413,
++  );
++});
++
++test("merge precedence keeps newer server state and stays idempotent", () => {
++  const existingProgress = {
++    mangaId: "m1", chapterId: "c1", lang: "vi", page: 8, maxPage: 8, total: 12,
++    chapter: "8", title: "Server title", lastReadAt: now,
++  };
++  const stale = merge.mergeProgress(existingProgress, {
++    mangaId: "m1", chapterId: "c1", lang: "vi", page: 3, total: 12,
++    chapter: "3", title: "Old title", ts: now - 5000,
++  });
++  assert.equal(stale.changed, false);
++  assert.equal(stale.value.page, 8);
++  const newer = merge.mergeProgress(existingProgress, {
++    mangaId: "m1", chapterId: "c1", lang: "vi", page: 5, total: 12,
++    chapter: "5", title: "Local title", ts: now + 5000,
++  });
++  assert.equal(newer.changed, true);
++  assert.equal(newer.value.page, 5);
++  assert.equal(newer.value.maxPage, 8, "max observed page never regresses");
++  const library = merge.mergeLibrary(
++    { mangaId: "m1", title: "Server", coverFile: null, lang: "vi", status: "completed", followedAt: now, lastChapterId: "c9", lastReadPublish: 9 },
++    { mangaId: "m1", title: "Local", coverFile: "x.jpg", lang: "en", status: "reading", followedAt: now - 1000, lastChapterId: "c1", lastReadPublish: 1 },
++  );
++  assert.equal(library.changed, false);
++  assert.equal(library.value.status, "completed");
++});
++
++test("real SDK session identity is opaque and never derived from client fields", () => {
++  const resolved = identityFromSession(fixtureSession);
++  assert.equal(resolved.id, "google|opaque-42");
++  assert.equal(resolved.emailVerified, true);
++  assert.equal(validators.roleFromVerifiedAllowlist({
++    ...resolved, emailVerified: false,
++  }, ["reader@example.com"]), null);
++  assert.equal(validators.roleFromVerifiedAllowlist(resolved, ["reader@example.com"]), "admin");
++  assert.equal(validators.roleFromVerifiedAllowlist(resolved, []), null);
++  assert.equal(validators.roleFromVerifiedAllowlist(resolved, ["other@example.com"]), null);
++});
++
++test("library rows are unique per user and ownership never crosses accounts", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = api(db, identity("opaque|alice"));
++    const bob = api(db, identity("opaque|bob"));
++    const put = () => api(db, identity("opaque|alice")).libraryPut(
++      request("/api/v1/me/library/m1", {
++        method: "PUT",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ title: "One", lang: "vi", status: "reading", coverFile: null }),
++      }),
++      { mangaId: "m1" },
++    );
++    assert.equal((await put()).status, 200);
++    assert.equal((await put()).status, 200);
++    const rows = await db.select().from(schema.libraryEntries);
++    assert.equal(rows.length, 1);
++
++    const aliceList = await alice.libraryGet(request("/api/v1/me/library"));
++    const aliceBody = await aliceList.json();
++    assert.equal(aliceBody.items.length, 1);
++    const bobList = await bob.libraryGet(request("/api/v1/me/library"));
++    assert.equal((await bobList.json()).items.length, 0);
++
++    const bobDelete = await bob.libraryDelete(request("/api/v1/me/library/m1", { method: "DELETE" }), { mangaId: "m1" });
++    assert.equal(bobDelete.status, 404);
++    assert.equal((await db.select().from(schema.libraryEntries)).length, 1);
++    assert.equal((await alice.libraryDelete(request("/api/v1/me/library/m1", { method: "DELETE" }), { mangaId: "m1" })).status, 200);
++    assert.equal((await db.select().from(schema.libraryEntries)).length, 0);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("profile validation rejects mass assignment, overlong names and duplicate usernames", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = api(db, identity("opaque|alice"));
++    const bob = api(db, identity("opaque|bob"));
++    assert.equal((await alice.meGet(request("/api/v1/me"))).status, 200);
++    const patch = async (handle, body) => handle.mePatch(request("/api/v1/me", {
++      method: "PATCH",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify(body),
++    }));
++
++    assert.equal((await patch(alice, { role: "admin", totalXp: 9999, userId: "opaque|bob" })).status, 400);
++    assert.equal((await patch(alice, { displayName: "x".repeat(100) })).status, 400);
++    assert.equal((await patch(alice, { avatarUrl: "http://evil.example/a.png" })).status, 400);
++    assert.equal((await patch(alice, { username: "Reader.One", displayName: "Reader One", avatarUrl: "https://cdn.example/a.png" })).status, 200);
++
++    const duplicate = await patch(bob, { username: "reader.one" });
++    assert.equal(duplicate.status, 409);
++    assert.equal((await duplicate.json()).error.code, "USERNAME_TAKEN");
++
++    const profile = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, "opaque|alice"));
++    assert.equal(profile[0].username, "reader.one");
++    assert.equal(profile[0].totalXp, 0);
++    assert.equal((await db.select().from(schema.userRoles)).length, 0);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("role bootstrap requires verified email and explicit operator allowlist", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const unverified = api(db, identity("opaque|unverified", { emailVerified: false }), { allowlist: ["reader@example.com"] });
++    await unverified.meGet(request("/api/v1/me"));
++    assert.equal((await db.select().from(schema.userRoles)).length, 0);
++    const verified = api(db, identity("opaque|verified"), { allowlist: ["reader@example.com"] });
++    await verified.meGet(request("/api/v1/me"));
++    const roles = await db.select().from(schema.userRoles);
++    assert.deepEqual(roles.map((row) => [row.userId, row.role]), [["opaque|verified", "admin"]]);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("guest import preserves newer server state, is idempotent and grants no XP", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api(db);
++    await service.ensureProfile(db, identity(), { now, allowlist: [] });
++    await service.putProgress(db, identity().id, "c1", {
++      mangaId: "m1", chapterId: "c1", lang: "vi", page: 8, total: 12, chapter: "8", title: "Server",
++    }, now);
++    await service.putProgress(db, identity().id, "c4", {
++      mangaId: "m1", chapterId: "c4", lang: "vi", page: 1, total: 10, chapter: "1", title: "Old server",
++    }, now - DAY);
++    const payload = {
++      library: [{ mangaId: "m1", title: "Local", lang: "vi", coverFile: null, followedAt: now - DAY }],
++      history: [
++        { mangaId: "m1", chapterId: "c1", lang: "vi", page: 3, total: 12, chapter: "3", title: "Old", ts: now - 1000 },
++        { mangaId: "m1", chapterId: "c2", lang: "vi", page: 4, total: 10, chapter: "4", title: "New", ts: now + 1000 },
++        { mangaId: "m1", chapterId: "c4", lang: "vi", page: 6, total: 10, chapter: "6", title: "Local newer", ts: now + 1000 },
++      ],
++      settings: { mode: "horizontal", fit: false, bg: "dark", speed: 5 },
++    };
++    const send = () => handle.importPost(request("/api/v1/me/import", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify(payload),
++    }));
++    const first = await send();
++    assert.equal(first.status, 200);
++    const summary = await first.json();
++    assert.equal(summary.progressUpdated, 1);
++    assert.equal(summary.progressInserted, 1);
++    assert.equal(summary.libraryInserted, 1);
++    assert.equal(summary.settingsApplied, true);
++
++    const progress = await db.select().from(schema.chapterProgress).orderBy(schema.chapterProgress.chapterId);
++    assert.equal(progress[0].page, 8, "newer server progress must win");
++    assert.equal(progress[1].page, 4);
++    assert.equal(progress[2].page, 6, "newer local progress wins");
++    assert.equal(progress[2].maxPage, 6);
++    const second = await send();
++    assert.equal(second.status, 200);
++    const repeat = await second.json();
++    assert.equal(repeat.libraryInserted, 0);
++    assert.equal(repeat.progressInserted, 0);
++    assert.equal(repeat.progressUpdated, 0);
++    assert.equal((await db.select().from(schema.chapterProgress)).length, 3);
++
++    const profile = await db.select().from(schema.profiles);
++    assert.equal(profile[0].totalXp, 0, "import never awards XP");
++    assert.equal((await db.select().from(schema.userRoles)).length, 0, "import never grants roles");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("corrupt local payload is skipped safely and privileged fields are rejected", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api(db);
++    const post = (body) => handle.importPost(request("/api/v1/me/import", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify(body),
++    }));
++    const corrupt = await post({ library: [null, "garbage", { mangaId: "m2", title: "Two", lang: "vi", coverFile: null, followedAt: now }], history: [], settings: {} });
++    assert.equal(corrupt.status, 200);
++    assert.equal((await corrupt.json()).skipped, 2);
++    assert.equal((await db.select().from(schema.libraryEntries)).length, 1);
++
++    const privileged = await post({ library: [], history: [], settings: {}, totalXp: 5000, completedChapters: ["c1"] });
++    assert.equal(privileged.status, 400);
++    assert.equal((await db.select().from(schema.profiles))[0].totalXp, 0);
++    assert.equal((await post({ history: "not-an-array" })).status, 400);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("stale writes never regress observed progress; rereads can move backward", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api(db);
++    const put = (page) => handle.progressPut(request("/api/v1/me/progress/c1", {
++      method: "PUT",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ mangaId: "m1", lang: "vi", page, total: 12, chapter: "8", title: "Eight" }),
++    }), { chapterId: "c1" });
++    assert.equal((await put(8)).status, 200);
++    const stale = await service.putProgress(db, identity().id, "c1", {
++      mangaId: "m1", chapterId: "c1", lang: "vi", page: 2, total: 12, chapter: "2", title: "Two",
++    }, now - DAY);
++    assert.equal(stale.page, 2, "current page may move backward for a reread");
++    assert.equal(stale.maxPage, 8, "maximum observed page is monotone");
++    assert.ok(stale.lastReadAt >= now, "server-owned timestamp cannot regress");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("requests require authentication and account reads are private no-store", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handler = createMeApi({
++      db: () => db,
++      identity: async () => null,
++      now: () => now,
++      allowlist: [],
++    });
++    const res = await handler.meGet(request("/api/v1/me"));
++    assert.equal(res.status, 401);
++    assert.equal((await res.json()).error.code, "UNAUTHENTICATED");
++
++    const authed = await api(db).meGet(request("/api/v1/me"));
++    assert.equal(authed.headers.get("cache-control"), "private, no-store");
++    assert.match(authed.headers.get("vary") ?? "", /cookie/i);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("cross-origin mutations are rejected before any database write", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api(db);
++    const res = await handle.settingsPut(request("/api/v1/me/settings", {
++      method: "PUT",
++      headers: { "content-type": "application/json", origin: "https://evil.example" },
++      body: JSON.stringify({ mode: "horizontal", fit: true, bg: "dark", speed: 5 }),
++    }));
++    assert.equal(res.status, 403);
++    assert.equal((await db.select().from(schema.readerPreferences)).length, 0);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("level is an explicit zero-XP placeholder and settings persist", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api(db);
++    const levelRes = await handle.levelGet(request("/api/v1/me/level"));
++    const level = await levelRes.json();
++    assert.equal(level.level, 1);
++    assert.equal(level.totalXp, 0);
++    assert.equal(level.source, "placeholder");
++
++    const put = await handle.settingsPut(request("/api/v1/me/settings", {
++      method: "PUT",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ mode: "horizontal", fit: false, bg: "sepia", speed: 4 }),
++    }));
++    assert.equal(put.status, 200);
++    const get = await handle.settingsGet(request("/api/v1/me/settings"));
++    assert.deepEqual(await get.json(), { mode: "horizontal", fit: false, bg: "sepia", speed: 4 });
++  } finally {
++    await pg.close();
++  }
++});
++
++test("database failures do not leave partial account writes", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api({
++      ...db,
++      transaction: async (fn) => {
++        try {
++          return await db.transaction(async (tx) => {
++            await fn(tx);
++            throw new Error("forced database failure");
++          });
++        } finally {
++          // The inner transaction rolls back; rethrow is expected below.
++        }
++      },
++    });
++    const res = await handle.importPost(request("/api/v1/me/import", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({
++        library: [{ mangaId: "m3", title: "Three", lang: "vi", coverFile: null, followedAt: now }],
++        history: [],
++        settings: {},
++      }),
++    }));
++    assert.equal(res.status, 500);
++    assert.equal((await db.select().from(schema.libraryEntries)).length, 0);
++  } finally {
++    await pg.close();
++  }
++});
+diff --git a/web/scripts/database.test.mjs b/web/scripts/database.test.mjs
+index 23ebe7a..81bf1a4 100644
+--- a/web/scripts/database.test.mjs
++++ b/web/scripts/database.test.mjs
+@@ -3,53 +3,70 @@ import { readFile } from "node:fs/promises";
+ import { fileURLToPath } from "node:url";
+ import { test } from "node:test";
+ import { PGlite } from "@electric-sql/pglite";
+ import { getTableName } from "drizzle-orm";
+ 
+ const { readDatabaseConfig } = await import("../lib/db/client.ts");
+ const { profiles } = await import("../lib/db/schema.ts");
+ 
+-const migrationUrl = new URL("../drizzle/0000_application.sql", import.meta.url);
++const migrationUrls = [
++  new URL("../drizzle/0000_application.sql", import.meta.url),
++  new URL("../drizzle/0001_account_data.sql", import.meta.url),
++];
+ 
+ async function freshDatabase() {
+   const db = new PGlite();
+-  const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
+-  await db.exec(sql);
++  let sql = "";
++  for (const url of migrationUrls) {
++    const next = await readFile(fileURLToPath(url), "utf8");
++    sql += `${next}\n`;
++    await db.exec(next);
++  }
+   return { db, sql };
+ }
+ 
+-test("application migration owns only profiles and never touches Neon Auth tables", async () => {
++test("application migrations own account tables and never touch Neon Auth tables", async () => {
+   const { db, sql } = await freshDatabase();
+   try {
+     assert.doesNotMatch(sql, /neon_auth/i, "Drizzle SQL must not manage Neon-owned identity tables");
+     assert.doesNotMatch(sql, /CREATE\s+SCHEMA/i);
+ 
+     const tables = await db.query(`
+       SELECT table_schema, table_name
+       FROM information_schema.tables
+       WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+       ORDER BY table_schema, table_name
+     `);
+     assert.deepEqual(
+       tables.rows.map((row) => `${row.table_schema}.${row.table_name}`),
+-      ["public.profiles"],
+-      "only the application profiles table may be created",
++      [
++        "public.chapter_progress",
++        "public.library_entries",
++        "public.profiles",
++        "public.reader_preferences",
++        "public.user_roles",
++      ],
++      "only application-owned account tables may be created",
+     );
+ 
+     const columns = await db.query(`
+       SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'profiles'
+       ORDER BY ordinal_position
+     `);
+     assert.deepEqual(columns.rows, [
+       { column_name: "user_id", data_type: "text", is_nullable: "NO" },
+       { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO" },
+       { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
++      { column_name: "username", data_type: "text", is_nullable: "YES" },
++      { column_name: "display_name", data_type: "text", is_nullable: "YES" },
++      { column_name: "avatar_url", data_type: "text", is_nullable: "YES" },
++      { column_name: "total_xp", data_type: "integer", is_nullable: "NO" },
+     ]);
+ 
+     const pk = await db.query(`
+       SELECT a.attname
+       FROM pg_index i
+       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+       WHERE i.indrelid = 'public.profiles'::regclass AND i.indisprimary
+     `);
+@@ -88,16 +105,49 @@ test("profiles accept opaque user ids and enforce uniqueness inside a transactio
+     );
+     const rolledBack = await db.query("SELECT user_id FROM profiles WHERE user_id = $1", ["rollback-user"]);
+     assert.equal(rolledBack.rows.length, 0);
+   } finally {
+     await db.close();
+   }
+ });
+ 
++test("account tables enforce ownership keys, unique usernames and cascade cleanup", async () => {
++  const { db } = await freshDatabase();
++  try {
++    await db.exec("INSERT INTO profiles (user_id) VALUES ('opaque-1'), ('opaque-2');");
++    await db.exec("INSERT INTO user_roles (user_id, role) VALUES ('opaque-1', 'admin');");
++    await db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'One', 100);");
++    await db.exec("INSERT INTO reader_preferences (user_id) VALUES ('opaque-1');");
++    await db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 3, 3, 10, 100);");
++
++    await assert.rejects(
++      db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'Duplicate', 200);"),
++      /duplicate key|unique/i,
++    );
++    await assert.rejects(
++      db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 9, 9, 10, 200);"),
++      /duplicate key|unique/i,
++    );
++    await db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-1';");
++    await assert.rejects(
++      db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-2';"),
++      /duplicate key|unique/i,
++    );
++
++    await db.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
++    for (const table of ["user_roles", "library_entries", "reader_preferences", "chapter_progress"]) {
++      const rows = await db.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
++      assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
++    }
++  } finally {
++    await db.close();
++  }
++});
++
+ test("Drizzle schema and database config stay application-only and lazy", () => {
+   assert.equal(getTableName(profiles), "profiles");
+   const keys = Object.keys(profiles);
+   assert.ok(keys.includes("userId"));
+   assert.ok(!keys.some((key) => /auth|session|account/i.test(key)));
+   assert.throws(
+     () => readDatabaseConfig({}),
+     (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("DATABASE_URL"),

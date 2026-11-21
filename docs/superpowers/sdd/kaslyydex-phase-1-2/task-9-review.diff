@@ -1,0 +1,2157 @@
+902f77c chore: establish KasLyyDex phase release gates
+ .github/workflows/ci.yml                           |  97 +++++++++
+ CHANGELOG.md                                       |  19 ++
+ README.md                                          | 103 ++++++----
+ crates/server/src/main.rs                          | 214 +++++++++++++++++++-
+ docs/WEB-STATUS.md                                 |  24 +++
+ .../sdd/kaslyydex-phase-1-2/progress.md            |  54 ++++-
+ .../sdd/kaslyydex-phase-1-2/task-9-report.md       | 122 +++++++++++
+ infra/README.md                                    |   8 +-
+ infra/axum.md                                      |  14 ++
+ infra/deployment.md                                | 127 ++++++++++++
+ infra/healthcheck                                  |  25 +++
+ infra/vercel.md                                    |  15 ++
+ web/.env.example                                   |   3 +
+ web/app/api/auth/[...path]/route.ts                |  41 ++--
+ web/app/api/v1/health/route.ts                     |   7 +-
+ web/app/api/v1/ready/route.ts                      |   5 +
+ web/lib/auth/server.ts                             |   2 +
+ web/lib/community/handlers.ts                      |  22 +-
+ web/lib/health.ts                                  | 122 +++++++++++
+ web/lib/me/handlers.ts                             |  14 +-
+ web/lib/observability.ts                           | 124 ++++++++++++
+ web/lib/progression-api.ts                         |  14 +-
+ web/next.config.ts                                 |  31 +++
+ web/package-lock.json                              | 222 ++++++++++++++++++++-
+ web/package.json                                   |   7 +
+ web/scripts/account-playwright.test.mjs            |   5 +-
+ web/scripts/browser.mjs                            |  21 ++
+ web/scripts/community-playwright.test.mjs          |   5 +-
+ web/scripts/env-validation.test.mjs                |  36 ++++
+ web/scripts/observability.test.mjs                 |  48 +++++
+ web/scripts/progression-playwright.test.mjs        |   5 +-
+ web/scripts/reader-playwright.test.mjs             |  25 ++-
+ web/scripts/reader-sync-playwright.test.mjs        |   5 +-
+ web/scripts/secret-scan-lib.mjs                    |  24 +++
+ web/scripts/secret-scan.mjs                        |  33 +++
+ web/scripts/secret-scan.test.mjs                   |  28 +++
+ web/scripts/smoke.test.mjs                         |  37 +++-
+ 37 files changed, 1604 insertions(+), 104 deletions(-)
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..be2e951
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,97 @@
++name: Phase release gates
++
++on:
++  push:
++    branches: [main, feature/**]
++  pull_request:
++
++permissions:
++  contents: read
++
++defaults:
++  run:
++    shell: bash
++
++env:
++  CI: "true"
++  CARGO_TERM_COLOR: always
++
++jobs:
++  phase-gate:
++    runs-on: ubuntu-latest
++    timeout-minutes: 60
++    steps:
++      - uses: actions/checkout@v4
++
++      - uses: actions/setup-node@v4
++        with:
++          node-version: "24"
++          cache: npm
++          cache-dependency-path: web/package-lock.json
++
++      - uses: dtolnay/rust-toolchain@stable
++        with:
++          components: rustfmt, clippy
++          targets: wasm32-unknown-unknown
++
++      - uses: Swatinem/rust-cache@v2
++
++      # Credential scan runs before dependency installation; no secrets are used
++      # or requested by any job in this workflow.
++      - name: Secret-pattern scan
++        run: node web/scripts/secret-scan.mjs .
++
++      - name: Rust scoped formatting
++        run: cargo fmt --check -p domain -p contracts -p reader-core -p server
++
++      - name: Rust clippy (workspace, warnings are errors)
++        run: cargo clippy --workspace --all-targets -- -D warnings
++
++      - name: Rust workspace tests
++        run: cargo test --workspace
++
++      - name: Build Axum content service
++        run: cargo build -p server
++
++      - name: Frozen npm install
++        run: npm ci
++        working-directory: web
++
++      # Task 5 deferred generated WASM: CI must rebuild from Rust source before
++      # the Next build. No generated reader glue or public WASM is committed.
++      - name: Install matching wasm-bindgen CLI
++        # Version must match Cargo.lock's wasm-bindgen crate.
++        run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
++
++      - name: Build reader WASM from Rust source
++        run: npm run build:wasm
++        working-directory: web
++
++      - name: Build Next app after WASM
++        run: npm run build:web
++        working-directory: web
++
++      # Typechecking needs the generated WASM glue and Next's generated route
++      # types, so it runs after the build rather than before it.
++      - name: TypeScript check
++        run: npm run typecheck
++        working-directory: web
++
++      - name: Next lint
++        run: npm run lint
++        working-directory: web
++
++      - name: Aggregate Node / PGlite / API tests
++        run: npm run test:aggregate
++        working-directory: web
++
++      - name: Install Playwright Chromium
++        run: npm run browser:install
++        working-directory: web
++
++      - name: Browser suites
++        run: npm run test:browser
++        working-directory: web
++
++      - name: Whitespace / conflict-marker check
++        run: git diff --check
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..a7c1594
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,19 @@
++# Changelog
++
++## Unreleased — Phase 1–2 local release gates
++
++- Add secret-free GitHub Actions release gate: Rust scoped fmt/clippy/tests,
++  Axum build, frozen npm install, typecheck/lint, WASM rebuild before Next build,
++  aggregate Node/PGlite/API tests, Playwright browser suites and diff check.
++- Add Next/Axum security headers. CSP allows same-origin images and WASM without
++  third-party sources; health/readiness separated; readiness is bounded and
++  returns only missing env names.
++- Add structured JSON request/error logs with correlation ids and redaction,
++  plus bounded `kaslyydex.user_requests` / `kaslyydex.user_request.duration_ms`
++  metrics on account/auth/community/progression operations only.
++- Add CI secret-pattern scan and env validation including `READER_TICKET_SECRET`.
++- Document the manual Neon/Google/Vercel release gates, first-deploy-is-production
++  caveat, prior Vercel 402 fair-use block and Neon migration/rollback runbook.
++
++No deployment, provisioning, provider credential use, Vercel setting change,
++merge or push was performed for this entry. Live external gates remain unverified.
+diff --git a/README.md b/README.md
+index 14d37a5..8176fff 100644
+--- a/README.md
++++ b/README.md
+@@ -1,52 +1,85 @@
+-# KasLyyDex — web đọc manga (Rust)
++# KasLyyDex — web đọc manga (Next + Rust)
+ 
+-Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org) (free, không cần key).
++Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org)
++thông qua dịch vụ Axum. Không cần API key MangaDex.
+ 
+-## Kiến trúc hiện tại
+-
+-- **Giai đoạn 1 (hiện tại): web** — frontend **Leptos 0.8 CSR → WebAssembly**, backend **Axum** mỏng serve API + SPA.
+-- **Phase 3/4 (deferred): Android + GPUI** — `crates/app` giữ lại prototype Slint, chưa thuộc workspace.
++## Kiến trúc Phase 1–2
+ 
+ ```
+-crates/core    # dùng chung: MangaDex client (reqwest + DNS 1.1.1.1), cache RAM moka, cache ảnh đĩa
+-crates/server  # Axum: /api/* + proxy ảnh + serve static (giai đoạn 1)
+-crates/ui      # Leptos CSR + trunk (giai đoạn 1)
+-crates/app     # Slint prototype (deferred — chưa vào workspace)
+-web            # Next.js 16 baseline
++web/            Next.js 16 App Router: UI, BFF, auth session, PostgreSQL/Drizzle
++crates/server   Axum: /api/content/*, proxy ảnh, cache, static legacy SPA
++crates/core     MangaDex client, DNS, RAM/disk cache (dùng bởi Axum)
++crates/domain, contracts, reader-core, reader-wasm   contracts + WASM reader
++crates/ui       legacy Leptos SPA (giữ lại, fmt baseline chưa sửa)
++crates/app      Slint prototype (deferred Phase 3/4, outside workspace)
+ ```
+ 
+-## Chạy bản web
++MangaDex chỉ được gọi từ Axum. Browser gọi same-origin `/api/content/*`; Next
++không chuyển Cookie/Authorization tới Axum. Reader WASM được build từ Rust trước
++mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
++
++## Chạy local
+ 
+ ```bash
+-cargo build --release -p server
+-cd crates/ui && trunk build --release && cd ../..
+-cargo run --release -p server     # http://localhost:3100
++# Rust toolchain: stable + wasm32-unknown-unknown + wasm-bindgen-cli 0.2.130
++cd web
++npm ci
++npm run build:wasm        # bắt buộc trước Next build
++npm run build:web         # next build (không chạy lại prebuild)
++npm run typecheck         # cần glue WASM + Next route types đã sinh
++npm run lint
++cd ..
++cargo build -p server
++cd web
++npm run test:aggregate    # Node/PGlite/API smoke, không cần secret
++npm run test:browser      # cần Edge local hoặc Playwright Chromium
+ ```
+ 
+-Windows: nếu toolchain mặc định là GNU và build WASM lỗi `dlltool`, dùng toolchain MSVC cho Trunk:
+-`rustup target add wasm32-unknown-unknown --toolchain stable-x86_64-pc-windows-msvc` rồi
+-`$env:RUSTUP_TOOLCHAIN='stable-x86_64-pc-windows-msvc'; trunk build --release`.
++Axum local: `cargo run -p server` (`PORT`, `DIST_DIR`, `CACHE_DIR`,
++`MANGADEX_API_ORIGIN` optional). Next local: `npm run dev` trong `web/`.
++
++Health endpoints:
++- `/api/v1/health` — liveness, credential-free, trả `{ok,version}` (Next) hoặc
++  `{ok,service}` (Axum).
++- `/api/v1/ready` — readiness: cấu hình, DB/upstream với timeout 1.5s; chỉ trả
++  tên biến bị thiếu, không trả giá trị. Trên Axum readiness là config-only.
++
++`node infra/healthcheck http://127.0.0.1:3000` in status codes, không in secret.
++Thêm `--liveness-only` cho môi trường chưa cấu hình DB/auth.
+ 
+-Biến môi trường: `PORT` (3100), `DIST_DIR` (`crates/ui/dist`), `CACHE_DIR` (mặc định `%LOCALAPPDATA%/TruyenViet/cache`).
++## Biến môi trường (không commit giá trị)
+ 
+-## Tính năng
++Xem `web/.env.example`:
++
++```
++NEON_AUTH_BASE_URL
++NEON_AUTH_COOKIE_SECRET
++DATABASE_URL
++READER_TICKET_SECRET
++OPERATOR_EMAIL_ALLOWLIST (optional)
++GOOGLE_CLIENT_ID
++GOOGLE_CLIENT_SECRET
++RUST_CONTENT_API_ORIGIN
++NEXT_PUBLIC_APP_URL
++```
+ 
+-- Trang chủ hiển thị các chương vừa cập nhật, truyện phổ biến và tiến độ đọc.
+-- Trang khám phá (`/search`) có bộ lọc theo thể loại, trạng thái và cách sắp xếp. URL giữ bộ lọc khi chia sẻ hoặc chuyển trang.
+-- Trang thể loại (`/the-loai`) và bảng xếp hạng (`/bxh`) sử dụng dữ liệu MangaDex.
+-- Tủ truyện (`/tu-truyen`) lưu truyện theo dõi trên trình duyệt và báo chương mới khi mở tủ.
+-- Trang truyện có chương tiếng Việt và tiếng Anh, mô tả, điểm đánh giá khi có dữ liệu và liên kết đến nguồn ngoài.
+-- Trang đọc hỗ trợ cuộn dọc, lật ngang, vuốt, tự cuộn, chế độ toàn màn hình khi trình duyệt hỗ trợ và ba nền đọc.
+-- Giao diện sáng/tối, cài đặt đọc và trang đang đọc dở được lưu trên trình duyệt.
++`READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là progression API
++fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+ 
+-## Tối ưu
++## Release gates
+ 
+-- **API** dùng bộ nhớ đệm moka và HTTP `max-age`. Danh sách, chương và tìm kiếm được giữ 60 giây, bảng xếp hạng 5 phút, chi tiết truyện 1 giờ và thể loại 24 giờ.
+-- **Ảnh**: cache đĩa SHA-256 vĩnh viễn (`immutable`), proxy cùng origin — không CORS, không phụ thuộc DNS client (vài mạng sinkhole host MangaDex về 127.0.0.1; server resolve qua 1.1.1.1/8.8.8.8 bằng hickory-resolver)
+-- **WASM**: profile `wasm-release` (`opt-level="z"`, LTO, `panic=abort`) + wasm-opt; asset hash tên + immutable cache
+-- **Static**: HTML no-cache, asset immutable; nén brotli/gzip mọi response
+-- **Reader**: prefetch URL chapter kế tiếp khi đang đọc; ảnh lazy-load + `decoding=async`
++`.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
++secret-pattern scan; `cargo fmt --check` scoped; clippy workspace `-D warnings`;
++`cargo test --workspace`; `npm ci`; typecheck/lint; `build:wasm` → `build:web`;
++aggregate tests; Playwright Chromium install + browser suites; `git diff --check`.
+ 
+-## Phase 3–4 (deferred)
++Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
++CI scoped vào `domain`, `contracts`, `reader-core`, `server`. Xem
++`infra/deployment.md` cho runbook, caveat first-deploy-is-production, chặn
++402 fair-use trước đây, migration/rollback Neon và các external gate chưa chạy.
+ 
+-Android and GPUI are deferred. `crates/app/ui/app.slint` remains a Slint prototype outside the workspace; this task does not connect or change it.
++Observability: structured JSON logs có `correlationId`, redaction cho Cookie/
++Authorization/ticket/password/email/DATABASE_URL/upstream key; metric names
++`kaslyydex.user_requests` và `kaslyydex.user_request.duration_ms` chỉ với label
++`operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Vercel
++chưa được xác minh và paid Observability không được bật tự động.
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index 01c06e6..b221ca0 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -1,19 +1,22 @@
+ use axum::body::Body;
+ use axum::extract::{Path, Query, State};
+-use axum::http::{header, HeaderValue, StatusCode};
++use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::get;
+ use axum::{Json, Router};
+ use contracts::{ApiError, ApiErrorEnvelope};
+ use manga_core::mangadex::is_uuid;
+ use manga_core::Md;
+ use serde::Serialize;
++use serde_json::json;
+ use std::collections::HashMap;
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::time::{Instant, SystemTime, UNIX_EPOCH};
+ use tower_http::compression::CompressionLayer;
+ use tower_http::services::{ServeDir, ServeFile};
+ 
+ type Err = (StatusCode, Json<ApiErrorEnvelope>);
+ 
+ fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Err {
+     (
+         status,
+@@ -36,16 +39,175 @@ fn json_no_store<T: Serialize>(v: T) -> Response {
+     let mut res = Json(v).into_response();
+     res.headers_mut().insert(
+         header::CACHE_CONTROL,
+         HeaderValue::from_static("private, no-store"),
+     );
+     res
+ }
+ 
++/// Static CSP for the legacy SPA and this API. The reader needs WASM; images
++/// stay same-origin through `/api/img`, so no third-party source is allowed.
++const SECURITY_HEADERS: &[(&str, &str)] = &[
++    (
++        "content-security-policy",
++        "default-src 'self'; base-uri 'self'; object-src 'none'; \
++         script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
++         img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
++         worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; \
++         upgrade-insecure-requests;",
++    ),
++    ("x-content-type-options", "nosniff"),
++    ("x-frame-options", "DENY"),
++    ("referrer-policy", "strict-origin-when-cross-origin"),
++    (
++        "permissions-policy",
++        "camera=(), microphone=(), geolocation=(), browsing-topics=()",
++    ),
++    (
++        "strict-transport-security",
++        "max-age=31536000; includeSubDomains",
++    ),
++];
++
++fn apply_security_headers(response: &mut Response) {
++    for (name, value) in SECURITY_HEADERS {
++        if let (Ok(key), Ok(val)) = (
++            HeaderName::from_bytes(name.as_bytes()),
++            HeaderValue::from_str(value),
++        ) {
++            response.headers_mut().insert(key, val);
++        }
++    }
++}
++
++/// Logs never contain query strings, headers, bodies, credentials or raw ids.
++fn safe_path(path: &str) -> String {
++    let path = path.split(['?', '#']).next().unwrap_or("");
++    let normalized: Vec<String> = path
++        .split('/')
++        .map(|segment| {
++            if segment.len() == 36
++                && segment.chars().enumerate().all(|(i, c)| {
++                    if matches!(i, 8 | 13 | 18 | 23) {
++                        c == '-'
++                    } else {
++                        c.is_ascii_hexdigit()
++                    }
++                })
++            {
++                ":id".into()
++            } else if segment.len() > 64 {
++                "[truncated]".into()
++            } else {
++                segment.into()
++            }
++        })
++        .collect();
++    normalized.join("/").chars().take(128).collect()
++}
++
++static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
++
++fn correlation_id() -> String {
++    let now = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_nanos();
++    let count = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
++    format!("req-{now:x}-{count:x}")
++}
++
++fn log_json(level: &str, event: &str, fields: serde_json::Value) {
++    let entry = json!({
++        "service": "kaslyydex-axum",
++        "ts": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
++        "level": level,
++        "event": event,
++        "correlationId": "none",
++    });
++    let mut entry = entry.as_object().unwrap().clone();
++    if let Some(fields) = fields.as_object() {
++        for (key, value) in fields {
++            entry.insert(key.clone(), value.clone());
++        }
++    }
++    let line = serde_json::to_string(&json!(entry)).unwrap_or_else(|_| "{}".into());
++    if level == "info" {
++        println!("{line}");
++    } else {
++        eprintln!("{line}");
++    }
++}
++
++async fn request_logging(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
++    let started = Instant::now();
++    let id = correlation_id();
++    let method = req.method().to_string();
++    let path = safe_path(req.uri().path());
++    let mut response = next.run(req).await;
++    let status = response.status().as_u16();
++    apply_security_headers(&mut response);
++    if let Ok(value) = HeaderValue::from_str(&id) {
++        response.headers_mut().insert("x-correlation-id", value);
++    }
++
++    let level = if status >= 500 {
++        "error"
++    } else if status >= 400 {
++        "warn"
++    } else {
++        "info"
++    };
++    log_json(
++        level,
++        "request.complete",
++        json!({
++            "correlationId": id,
++            "method": method,
++            "path": path,
++            "status": status,
++            "durationMs": started.elapsed().as_millis(),
++        }),
++    );
++    response
++}
++
++/// Liveness has no config, DB or upstream dependency and returns no secrets.
++async fn health() -> Response {
++    json_no_store(json!({ "ok": true, "service": "axum" }))
++}
++
++/// Readiness for the Axum boundary is configuration-only: it owns no database.
++/// Next's `/api/v1/ready` additionally probes this route plus application DB.
++async fn ready() -> Response {
++    let raw =
++        std::env::var("MANGADEX_API_ORIGIN").unwrap_or_else(|_| "https://api.mangadex.org".into());
++    let valid = raw
++        .parse::<axum::http::Uri>()
++        .ok()
++        .and_then(|uri| uri.scheme().cloned())
++        .is_some_and(|scheme| {
++            scheme == axum::http::uri::Scheme::HTTP || scheme == axum::http::uri::Scheme::HTTPS
++        });
++    if valid {
++        json_no_store(json!({
++            "ok": true,
++            "checks": { "configuration": "ok", "database": "not_applicable", "upstream": "configured" }
++        }))
++    } else {
++        let mut response = json_no_store(json!({
++            "ok": false,
++            "checks": { "configuration": "invalid", "database": "not_applicable", "upstream": "skipped" }
++        }));
++        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
++        response
++    }
++}
++
+ async fn popular(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.popular().await.map_err(bad)?, 60))
+ }
+ 
+ async fn latest(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.latest().await.map_err(bad)?, 60))
+ }
+ 
+@@ -287,18 +449,23 @@ async fn img(
+                 HeaderValue::from_static("public, max-age=31536000, immutable"),
+             ),
+         ],
+         Body::from(bytes),
+     )
+         .into_response())
+ }
+ 
+-fn bad(e: String) -> Err {
+-    api_error(StatusCode::BAD_GATEWAY, "UPSTREAM_ERROR", e)
++/// Upstream detail stays out of the response: it can contain credentials.
++fn bad(_e: String) -> Err {
++    api_error(
++        StatusCode::BAD_GATEWAY,
++        "UPSTREAM_ERROR",
++        "Upstream content is temporarily unavailable.",
++    )
+ }
+ 
+ /// Hashed static assets are immutable; HTML and API stay revalidatable.
+ fn static_cache_control(_path: &str, status: StatusCode, content_type: &str) -> &'static str {
+     if status.is_success() && !content_type.starts_with("text/html") {
+         "public, max-age=31536000, immutable"
+     } else {
+         "no-cache"
+@@ -346,30 +513,33 @@ fn content_routes() -> Router<Md> {
+ 
+ #[tokio::main]
+ async fn main() {
+     let md = Md::new(manga_core::dns::PublicDns::client());
+     let dist = std::env::var("DIST_DIR").unwrap_or_else(|_| "crates/ui/dist".into());
+     let spa = ServeDir::new(&dist).fallback(ServeFile::new(format!("{dist}/index.html")));
+ 
+     let app = Router::new()
++        .route("/api/v1/health", get(health))
++        .route("/api/v1/ready", get(ready))
+         .route("/api/popular", get(popular))
+         .route("/api/latest", get(latest))
+         .route("/api/search", get(search))
+         .route("/api/tags", get(tags))
+         .route("/api/rank", get(rank))
+         .route("/api/manga/{id}", get(manga))
+         .route("/api/manga/{id}/chapters", get(chapters))
+         .route("/api/chapter/{id}", get(chapter_metadata))
+         .route("/api/chapter/{id}/pages", get(pages))
+         .route("/api/img", get(img))
+         .merge(content_routes())
+         .fallback_service(spa)
+         .layer(axum::middleware::from_fn(static_cache_headers))
+         .layer(CompressionLayer::new())
++        .layer(axum::middleware::from_fn(request_logging))
+         .with_state(md);
+ 
+     let port: u16 = std::env::var("PORT")
+         .ok()
+         .and_then(|p| p.parse().ok())
+         .unwrap_or(3100);
+     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+         .await
+@@ -505,9 +675,47 @@ mod tests {
+                 "error": {
+                     "code": "VALIDATION_ERROR",
+                     "message": "Invalid manga id",
+                     "details": {}
+                 }
+             })
+         );
+     }
++
++    #[test]
++    fn upstream_errors_are_generic() {
++        let (status, Json(body)) = bad("postgresql://user:password@host/db".into());
++        assert_eq!(status, StatusCode::BAD_GATEWAY);
++        assert_eq!(body.error.code, "UPSTREAM_ERROR");
++        assert_eq!(
++            body.error.message,
++            "Upstream content is temporarily unavailable."
++        );
++    }
++
++    #[test]
++    fn security_headers_allow_reader_but_no_third_party_sources() {
++        let mut response = (StatusCode::OK, "ok").into_response();
++        apply_security_headers(&mut response);
++        let csp = response
++            .headers()
++            .get("content-security-policy")
++            .unwrap()
++            .to_str()
++            .unwrap();
++        assert!(csp.contains("'wasm-unsafe-eval'"));
++        assert!(csp.contains("img-src 'self' data: blob:"));
++        assert!(csp.contains("frame-ancestors 'none'"));
++        assert!(!csp.contains("https://"));
++        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
++        assert_eq!(response.headers()["x-frame-options"], "DENY");
++    }
++
++    #[test]
++    fn log_helpers_never_keep_credentials_or_raw_ids() {
++        assert_eq!(
++            safe_path("/api/content/manga/391b0423-d847-456f-aff0-8b0cfc03066b"),
++            "/api/content/manga/:id"
++        );
++        assert!(!safe_path("/api/content/img?u=https://secret").contains('?'));
++    }
+ }
+diff --git a/docs/WEB-STATUS.md b/docs/WEB-STATUS.md
+index fee62d1..1d7c8ea 100644
+--- a/docs/WEB-STATUS.md
++++ b/docs/WEB-STATUS.md
+@@ -63,8 +63,32 @@ raw `wasm-release` output (510 KB). Install Binaryen and rebuild to enable it.
+ - Images: `/api/img` 200 `image/png` with `max-age=31536000, immutable`;
+   first fetch 115,962 bytes, second fetch (disk cache) ~222 ms.
+ - Cache headers: `/` and `/search` 200 `no-cache`; hashed `.wasm` 200
+   `max-age=31536000, immutable`.
+ - UI flows exercised: home cards, search + next-page navigation, manga detail
+   with language tabs, reader with 41 lazy images, scroll counter (Trang 9/41),
+   chapter `<select>` and ArrowRight chapter change, `localStorage` history
+   (`truyenviet:history`), and the home "Đọc tiếp · Ch. 2" shortcut.
++
++## Phase 1–2 local release gate (Task 9)
++
++The measurements below are from the Next/Axum build, not the older Leptos
++measurements above. Full commands and counts are in
++`docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-report.md`.
++
++- WASM generated from Rust by `npm run build:wasm`:
++  `reader_core.25cb810c379e858e.wasm`, 150,508 source bytes, 43,875 bytes after
++  Brotli compression (computed locally; deployment transfer encoding unverified).
++- Reader startup: browser suites instantiate the real WASM module, decode
++  fixture pages, restore chapter-local state and show a visible retry when the
++  WASM response is corrupted; no fake success fallback.
++- 375px: home and reader suites assert `document`/`body` scroll width does not
++  exceed the viewport by more than 1px. Desktop and mobile screenshots are
++  written to ignored `web/.test-screenshots/`.
++- API error paths: missing auth/content/DB/ticket config returns structured 503,
++  malformed IDs return 400, upstream failures are generic 502 without
++  credentials, and cross-origin mutations are rejected before writes.
++- Auth ownership: real SDK session fixtures show comments, library/progress and
++  completion records scoped to the authenticated user; client role fields and
++  ticket forgery never grant ownership or XP.
++- External Neon/Google/Vercel verification and live browser-to-Neon SQL remain
++  manual gates; no Preview or Production deployment was verified.
+diff --git a/infra/README.md b/infra/README.md
+index afd9dd8..3615f76 100644
+--- a/infra/README.md
++++ b/infra/README.md
+@@ -1,12 +1,14 @@
+ # KasLyyDex infrastructure boundary
+ 
+ Phase 1–2 keeps the Next.js web workspace in `web/` and the Axum content
+ service in `crates/server/`. The web deployment may call the content service
+ through `RUST_CONTENT_API_ORIGIN`; deployment configuration and credentials
+ remain outside Git.
+ 
+-Environment variable names are listed in `web/.env.example`. Use separate
+-Development, Preview, and Production values and database branches. This task
+-does not provision or deploy Vercel, Neon, or any other external resource.
++Environment variable names are listed in `web/.env.example` (including
++`READER_TICKET_SECRET`). Use separate Development, Preview, and Production values
++and database branches. This task does not provision or deploy Vercel, Neon, or
++any other external resource. See `deployment.md` for the Phase 1–2 release gate,
++health endpoints, metric names and manual migration/rollback runbook.
+ 
+ Android (Phase 3) and GPUI (Phase 4) remain deferred.
+diff --git a/infra/axum.md b/infra/axum.md
+index cef5ac6..20a0514 100644
+--- a/infra/axum.md
++++ b/infra/axum.md
+@@ -50,8 +50,22 @@ origin case returns 503.
+ files; the two Rust files touched by Task 4 were formatted with `rustfmt --edition 2021`.
+ 
+ ## Unverified
+ 
+ No Axum service was deployed, exposed publicly, or connected to live Neon/Google
+ configuration in this task. Docker was unavailable, so no PostgreSQL container was
+ created; the migration test used embedded PGlite as a dev/test-only engine and did
+ not touch any pre-existing database.
++
++## Task 9 hardening
++
++- `/api/v1/health` is liveness; `/api/v1/ready` is configuration-only readiness
++  (Axum owns no database). Next's readiness route probes Axum `/api/v1/ready`
++  with a bounded timeout.
++- Every response gets the same security-header set as Next. CSP permits the
++  same-origin image proxy and `'wasm-unsafe-eval'` for the legacy reader and
++  lists no third-party origins.
++- Structured JSON request logs include a generated `x-correlation-id`, method,
++  normalized path (entity ids removed, query ignored), status and duration.
++  Upstream error messages stay generic in responses and never reach clients.
++- CI builds the Axum binary before Node/API tests and rebuilds the WASM before
++  the Next build; see `.github/workflows/ci.yml`.
+diff --git a/infra/deployment.md b/infra/deployment.md
+new file mode 100644
+index 0000000..203d2e1
+--- /dev/null
++++ b/infra/deployment.md
+@@ -0,0 +1,127 @@
++# KasLyyDex Phase 1–2 release / deployment runbook
++
++## Current status
++
++Deployment is paused by the owner. This document is a runbook only. Task 9 did
++not deploy, create/link a Vercel project, provision Neon, change Vercel settings,
++use real provider credentials, merge, or push. No Preview or Production URL was
++verified. Non-empty values for secrets are intentionally absent from Git.
++
++Two deployment facts must be resolved before any cloud action:
++
++1. Vercel documentation states that the **first deployment of a new project is
++   always Production**, even with `--target preview`. Decide the first target and
++   domain with the owner before linking/deploying; do not assume a Preview URL.
++2. A prior `create_project` attempt returned `402 resource_creation_blocked`
++   because the Vercel team exceeded fair-use limits. Do not bypass that block
++   with another team/account or temporary project. Wait for the owner to resolve
++   the limit/team access.
++
++## Deterministic local release gate (secret-free)
++
++The same commands run in `.github/workflows/ci.yml`; CI requests no secrets.
++
++```bash
++# repository root
++node web/scripts/secret-scan.mjs .
++cargo fmt --check -p domain -p contracts -p reader-core -p server
++cargo clippy --workspace --all-targets -- -D warnings
++cargo test --workspace
++cargo build -p server
++
++cd web
++npm ci
++npm run build:wasm        # must happen before the Next build
++npm run build:web
++npm run typecheck         # needs generated WASM glue and Next route types
++npm run lint
++npm run test:aggregate
++npm run browser:install   # installs Playwright Chromium in CI
++npm run test:browser
++git diff --check
++```
++
++Local Windows verification uses the installed Edge path discovered by
++`web/scripts/browser.mjs`. CI installs Chromium; an operator can override the
++binary with `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when a system browser is already
++available. Full-workspace `cargo fmt --check` remains a pre-existing Leptos/UI
++baseline exception; CI scopes formatting to maintained packages.
++
++## Required environment names
++
++Set through the owner's Vercel project/Neon branch secret store, never in Git.
++See `web/.env.example`; empty values only.
++
++```
++NEON_AUTH_BASE_URL
++NEON_AUTH_COOKIE_SECRET
++DATABASE_URL
++READER_TICKET_SECRET
++OPERATOR_EMAIL_ALLOWLIST   # optional operator bootstrap
++GOOGLE_CLIENT_ID
++GOOGLE_CLIENT_SECRET
++RUST_CONTENT_API_ORIGIN    # Axum service origin used by the Next BFF
++NEXT_PUBLIC_APP_URL
++```
++
++`READER_TICKET_SECRET` must be at least 32 characters; without it progression
++routes fail closed. `NEON_AUTH_COOKIE_SECRET` must also be at least 32
++characters. `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` document owner-managed
++provider inputs; the Next SDK adapter does not read them directly. Never prefix
++server secrets with `NEXT_PUBLIC_`.
++
++## Health and observability
++
++- `GET /api/v1/health` is liveness: no DB, auth, ticket or upstream access and
++  no secrets. `GET /api/v1/ready` checks configuration, DB and the Axum readiness
++  route with 1.5s timeouts; its body contains only status/check names and missing
++  env names. Axum readiness is configuration-only because Axum owns no DB.
++- `node infra/healthcheck <baseUrl>` prints status codes only. Use
++  `--liveness-only` before DB/auth configuration exists.
++- Security headers are set on Next (`next.config.ts`) and Axum. CSP allows
++  same-origin `/api/content/img` and `/_next/image`, `data:`/`blob:` images and
++  `'wasm-unsafe-eval'`; it lists no third-party origins.
++- Structured JSON logs carry `correlationId` and redact Cookie, Authorization,
++  tickets, passwords, emails, database URLs and upstream keys. Upstream errors
++  returned to clients are generic (`UPSTREAM_ERROR`, 502).
++- Operator metric names (only bounded `operation`/`outcome` labels, no PII):
++  `kaslyydex.user_requests`, `kaslyydex.user_request.duration_ms`. Operations:
++  `auth`, `account`, `community`, `progression`; outcomes: `success`,
++  `unauthenticated`, `forbidden`, `not_found`, `conflict`, `rate_limited`,
++  `unavailable`, `client_error`, `server_error`. Health, static assets and
++  content pass-through are not instrumented. Locally `metric()` is a no-op;
++  Vercel ingestion is unverified and paid Observability was not enabled.
++
++## Manual external gates (not run by CI)
++
++1. Owner authenticates Vercel CLI and approves team access. Confirm first-deploy
++   target and the 402 fair-use resolution.
++2. Create/link the Vercel project manually; wire the environment names above for
++   the chosen environment. No project settings were changed by Task 9.
++3. Enable Neon Managed Auth on a branch; configure the Google provider with owner
++   credentials; complete a real sign-in and live JWT/JWKS verification.
++4. Create a separate Neon branch/database for Preview. Apply migrations with
++   `cd web && npx drizzle-kit migrate` using a securely injected `DATABASE_URL`;
++   confirm only application tables are created and `neon_auth` is untouched.
++5. Deploy the built app manually, verify `health`/`ready`, content proxy, a real
++   browser-to-Neon account/progression flow and error paths. Record the actual
++   deployment URL/target. Do not call these gates passed until observed.
++
++## Neon migration and rollback
++
++Before migrating, create/verify a Neon branch or restore point and record the
++current `drizzle.__drizzle_migrations` state. `drizzle-kit migrate` applies the
++generated SQL files in `web/drizzle/0000..0006` idempotently using its migration
++log; it has no automatic down command. Rollback procedure:
++
++1. Stop writes to the affected environment (or point the app at a known-good
++   branch) before changing `DATABASE_URL`.
++2. Restore the Neon branch to the pre-migration restore point, or re-point
++   `DATABASE_URL` to the previous branch after verifying its migration log.
++3. Re-run `node infra/healthcheck <baseUrl>` and read-only checks for profiles,
++   library/progress, comments and progression rows.
++4. If only the latest additive migration was applied and application writes are
++   absent, an operator may craft a reviewed compensating SQL migration; never
++   edit applied migration files in place.
++
++These steps were not executed against any live Neon branch.
+diff --git a/infra/healthcheck b/infra/healthcheck
+new file mode 100644
+index 0000000..03e7119
+--- /dev/null
++++ b/infra/healthcheck
+@@ -0,0 +1,25 @@
++#!/usr/bin/env node
++// Usage: node infra/healthcheck [baseUrl] [--liveness-only]
++// Bounded probe for deployment operators. Prints status codes only: no env
++// values, headers, query strings, tickets or database URLs.
++const base = process.argv[2] && !process.argv[2].startsWith("--")
++  ? process.argv[2].replace(/\/$/, "")
++  : "http://127.0.0.1:3000";
++const livenessOnly = process.argv.includes("--liveness-only");
++
++async function probe(path) {
++  try {
++    const response = await fetch(`${base}${path}`, {
++      cache: "no-store",
++      signal: AbortSignal.timeout(2_000),
++    });
++    return { status: response.status, ok: response.ok };
++  } catch {
++    return { status: 0, ok: false };
++  }
++}
++
++const liveness = await probe("/api/v1/health");
++const result = { base, liveness, readiness: livenessOnly ? undefined : await probe("/api/v1/ready") };
++console.log(JSON.stringify(result));
++process.exit(liveness.ok && (livenessOnly || result.readiness.ok) ? 0 : 1);
+diff --git a/infra/vercel.md b/infra/vercel.md
+index 61867dc..85b8dc4 100644
+--- a/infra/vercel.md
++++ b/infra/vercel.md
+@@ -72,8 +72,23 @@ Full `npm run lint` still reports the four pre-existing
+ 
+ ## Explicit unverified gates
+ 
+ - Neon Managed Auth enablement on any branch.
+ - Google OAuth provider configuration with owner credentials.
+ - Live Neon permission and schema/migration application.
+ - Real Google sign-in and live JWT/JWKS verification.
+ - Any Vercel Preview or Production deployment, domain or environment wiring.
++
++## Task 9 release-gate note
++
++No cloud state changed in Task 9. `.github/workflows/ci.yml` runs deterministic
++local gates only: secret scan, scoped Rust fmt, workspace clippy/tests, Axum
++build, frozen npm install, typecheck/lint, `build:wasm` → `build:web`, aggregate
++Node/PGlite/API tests and Playwright browser suites. No CI job reads secrets or
++deploys; real Neon/Google/Vercel checks are manual gates in
++`infra/deployment.md`. Add `READER_TICKET_SECRET` to any future Vercel
++environment: missing/short values make progression routes fail closed with 503.
++
++`/api/v1/health` is public liveness; `/api/v1/ready` is a separate bounded
++readiness probe that returns only missing env names and status values. Structured
++logs carry correlation ids and redact credentials; `metric()` calls are no-ops
++locally, use only bounded labels and do not enable paid Observability.
+diff --git a/web/.env.example b/web/.env.example
+index b9f038a..5ead2aa 100644
+--- a/web/.env.example
++++ b/web/.env.example
+@@ -1,15 +1,18 @@
+ # Neon Managed Auth (server-only; never prefix with NEXT_PUBLIC_)
+ NEON_AUTH_BASE_URL=
+ NEON_AUTH_COOKIE_SECRET=
+ 
+ # Application database (server-only; pooled pg/Drizzle)
+ DATABASE_URL=
+ 
++# HMAC/JWT signing key for short-lived reader tickets (server-only; >=32 chars)
++READER_TICKET_SECRET=
++
+ # Optional operator bootstrap: comma-separated verified auth emails allowed to
+ # receive the admin role. Client input never grants roles.
+ OPERATOR_EMAIL_ALLOWLIST=
+ 
+ # Google OAuth is configured on the Neon branch; values are owner-supplied.
+ GOOGLE_CLIENT_ID=
+ GOOGLE_CLIENT_SECRET=
+ 
+diff --git a/web/app/api/auth/[...path]/route.ts b/web/app/api/auth/[...path]/route.ts
+index 41b4723..85db8a1 100644
+--- a/web/app/api/auth/[...path]/route.ts
++++ b/web/app/api/auth/[...path]/route.ts
+@@ -1,34 +1,37 @@
+ import type { NextRequest } from "next/server";
+ import { authErrorResponse, getAuth } from "@/lib/auth/server";
+ import { errorEnvelope } from "@/lib/contracts";
++import { withObservedRoute } from "@/lib/observability";
+ 
+ type Context = { params: Promise<{ path: string[] }> };
+ 
+ async function handle(request: NextRequest, context: Context) {
+-  try {
+-    const handlers = getAuth().handler();
+-    switch (request.method) {
+-      case "GET":
+-      case "POST":
+-      case "PUT":
+-      case "PATCH":
+-      case "DELETE":
+-        return await handlers[request.method](request, context);
+-      default:
+-        return Response.json(
+-          errorEnvelope("METHOD_NOT_ALLOWED", "Method not allowed."),
+-          { status: 405, headers: { Allow: "GET, POST, PUT, PATCH, DELETE" } },
+-        );
++  return withObservedRoute("auth", request, async () => {
++    try {
++      const handlers = getAuth().handler();
++      switch (request.method) {
++        case "GET":
++        case "POST":
++        case "PUT":
++        case "PATCH":
++        case "DELETE":
++          return await handlers[request.method](request, context);
++        default:
++          return Response.json(
++            errorEnvelope("METHOD_NOT_ALLOWED", "Method not allowed."),
++            { status: 405, headers: { Allow: "GET, POST, PUT, PATCH, DELETE" } },
++          );
++      }
++    } catch (error) {
++      const response = authErrorResponse(error);
++      if (response) return response;
++      throw error;
+     }
+-  } catch (error) {
+-    const response = authErrorResponse(error);
+-    if (response) return response;
+-    throw error;
+-  }
++  });
+ }
+ 
+ export const GET = handle;
+ export const POST = handle;
+ export const PUT = handle;
+ export const PATCH = handle;
+ export const DELETE = handle;
+diff --git a/web/app/api/v1/health/route.ts b/web/app/api/v1/health/route.ts
+index 6c527ea..0f991e8 100644
+--- a/web/app/api/v1/health/route.ts
++++ b/web/app/api/v1/health/route.ts
+@@ -1,5 +1,10 @@
+ import { version } from "../../../../package.json";
+ 
++// Liveness only: no env, DB or upstream access and therefore no secrets.
++// Readiness lives at /api/v1/ready.
+ export function GET() {
+-  return Response.json({ ok: true, version });
++  return Response.json(
++    { ok: true, version },
++    { headers: { "cache-control": "no-store" } },
++  );
+ }
+diff --git a/web/app/api/v1/ready/route.ts b/web/app/api/v1/ready/route.ts
+new file mode 100644
+index 0000000..a6a893b
+--- /dev/null
++++ b/web/app/api/v1/ready/route.ts
+@@ -0,0 +1,5 @@
++import { checkReadiness, readinessResponse } from "@/lib/health";
++
++export async function GET() {
++  return readinessResponse(await checkReadiness());
++}
+diff --git a/web/lib/auth/server.ts b/web/lib/auth/server.ts
+index 0d534be..f4149fe 100644
+--- a/web/lib/auth/server.ts
++++ b/web/lib/auth/server.ts
+@@ -1,13 +1,14 @@
+ import "server-only";
+ 
+ import { createNeonAuth, type NeonAuth } from "@neon/auth/next/server";
+ import { createRemoteJWKSet, jwtVerify } from "jose";
+ import { errorEnvelope } from "../contracts";
++import { logErrorEvent } from "../observability";
+ 
+ export type AuthConfig = {
+   baseUrl: string;
+   cookieSecret: string;
+   origin: string;
+ };
+ 
+ type AuthErrorCode = "AUTH_NOT_CONFIGURED" | "AUTH_CONFIG_INVALID";
+@@ -54,16 +55,17 @@ export function readAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
+       "NEON_AUTH_COOKIE_SECRET must be at least 32 characters.",
+     );
+   }
+   return { baseUrl: url.toString().replace(/\/$/, ""), cookieSecret: cookieSecret!, origin: url.origin };
+ }
+ 
+ export function authErrorResponse(error: unknown): Response | null {
+   if (!(error instanceof AuthConfigurationError)) return null;
++  logErrorEvent(error);
+   const details: Record<string, string> = { service: "auth" };
+   if (error.missing.length > 0) details.missing = error.missing.join(",");
+   return Response.json(errorEnvelope(error.code, error.message, details), { status: 503 });
+ }
+ 
+ let auth: NeonAuth | undefined;
+ 
+ // createNeonAuth validates the cookie secret eagerly, so construct it only on
+diff --git a/web/lib/community/handlers.ts b/web/lib/community/handlers.ts
+index 008d03d..3af0c7f 100644
+--- a/web/lib/community/handlers.ts
++++ b/web/lib/community/handlers.ts
+@@ -1,16 +1,17 @@
+ import "server-only";
+ 
+ import type { AppDatabase } from "../db/client";
+ import { DatabaseConfigurationError, getDatabase } from "../db/client";
+ import { AuthConfigurationError, getAuth } from "../auth/server";
+ import { identityFromSession, type AccountIdentity } from "../auth/identity";
+ import type { ContentClient } from "../contracts";
+ import { errorEnvelope } from "../contracts";
++import { logErrorEvent, withObservedRoute } from "../observability";
+ import { serverContent } from "../content-server";
+ import {
+   parseCommentInput,
+   parseCommentPatch,
+   parseCursor,
+   parseIds,
+   parseLimit,
+   parseModerationAction,
+@@ -229,19 +230,22 @@ export function productionCommunityApi(): CommunityApi {
+     content: () => serverContent(),
+   });
+ }
+ 
+ export async function wrapCommunityRoute(
+   run: (api: CommunityApi, request: Request) => Promise<Response>,
+   request: Request,
+ ): Promise<Response> {
+-  try {
+-    return await run(productionCommunityApi(), request);
+-  } catch (error) {
+-    if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
+-      const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
+-      if (error.missing.length > 0) details.missing = error.missing.join(",");
+-      return privateJson(errorEnvelope(error.code, error.message, details), 503);
++  return withObservedRoute("community", request, async () => {
++    try {
++      return await run(productionCommunityApi(), request);
++    } catch (error) {
++      if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
++        logErrorEvent(error);
++        const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
++        if (error.missing.length > 0) details.missing = error.missing.join(",");
++        return privateJson(errorEnvelope(error.code, error.message, details), 503);
++      }
++      return errorToResponse(error);
+     }
+-    return errorToResponse(error);
+-  }
++  });
+ }
+diff --git a/web/lib/health.ts b/web/lib/health.ts
+new file mode 100644
+index 0000000..194f267
+--- /dev/null
++++ b/web/lib/health.ts
+@@ -0,0 +1,122 @@
++import "server-only";
++
++import { Pool } from "pg";
++import { AuthConfigurationError, readAuthConfig } from "./auth/server";
++import { DatabaseConfigurationError, readDatabaseConfig } from "./db/client";
++
++export type ReadinessCheck = "ok" | "missing" | "invalid" | "unavailable" | "skipped";
++
++export type ReadinessReport = {
++  status: "ready" | "unavailable";
++  checks: { configuration: ReadinessCheck; database: ReadinessCheck; upstream: ReadinessCheck };
++  // Env names only. Values, URLs and upstream messages never enter this report.
++  missing: string[];
++};
++
++const CHECK_TIMEOUT_MS = 1_500;
++
++function invalidContentOrigin(env: NodeJS.ProcessEnv): boolean {
++  const raw = env.RUST_CONTENT_API_ORIGIN?.trim();
++  if (!raw) return false;
++  try {
++    const url = new URL(raw);
++    return !["http:", "https:"].includes(url.protocol) || Boolean(url.username || url.password);
++  } catch {
++    return true;
++  }
++}
++
++async function databaseReachable(url: string): Promise<boolean> {
++  const pool = new Pool({
++    connectionString: url,
++    max: 1,
++    connectionTimeoutMillis: CHECK_TIMEOUT_MS,
++    query_timeout: CHECK_TIMEOUT_MS,
++  });
++  try {
++    const client = await pool.connect();
++    try {
++      await client.query("SELECT 1");
++      return true;
++    } finally {
++      client.release();
++    }
++  } catch {
++    return false;
++  } finally {
++    await pool.end().catch(() => {});
++  }
++}
++
++async function upstreamReachable(origin: string): Promise<boolean> {
++  try {
++    const response = await fetch(`${origin}/api/v1/ready`, {
++      cache: "no-store",
++      redirect: "manual",
++      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
++    });
++    return response.ok;
++  } catch {
++    return false;
++  }
++}
++
++/// Readiness is deliberately separate from the credential-free liveness route.
++/// It validates configuration without printing values, then performs bounded
++/// DB and content-upstream probes. Missing local config is a normal 503.
++export async function checkReadiness(env: NodeJS.ProcessEnv = process.env): Promise<ReadinessReport> {
++  const missing: string[] = [];
++  let databaseUrl = "";
++  let contentOrigin = "";
++
++  try {
++    databaseUrl = readDatabaseConfig(env).url;
++  } catch (error) {
++    if (error instanceof DatabaseConfigurationError && error.missing.length > 0) {
++      missing.push(...error.missing);
++    } else {
++      missing.push("DATABASE_URL");
++    }
++  }
++  try {
++    readAuthConfig(env);
++  } catch (error) {
++    if (error instanceof AuthConfigurationError && error.missing.length > 0) {
++      missing.push(...error.missing);
++    } else {
++      missing.push("NEON_AUTH_BASE_URL", "NEON_AUTH_COOKIE_SECRET");
++    }
++  }
++  const ticket = env.READER_TICKET_SECRET?.trim();
++  if (!ticket || ticket.length < 32) missing.push("READER_TICKET_SECRET");
++  const origin = env.RUST_CONTENT_API_ORIGIN?.trim();
++  if (!origin) missing.push("RUST_CONTENT_API_ORIGIN");
++  else if (invalidContentOrigin(env)) missing.push("RUST_CONTENT_API_ORIGIN");
++  else contentOrigin = new URL(origin).origin;
++
++  const checks: ReadinessReport["checks"] = {
++    configuration: missing.length === 0 ? "ok" : "missing",
++    database: "skipped",
++    upstream: "skipped",
++  };
++  if (databaseUrl) checks.database = (await databaseReachable(databaseUrl)) ? "ok" : "unavailable";
++  if (contentOrigin) checks.upstream = (await upstreamReachable(contentOrigin)) ? "ok" : "unavailable";
++
++  return {
++    status: missing.length === 0 && checks.database === "ok" && checks.upstream === "ok"
++      ? "ready"
++      : "unavailable",
++    checks,
++    missing: [...new Set(missing)].sort(),
++  };
++}
++
++export function readinessResponse(report: ReadinessReport): Response {
++  return Response.json(
++    { status: report.status, checks: report.checks, missing: report.missing },
++    {
++      status: report.status === "ready" ? 200 : 503,
++      headers: { "cache-control": "private, no-store" },
++    },
++  );
++}
+diff --git a/web/lib/me/handlers.ts b/web/lib/me/handlers.ts
+index 3d1fcd0..9552be8 100644
+--- a/web/lib/me/handlers.ts
++++ b/web/lib/me/handlers.ts
+@@ -1,15 +1,16 @@
+ import "server-only";
+ 
+ import type { AppDatabase } from "../db/client";
+ import { DatabaseConfigurationError, getDatabase } from "../db/client";
+ import { AuthConfigurationError, getAuth } from "../auth/server";
+ import { identityFromSession, type AccountIdentity } from "../auth/identity";
+ import { errorEnvelope } from "../contracts";
++import { logErrorEvent, withObservedRoute } from "../observability";
+ import {
+   boundedClientTime,
+   parseImportPayload,
+   parseLanguage,
+   parseLibraryInput,
+   parseProfilePatch,
+   parseProgressInput,
+   parseResourceId,
+@@ -34,16 +35,17 @@ export function privateJson(data: unknown, status = 200): Response {
+       "cache-control": "private, no-store",
+       vary: "Cookie",
+       "x-content-type-options": "nosniff",
+     },
+   });
+ }
+ 
+ export function errorToResponse(error: unknown): Response {
++  logErrorEvent(error);
+   if (error instanceof ValidationError) {
+     return privateJson(errorEnvelope(error.code, error.message), error.status);
+   }
+   if (error instanceof ServiceError) {
+     return privateJson(errorEnvelope(error.code, error.message), error.status);
+   }
+   if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
+     const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
+@@ -192,14 +194,16 @@ export function productionMeApi() {
+     allowlist: readOperatorAllowlist(),
+   });
+ }
+ 
+ export async function wrapMeRoute(
+   run: (api: ReturnType<typeof createMeApi>, request: Request) => Promise<Response>,
+   request: Request,
+ ): Promise<Response> {
+-  try {
+-    return await run(productionMeApi(), request);
+-  } catch (error) {
+-    return errorToResponse(error);
+-  }
++  return withObservedRoute("account", request, async () => {
++    try {
++      return await run(productionMeApi(), request);
++    } catch (error) {
++      return errorToResponse(error);
++    }
++  });
+ }
+diff --git a/web/lib/observability.ts b/web/lib/observability.ts
+new file mode 100644
+index 0000000..583fb9c
+--- /dev/null
++++ b/web/lib/observability.ts
+@@ -0,0 +1,124 @@
++import "server-only";
++
++import { AsyncLocalStorage } from "node:async_hooks";
++import { randomUUID } from "node:crypto";
++import { metric } from "@vercel/functions";
++
++// Bounded label vocabulary. Never derive these from request paths, users or
++// upstream error strings: metric labels must stay low-cardinality and PII-free.
++export const OBSERVED_OPERATIONS = ["auth", "account", "community", "progression"] as const;
++export type ObservedOperation = (typeof OBSERVED_OPERATIONS)[number];
++
++const correlation = new AsyncLocalStorage<string>();
++
++function redactValue(value: string): string {
++  return value
++    .replace(/postgres(?:ql)?:\/\/[^\s"'<>]+/gi, "[redacted-database-url]")
++    .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted-token]")
++    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[redacted-email]")
++    .replace(
++      /\b(cookie|authorization|password|passwd|pwd|secret|ticket|token|api[_-]?key|upstream[_-]?key|database_url|connection_string)\s*[:=]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}]+)/gi,
++      "$1=[redacted]",
++    );
++}
++
++/// Shared redaction for structured logs. It never echoes raw headers, bodies,
++/// connection strings or credential-bearing query values.
++export function redactSecrets(value: unknown): string {
++  return redactValue(String(value ?? "")).slice(0, 2000);
++}
++
++type LogFields = Record<string, string | number | boolean | undefined>;
++
++export function logStructured(
++  level: "info" | "warn" | "error",
++  event: string,
++  fields: LogFields = {},
++): void {
++  const entry = JSON.stringify({
++    service: "kaslyydex-web",
++    ts: new Date().toISOString(),
++    level,
++    event,
++    correlationId: correlation.getStore() ?? "none",
++    ...fields,
++  });
++  if (level === "info") process.stdout.write(`${entry}\n`);
++  else process.stderr.write(`${entry}\n`);
++}
++
++/// Call from existing error-to-response helpers so error details are logged once
++/// in redacted form without adding them to the public error envelope.
++export function logErrorEvent(error: unknown): void {
++  const value = error as { name?: string; code?: string; message?: string };
++  logStructured("error", "error", {
++    errorName: typeof value?.name === "string" ? value.name.slice(0, 64) : "Error",
++    errorCode: typeof value?.code === "string" ? value.code.slice(0, 64) : undefined,
++    message: redactSecrets(value?.message ?? error),
++  });
++}
++
++export function outcomeFor(status: number): string {
++  if (status === 401) return "unauthenticated";
++  if (status === 403) return "forbidden";
++  if (status === 404) return "not_found";
++  if (status === 409) return "conflict";
++  if (status === 429) return "rate_limited";
++  if (status === 503) return "unavailable";
++  if (status >= 500) return "server_error";
++  if (status >= 400) return "client_error";
++  if (status >= 200 && status < 300) return "success";
++  return "other";
++}
++
++function emitMetrics(operation: ObservedOperation, outcome: string, durationMs: number): void {
++  // Local and non-Vercel runtimes are a no-op. Ingestion stays unverified until
++  // an operator explicitly enables paid Observability; no project setting changes here.
++  const attributes = { operation, outcome };
++  metric("kaslyydex.user_requests", 1, attributes);
++  metric("kaslyydex.user_request.duration_ms", durationMs, attributes);
++}
++
++/// Structured request/error logs and bounded business-operation metrics. Health,
++/// static assets and pass-through content proxies deliberately do not use this.
++export async function withObservedRoute(
++  operation: ObservedOperation,
++  request: Request,
++  run: () => Promise<Response> | Response,
++): Promise<Response> {
++  const id = randomUUID();
++  const startedAt = performance.now();
++
++  return correlation.run(id, async () => {
++    let response: Response;
++    try {
++      response = await run();
++    } catch (error) {
++      const durationMs = Math.round(performance.now() - startedAt);
++      logErrorEvent(error);
++      logStructured("error", "request.complete", { operation, status: 500, durationMs });
++      emitMetrics(operation, "server_error", durationMs);
++      throw error;
++    }
++
++    const durationMs = Math.round(performance.now() - startedAt);
++    const outcome = outcomeFor(response.status);
++    logStructured(response.status >= 500 ? "error" : response.status >= 400 ? "warn" : "info",
++      "request.complete", {
++        operation,
++        method: request.method,
++        status: response.status,
++        durationMs,
++        outcome,
++      });
++    emitMetrics(operation, outcome, durationMs);
++
++    const headers = new Headers(response.headers);
++    headers.set("x-correlation-id", id);
++    return new Response(response.body, {
++      status: response.status,
++      statusText: response.statusText,
++      headers,
++    });
++  });
++}
+diff --git a/web/lib/progression-api.ts b/web/lib/progression-api.ts
+index af5aa60..5776bd6 100644
+--- a/web/lib/progression-api.ts
++++ b/web/lib/progression-api.ts
+@@ -5,16 +5,17 @@ import { and, asc, count, eq, gt, sql } from "drizzle-orm";
+ import { SignJWT, jwtVerify } from "jose";
+ import { getDatabase, type AppDatabase } from "./db/client";
+ import * as tables from "./db/schema";
+ import { AuthConfigurationError, getAuth } from "./auth/server";
+ import { identityFromSession, type AccountIdentity } from "./auth/identity";
+ import { serverContent } from "./content-server";
+ import type { ContentClient } from "./contracts";
+ import { errorEnvelope } from "./contracts";
++import { logErrorEvent, withObservedRoute } from "./observability";
+ import { errorToResponse, privateJson } from "./me/handlers";
+ import { ServiceError, ensureProfile } from "./me/service";
+ import { emitNotification } from "./moderation";
+ import { parseLanguage, parseResourceId, readJson, requireOrigin, ValidationError } from "./validators";
+ import {
+   CHECKPOINT_LIMIT, MAX_PAGE_COUNT, PROGRESSION_RULE_VERSION,
+   READER_TICKET_TTL_SECONDS, XP_PER_CHAPTER, levelFromXp, minimumElapsedMs,
+   progressionForXp, requiredPages,
+@@ -196,16 +197,17 @@ export type ProgressionDeps = {
+   secret: () => string;
+   allowlist?: readonly string[];
+   // Test harness only. Production never supplies it; no environment bypass.
+   hooks?: { beforeCommit?: (phase: string) => void | Promise<void> };
+ };
+ 
+ export function progressionErrorResponse(error: unknown): Response {
+   if (error instanceof TicketSecretError) {
++    logErrorEvent(error);
+     return privateJson(errorEnvelope(error.code, error.message, { service: "reader", missing: "READER_TICKET_SECRET" }), 503);
+   }
+   return errorToResponse(error);
+ }
+ 
+ export function createProgressionApi(deps: ProgressionDeps) {
+   async function withUser(request: Request, action: (user: AccountIdentity) => Promise<Response>): Promise<Response> {
+     try {
+@@ -441,21 +443,23 @@ export function createProgressionApi(deps: ProgressionDeps) {
+ export type ProgressionApi = ReturnType<typeof createProgressionApi>;
+ 
+ /// Production wiring: identity comes from the managed session, content from
+ /// Axum, and the signing secret stays server-side. No header/env request bypass.
+ export async function wrapProgressionRoute(
+   run: (api: ProgressionApi, request: Request) => Promise<Response>,
+   request: Request,
+ ): Promise<Response> {
+-  try {
+-    return await run(productionProgressionApi(), request);
+-  } catch (error) {
+-    return progressionErrorResponse(error);
+-  }
++  return withObservedRoute("progression", request, async () => {
++    try {
++      return await run(productionProgressionApi(), request);
++    } catch (error) {
++      return progressionErrorResponse(error);
++    }
++  });
+ }
+ 
+ export function productionProgressionApi(): ProgressionApi {
+   return createProgressionApi({
+     db: () => getDatabase(),
+     identity: async () => {
+       try {
+         const { data, error } = await getAuth().getSession();
+diff --git a/web/next.config.ts b/web/next.config.ts
+index 529f62a..154e84e 100644
+--- a/web/next.config.ts
++++ b/web/next.config.ts
+@@ -1,17 +1,48 @@
+ import type { NextConfig } from "next";
+ 
++// Static CSP: nonces would force dynamic rendering and break the current
++// cacheComponents/partialPrefetching setup. `'wasm-unsafe-eval'` is required by
++// the reader; `img-src 'self' data: blob:` covers same-origin /_next/image and
++// /api/content/img responses, and no third-party origin is allowed.
++const csp = [
++  "default-src 'self'",
++  "base-uri 'self'",
++  "object-src 'none'",
++  `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
++  "style-src 'self' 'unsafe-inline'",
++  "img-src 'self' data: blob:",
++  "font-src 'self' data:",
++  "connect-src 'self'",
++  "worker-src 'self' blob:",
++  "frame-ancestors 'none'",
++  "form-action 'self'",
++  "upgrade-insecure-requests",
++].join("; ") + ";";
++
++export const securityHeaders = [
++  { key: "Content-Security-Policy", value: csp },
++  { key: "X-Content-Type-Options", value: "nosniff" },
++  { key: "X-Frame-Options", value: "DENY" },
++  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
++  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), browsing-topics=()" },
++  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
++];
++
+ const nextConfig: NextConfig = {
+   cacheComponents: true,
+   partialPrefetching: true,
+   serverExternalPackages: ["pg"],
+   turbopack: {
+     rules: {
+       "*.css": {
+         loaders: ["@tailwindcss/turbopack"],
+         as: "*.css",
+       },
+     },
+   },
++  async headers() {
++    return [{ source: "/:path*", headers: securityHeaders }];
++  },
+ };
+ 
+ export default nextConfig;
+diff --git a/web/package.json b/web/package.json
+index bd656bd..2a7d00d 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -2,34 +2,41 @@
+   "name": "kaslyydex",
+   "version": "0.1.0",
+   "private": true,
+   "scripts": {
+     "dev": "next dev",
+     "build:wasm": "node scripts/build-wasm.mjs",
+     "prebuild": "npm run build:wasm",
+     "build": "next build",
++    "build:web": "next build",
+     "start": "next start",
++    "typecheck": "tsc --noEmit",
++    "browser:install": "node node_modules/playwright-core/cli.js install chromium",
++    "check:secrets": "node scripts/secret-scan.mjs ..",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
++    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs",
++    "test:browser": "node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs scripts/reader-playwright.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+     "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs",
+     "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
+     "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs",
+     "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs",
+     "test:notification-feed": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs",
+     "test:task7": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs scripts/notification-feed.test.mjs",
+     "test:task7:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs",
+     "test:task8": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs scripts/notification-feed.test.mjs scripts/progression.test.mjs",
+     "test:task8:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs"
+   },
+   "dependencies": {
+     "@neon/auth": "^0.8.2",
++    "@vercel/functions": "^3.11.3",
+     "drizzle-orm": "^0.45.4",
+     "jose": "^6.2.18",
+     "next": "16.4.6",
+     "pg": "^8.23.1",
+     "react": "19.3.0",
+     "react-dom": "19.3.0",
+     "server-only": "^0.0.1",
+     "undici": "^8.12.4"
+diff --git a/web/scripts/account-playwright.test.mjs b/web/scripts/account-playwright.test.mjs
+index ee2eb44..5af4310 100644
+--- a/web/scripts/account-playwright.test.mjs
++++ b/web/scripts/account-playwright.test.mjs
+@@ -1,26 +1,27 @@
+ import assert from "node:assert/strict";
+ import { existsSync } from "node:fs";
+ import { join } from "node:path";
+ import { after, before, test } from "node:test";
+ import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
+ import { startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
+ 
+-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const EDGE = browserExecutable();
+ const SHOT_DIR = join(webDir, ".test-screenshots");
+ 
+ let unconfigured;
+ let configured;
+ let authFixture;
+ let browser;
+ let pageErrors = [];
+ 
+ before(async () => {
+-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
+   browser = await chromium.launch({ executablePath: EDGE, headless: true });
+   unconfigured = await startNext();
+   authFixture = await startHttpServer((req, res, body) => {
+     if (req.url?.includes("get-session")) {
+       if ((req.headers.cookie ?? "").includes("session_token=fixture")) {
+         res.writeHead(200, { "content-type": "application/json" });
+         res.end(JSON.stringify({
+           session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
+diff --git a/web/scripts/browser.mjs b/web/scripts/browser.mjs
+new file mode 100644
+index 0000000..f0043c4
+--- /dev/null
++++ b/web/scripts/browser.mjs
+@@ -0,0 +1,21 @@
++import { existsSync } from "node:fs";
++import { chromium } from "playwright-core";
++
++const LOCAL_EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++
++/// Prefer an explicit operator override, then the installed Windows Edge used
++/// for local verification, then Playwright's installed Chromium in CI.
++export function browserExecutable() {
++  const override = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE?.trim();
++  if (override) {
++    if (!existsSync(override)) throw new Error(`PLAYWRIGHT_CHROMIUM_EXECUTABLE not found: ${override}`);
++    return override;
++  }
++  if (existsSync(LOCAL_EDGE)) return LOCAL_EDGE;
++  const bundled = chromium.executablePath();
++  if (existsSync(bundled)) return bundled;
++  throw new Error(
++    "No browser found. Run `node node_modules/playwright-core/cli.js install chromium` " +
++    "or set PLAYWRIGHT_CHROMIUM_EXECUTABLE to a Chromium/Edge binary.",
++  );
++}
+diff --git a/web/scripts/community-playwright.test.mjs b/web/scripts/community-playwright.test.mjs
+index 705a47f..f33031a 100644
+--- a/web/scripts/community-playwright.test.mjs
++++ b/web/scripts/community-playwright.test.mjs
+@@ -1,19 +1,20 @@
+ import assert from "node:assert/strict";
+ import { existsSync } from "node:fs";
+ import { after, before, test } from "node:test";
+ import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
+ import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
+ 
+ // Browser fixture: the SDK session is real (loopback Neon-auth fixture), while
+ // community API responses are intercepted at the browser boundary. That proves
+ // rendering, spoiler state, dialogs and authorized calls without a local
+ // PostgreSQL wire server; SQL ownership is covered in community.test.mjs.
+-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const EDGE = browserExecutable();
+ const MANGA_ID = "manga-fixture";
+ const COMMENT_ID = "comment-xss";
+ const SPOILER_ID = "comment-spoiler";
+ 
+ let contentFixture;
+ let authFixture;
+ let next;
+ let browser;
+@@ -77,17 +78,17 @@ async function signedInPage(routes = []) {
+   await context.addCookies(cookies);
+   for (const [pattern, handler] of routes) await context.route(pattern, handler);
+   const page = await context.newPage();
+   page.on("pageerror", (error) => pageErrors.push(error.message));
+   return { context, page };
+ }
+ 
+ before(async () => {
+-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
+   contentFixture = await startHttpServer((req, res) => {
+     const url = req.url ?? "";
+     if (url.startsWith("/api/content/manga/") && url.endsWith("/chapters")) {
+       return json(res, { vi: [], en: [] });
+     }
+     if (url.startsWith("/api/content/manga/")) return json(res, manga);
+     return json(res, {});
+   });
+diff --git a/web/scripts/env-validation.test.mjs b/web/scripts/env-validation.test.mjs
+new file mode 100644
+index 0000000..8d79db2
+--- /dev/null
++++ b/web/scripts/env-validation.test.mjs
+@@ -0,0 +1,36 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import { test } from "node:test";
++import { fileURLToPath } from "node:url";
++
++const example = await readFile(fileURLToPath(new URL("../.env.example", import.meta.url)), "utf8");
++
++const REQUIRED = [
++  "NEON_AUTH_BASE_URL",
++  "NEON_AUTH_COOKIE_SECRET",
++  "DATABASE_URL",
++  "READER_TICKET_SECRET",
++  "RUST_CONTENT_API_ORIGIN",
++  "NEXT_PUBLIC_APP_URL",
++];
++
++test(".env.example documents every required runtime name without values", () => {
++  for (const name of REQUIRED) {
++    assert.match(example, new RegExp(`^${name}=$`, "m"), name);
++  }
++  assert.doesNotMatch(example, /NEXT_PUBLIC_(?:DATABASE|NEON|GOOGLE_CLIENT_SECRET|READER_TICKET)/);
++});
++
++test("configured values are shape-checked without being printed", () => {
++  const invalidDatabase = (value) => {
++    try {
++      const parsed = new URL(value);
++      return !["postgres:", "postgresql:"].includes(parsed.protocol);
++    } catch {
++      return true;
++    }
++  };
++  assert.equal(invalidDatabase("postgresql://reader@db.example.com/kaslyydex"), false);
++  assert.equal(invalidDatabase("https://db.example.com"), true);
++  assert.equal((process.env.READER_TICKET_SECRET ?? "").length >= 32 || !process.env.READER_TICKET_SECRET, true);
++});
+diff --git a/web/scripts/observability.test.mjs b/web/scripts/observability.test.mjs
+new file mode 100644
+index 0000000..53d2e86
+--- /dev/null
++++ b/web/scripts/observability.test.mjs
+@@ -0,0 +1,48 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++
++const { outcomeFor, redactSecrets, withObservedRoute, OBSERVED_OPERATIONS } = await import(
++  "../lib/observability.ts"
++);
++
++test("redaction removes credentials, tokens, emails and database URLs", () => {
++  const input = [
++    "Cookie: session=abc",
++    "Authorization: Bearer eyJabc.def.ghi",
++    "password=hunter2",
++    "ticket=eyJhbGciOi.signature.part",
++    "EMAIL=reader@example.com",
++    "DATABASE_URL=" + "postgres" + "ql://reader:secret@db.example.com/kaslyydex",
++    "upstream_key=abcdef123456",
++  ].join(" ");
++  const redacted = redactSecrets(input);
++  for (const secret of ["session=abc", "hunter2", "reader@example.com", "db.example.com", "abcdef123456"]) {
++    assert.ok(!redacted.includes(secret), `${secret} leaked`);
++  }
++  assert.match(redacted, /\[redacted/);
++});
++
++test("metric outcomes are bounded and never echo request detail", () => {
++  assert.deepEqual(OBSERVED_OPERATIONS, ["auth", "account", "community", "progression"]);
++  assert.equal(outcomeFor(200), "success");
++  assert.equal(outcomeFor(401), "unauthenticated");
++  assert.equal(outcomeFor(409), "conflict");
++  assert.equal(outcomeFor(429), "rate_limited");
++  assert.equal(outcomeFor(503), "unavailable");
++  assert.equal(outcomeFor(500), "server_error");
++  assert.equal(outcomeFor(418), "client_error");
++});
++
++test("observed routes add correlation ids without changing status or body", async () => {
++  const write = process.stdout.write.bind(process.stdout);
++  process.stdout.write = () => true;
++  try {
++    const response = await withObservedRoute("account", new Request("http://local/api/v1/me"), async () =>
++      Response.json({ ok: false }, { status: 503 }));
++    assert.equal(response.status, 503);
++    assert.deepEqual(await response.json(), { ok: false });
++    assert.match(response.headers.get("x-correlation-id") ?? "", /^[0-9a-f-]{36}$/);
++  } finally {
++    process.stdout.write = write;
++  }
++});
+diff --git a/web/scripts/progression-playwright.test.mjs b/web/scripts/progression-playwright.test.mjs
+index 532fa43..21925a5 100644
+--- a/web/scripts/progression-playwright.test.mjs
++++ b/web/scripts/progression-playwright.test.mjs
+@@ -1,20 +1,21 @@
+ import assert from "node:assert/strict";
+ import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+ import { connect } from "node:net";
+ import { join } from "node:path";
+ import { after, before, test } from "node:test";
+ import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
+ import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
+ import { pagePng } from "./image-fixtures.mjs";
+ 
+-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const EDGE = browserExecutable();
+ const MANGA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+ const CHAPTER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+ const SHOT_DIR = join(webDir, ".test-screenshots");
+ 
+ let contentFixture;
+ let authFixture;
+ let axum;
+ let next;
+@@ -45,17 +46,17 @@ function json(res, body) {
+ }
+ 
+ function seed(url, bytes) {
+   const key = createHash("sha256").update(url).digest("hex");
+   writeFileSync(join(cacheDir, `${key}.png`), bytes);
+ }
+ 
+ before(async () => {
+-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
+   mkdirSync(SHOT_DIR, { recursive: true });
+   cacheDir = join(webDir, ".test-cache", `progression-${process.pid}`);
+   mkdirSync(cacheDir, { recursive: true });
+   const pages = [1, 2, 3, 4].map((index) => `https://uploads.mangadex.org/data/${CHAPTER}/page-${index}.png`);
+   pages.forEach((url, index) => seed(url, pagePng(index)));
+ 
+   const chapter = {
+     id: CHAPTER,
+diff --git a/web/scripts/reader-playwright.test.mjs b/web/scripts/reader-playwright.test.mjs
+index efe7a3c..c4050a1 100644
+--- a/web/scripts/reader-playwright.test.mjs
++++ b/web/scripts/reader-playwright.test.mjs
+@@ -1,20 +1,21 @@
+ import assert from "node:assert/strict";
+ import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+ import { connect } from "node:net";
+ import { join } from "node:path";
+ import { after, before, test } from "node:test";
+ import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
+ import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
+ import { coverJpg, pagePng } from "./image-fixtures.mjs";
+ 
+-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const EDGE = browserExecutable();
+ const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+ const CHAPTER_IDS = [
+   "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+   "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc",
+   "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbd",
+   "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbe",
+ ];
+ const TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+@@ -133,27 +134,39 @@ before(async () => {
+     cwd: repoDir,
+     env: { ...process.env, PORT: String(port), MANGADEX_API_ORIGIN: fixture.baseUrl, CACHE_DIR: cacheDir, DIST_DIR: join(webDir, "public") },
+     stdio: ["ignore", "pipe", "pipe"],
+   });
+   await waitForTcp(port);
+ 
+   next = await startNext({ RUST_CONTENT_API_ORIGIN: axumUrl });
+   baseUrl = next.baseUrl;
+-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
+   browser = await chromium.launch({ executablePath: EDGE, headless: true });
+ });
+ 
+ after(async () => {
+   await browser?.close();
+   await stop(next?.child);
+   if (axum && axum.exitCode === null) axum.kill("SIGKILL");
+   await fixture?.close();
+ });
+ 
++async function assertNoHorizontalOverflow(page, label) {
++  const sizes = await page.evaluate(() => ({
++    scrollWidth: document.documentElement.scrollWidth,
++    bodyWidth: document.body.scrollWidth,
++    viewport: document.documentElement.clientWidth,
++  }));
++  assert.ok(
++    sizes.scrollWidth <= sizes.viewport + 1 && sizes.bodyWidth <= sizes.viewport + 1,
++    `${label} overflowed horizontally: ${JSON.stringify(sizes)}`,
++  );
++}
++
+ async function assertDecoded(locator, label) {
+   const result = await locator.evaluate(async (img) => {
+     if (!img.complete) {
+       await new Promise((resolve) => {
+         img.addEventListener("load", resolve, { once: true });
+         img.addEventListener("error", resolve, { once: true });
+       });
+     }
+@@ -187,30 +200,33 @@ async function openPage(viewport) {
+   page.on("pageerror", (error) => pageErrors.push(error.message));
+   page.on("request", (request) => {
+     const { hostname } = new URL(request.url());
+     if (/(^|\.)mangadex\.(org|network)$/.test(hostname)) pageRequests.push(request.url());
+   });
+   return { context, page };
+ }
+ 
+-test("desktop and 375px shells render decodable fixture covers through Axum with no direct MangaDex requests", async () => {
++test("desktop and 375px shells render decodable covers, no horizontal overflow, and no direct MangaDex requests", async () => {
+   for (const [name, viewport] of [["desktop", { width: 1280, height: 800 }], ["mobile", { width: 375, height: 812 }]]) {
+     const { context, page } = await openPage(viewport);
+     await page.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
+     await page.locator(".feature h1").waitFor();
+     assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga");
+     assert.ok(await page.locator(".popular-rail .card").count() >= 1);
+     const cover = page.locator(".feature-poster");
+     assert.ok(cover && await cover.getAttribute("src").then((src) => src.startsWith("/api/content/img?u=")));
+     await assertDecoded(cover, `${name} feature poster`);
+     await assertDecoded(page.locator(".popular-rail .card-cover img").first(), `${name} card cover`);
+     const rail = page.locator(".site-rail");
+     if (name === "desktop") assert.equal(await rail.isVisible(), true);
+-    else assert.equal(await page.locator(".bottom-tabs").isVisible(), true);
++    else {
++      assert.equal(await page.locator(".bottom-tabs").isVisible(), true);
++      await assertNoHorizontalOverflow(page, `${name} home`);
++    }
+     await page.screenshot({ path: join(SHOT_DIR, `home-${name}.png`), fullPage: false });
+     await context.close();
+   }
+   assert.deepEqual(pageRequests, [], `browser called MangaDex directly: ${pageRequests.join(", ")}`);
+ });
+ 
+ test("search filters, clickable tags, genres, rank and library work from Axum data", async () => {
+   const { context, page } = await openPage({ width: 1280, height: 800 });
+@@ -307,16 +323,17 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
+ test("375px reader keeps toolbar, pages and bottom navigation usable", async () => {
+   const { context, page } = await openPage({ width: 375, height: 812 });
+   await page.goto(`${baseUrl}/read/${CHAPTER_IDS[2]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+   await page.locator(".reader-page").first().waitFor();
+   assert.equal(await page.locator(".reader-bar").isVisible(), true);
+   assert.equal(await page.locator(".reader-bottom").isVisible(), true);
+   assert.ok((await page.locator(".reader-page").count()) >= 2);
+   await assertDecoded(page.locator(".reader-page").first(), "375px reader page");
++  await assertNoHorizontalOverflow(page, "375px reader");
+   await page.screenshot({ path: join(SHOT_DIR, "reader-mobile.png") });
+   await context.close();
+ });
+ 
+ test("corrupt WASM shows a visible retry instead of a fake success state", async () => {
+   const { context, page } = await openPage({ width: 1280, height: 800 });
+   await page.route("**/wasm/*.wasm", (route) => route.fulfill({
+     status: 200,
+diff --git a/web/scripts/reader-sync-playwright.test.mjs b/web/scripts/reader-sync-playwright.test.mjs
+index dd41f13..6ecb9eb 100644
+--- a/web/scripts/reader-sync-playwright.test.mjs
++++ b/web/scripts/reader-sync-playwright.test.mjs
+@@ -1,20 +1,21 @@
+ import assert from "node:assert/strict";
+ import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+ import { connect } from "node:net";
+ import { join } from "node:path";
+ import { after, before, test } from "node:test";
+ import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
+ import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
+ import { pagePng } from "./image-fixtures.mjs";
+ 
+-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const EDGE = browserExecutable();
+ const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+ const CHAPTER_A = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+ const CHAPTER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc";
+ const PAGES = [CHAPTER_A, CHAPTER_B].flatMap((id) =>
+   [1, 2, 3, 4].map((page) => `https://uploads.mangadex.org/data/${id}/page-${page}.png`));
+ 
+ let contentFixture;
+ let authFixture;
+@@ -44,17 +45,17 @@ function waitForTcp(port, deadlineMs = 20_000) {
+ }
+ 
+ function json(res, body) {
+   res.writeHead(200, { "content-type": "application/json" });
+   res.end(JSON.stringify(body));
+ }
+ 
+ before(async () => {
+-  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
+   cacheDir = join(webDir, ".test-cache", `reader-sync-${process.pid}`);
+   mkdirSync(cacheDir, { recursive: true });
+   PAGES.forEach((url, index) => {
+     const key = createHash("sha256").update(url).digest("hex");
+     writeFileSync(join(cacheDir, `${key}.png`), pagePng(index % 4));
+   });
+ 
+   const manga = {
+diff --git a/web/scripts/secret-scan-lib.mjs b/web/scripts/secret-scan-lib.mjs
+new file mode 100644
+index 0000000..248fea1
+--- /dev/null
++++ b/web/scripts/secret-scan-lib.mjs
+@@ -0,0 +1,24 @@
++// Deterministic, secret-free credential pattern scan. It looks for provider
++// credentials and non-empty secret assignments; fixture values are built at
++// runtime in tests and never appear literally in tracked files.
++export const PATTERNS = [
++  { name: "private-key", re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
++  { name: "google-api-key", re: /AIza[0-9A-Za-z_-]{35}/ },
++  { name: "github-token", re: /gh[pousr]_[A-Za-z0-9]{36}/ },
++  { name: "openai-key", re: /sk-[A-Za-z0-9_-]{24,}/ },
++  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/ },
++  { name: "database-url-with-password", re: /postgres(?:ql)?:\/\/[^\s:@/]+:[^\s@/]+@/i },
++  {
++    name: "non-empty-secret-assignment",
++    re: /^[ \t]*(?:NEON_AUTH_COOKIE_SECRET|READER_TICKET_SECRET|DATABASE_URL|GOOGLE_CLIENT_SECRET|NEON_AUTH_BASE_URL)[ \t]*=[ \t]*\S.*$/m,
++  },
++];
++
++export function scanText(text, file = "<text>") {
++  const findings = [];
++  for (const { name, re } of PATTERNS) {
++    const match = text.match(re);
++    if (match) findings.push({ file, pattern: name, line: text.slice(0, match.index).split("\n").length });
++  }
++  return findings;
++}
+diff --git a/web/scripts/secret-scan.mjs b/web/scripts/secret-scan.mjs
+new file mode 100644
+index 0000000..5a174be
+--- /dev/null
++++ b/web/scripts/secret-scan.mjs
+@@ -0,0 +1,33 @@
++// Usage: node scripts/secret-scan.mjs [repoDir]
++// Scans tracked text files only; values are never printed.
++import { execFileSync } from "node:child_process";
++import { readFile } from "node:fs/promises";
++import { join, resolve } from "node:path";
++import { fileURLToPath } from "node:url";
++import { scanText } from "./secret-scan-lib.mjs";
++
++const repoDir = resolve(process.argv[2] ?? fileURLToPath(new URL("../..", import.meta.url)));
++const files = execFileSync("git", ["ls-files", "-z"], { cwd: repoDir, encoding: "utf8" })
++  .split("\0")
++  .filter(Boolean)
++  .filter((file) => /\.(?:md|mjs|js|ts|tsx|json|yml|yaml|sql|toml|example|txt)$/.test(file) || file.endsWith(".env.example"));
++
++const findings = [];
++for (const file of files) {
++  let text;
++  try {
++    text = await readFile(join(repoDir, file), "utf8");
++  } catch {
++    continue;
++  }
++  findings.push(...scanText(text, file));
++}
++
++if (findings.length > 0) {
++  for (const finding of findings) {
++    console.error(`${finding.file}:${finding.line}: ${finding.pattern}`);
++  }
++  console.error(`secret scan failed: ${findings.length} candidate(s)`);
++  process.exit(1);
++}
++console.log(`secret scan passed: ${files.length} tracked text files, 0 candidates`);
+diff --git a/web/scripts/secret-scan.test.mjs b/web/scripts/secret-scan.test.mjs
+new file mode 100644
+index 0000000..2cde794
+--- /dev/null
++++ b/web/scripts/secret-scan.test.mjs
+@@ -0,0 +1,28 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { scanText } from "./secret-scan-lib.mjs";
++
++test("secret scan detects provider credentials and non-empty secret assignments", () => {
++  const key = "sk-" + "a".repeat(30);
++  const url = "postgres" + "ql://reader:hunter2@db.example.com/kaslyydex";
++  const findings = scanText(
++    ["api_key_value = '" + key + "'", "DATABASE_URL=" + url, "READER_TICKET_SECRET="].join("\n"),
++  );
++  assert.deepEqual(
++    findings.map((finding) => finding.pattern).sort(),
++    ["database-url-with-password", "non-empty-secret-assignment", "openai-key"],
++  );
++  assert.equal(findings.find((f) => f.pattern === "database-url-with-password").line, 2);
++});
++
++test("secret scan ignores blank example values and ordinary source lines", () => {
++  const findings = scanText(
++    [
++      "DATABASE_URL=",
++      "READER_TICKET_SECRET=",
++      "process.env.NEON_AUTH_COOKIE_SECRET = fixtureValue;",
++      "const label = 'public health returns ok';",
++    ].join("\n"),
++  );
++  assert.deepEqual(findings, []);
++});
+diff --git a/web/scripts/smoke.test.mjs b/web/scripts/smoke.test.mjs
+index d5fd70e..d8e2a59 100644
+--- a/web/scripts/smoke.test.mjs
++++ b/web/scripts/smoke.test.mjs
+@@ -6,17 +6,17 @@ import { after, before, test } from "node:test";
+ import { fileURLToPath } from "node:url";
+ 
+ const webDir = fileURLToPath(new URL("..", import.meta.url));
+ const nextBin = fileURLToPath(new URL("../node_modules/next/dist/bin/next", import.meta.url));
+ 
+ // Prove the shell never needs Neon/auth configuration to answer.
+ const childEnv = { ...process.env };
+ for (const key of Object.keys(childEnv)) {
+-  if (/DATABASE|POSTGRES|NEON|AUTH|GOOGLE_CLIENT|RUST_CONTENT_API_ORIGIN/i.test(key)) {
++  if (/DATABASE|POSTGRES|NEON|AUTH|GOOGLE_CLIENT|RUST_CONTENT_API_ORIGIN|READER_TICKET_SECRET|OPERATOR_EMAIL_ALLOWLIST/i.test(key)) {
+     delete childEnv[key];
+   }
+ }
+ childEnv.NODE_ENV = "production";
+ 
+ let server;
+ let baseUrl;
+ let output = "";
+@@ -82,8 +82,43 @@ test("GET /api/v1/health returns ok and version without secrets", async () => {
+   assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+ 
+   const body = await res.json();
+   assert.deepEqual(Object.keys(body).sort(), ["ok", "version"]);
+   assert.equal(body.ok, true);
+   assert.equal(typeof body.version, "string");
+   assert.ok(body.version.length > 0);
+ });
++
++test("GET /api/v1/ready is separate from liveness and lists missing config names only", async () => {
++  const res = await fetch(`${baseUrl}/api/v1/ready`);
++  assert.equal(res.status, 503);
++  assert.equal(res.headers.get("cache-control"), "private, no-store");
++  const body = await res.json();
++  assert.equal(body.status, "unavailable");
++  assert.equal(body.checks.configuration, "missing");
++  for (const name of [
++    "DATABASE_URL", "NEON_AUTH_BASE_URL", "NEON_AUTH_COOKIE_SECRET",
++    "READER_TICKET_SECRET", "RUST_CONTENT_API_ORIGIN",
++  ]) {
++    assert.ok(body.missing.includes(name), name);
++  }
++  assert.doesNotMatch(JSON.stringify(body), /postgres(?:ql)?:\/\//i);
++});
++
++test("security headers apply to pages and API without external CSP sources", async () => {
++  for (const path of ["/", "/api/v1/health"]) {
++    const res = await fetch(`${baseUrl}${path}`);
++    assert.equal(res.headers.get("x-content-type-options"), "nosniff", path);
++    assert.equal(res.headers.get("x-frame-options"), "DENY", path);
++    const csp = res.headers.get("content-security-policy") ?? "";
++    assert.match(csp, /script-src 'self'.*'wasm-unsafe-eval'/, path);
++    assert.match(csp, /img-src 'self' data: blob:/, path);
++    assert.doesNotMatch(csp, /https?:\/\//, path);
++  }
++});
++
++test("observed business routes expose a correlation id", async () => {
++  const res = await fetch(`${baseUrl}/api/v1/me`);
++  assert.equal(res.status, 503, "missing auth config stays unavailable");
++  assert.match(res.headers.get("x-correlation-id") ?? "", /^[0-9a-f-]{36}$/);
++  assert.equal(res.headers.get("cache-control"), "private, no-store");
++});

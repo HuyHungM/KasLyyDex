@@ -1,0 +1,531 @@
+a74b7db fix: harden Task 9 redaction and release gates
+ .github/workflows/ci.yml                           |  5 +-
+ README.md                                          |  8 ++-
+ .../sdd/kaslyydex-phase-1-2/task-5-report.md       |  2 +-
+ .../sdd/kaslyydex-phase-1-2/task-9-report.md       | 60 +++++++++++++++++---
+ infra/deployment.md                                | 21 ++++++-
+ infra/healthcheck                                  |  2 +-
+ web/lib/observability.ts                           | 59 ++++++++++++++++++--
+ web/package.json                                   |  3 +-
+ web/scripts/observability.test.mjs                 | 65 +++++++++++++++++++---
+ web/scripts/whitespace-check.mjs                   | 56 +++++++++++++++++++
+ web/scripts/whitespace-check.test.mjs              | 42 ++++++++++++++
+ 11 files changed, 289 insertions(+), 34 deletions(-)
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index be2e951..ab4f4ed 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -35,21 +35,21 @@ jobs:
+           targets: wasm32-unknown-unknown
+ 
+       - uses: Swatinem/rust-cache@v2
+ 
+       # Credential scan runs before dependency installation; no secrets are used
+       # or requested by any job in this workflow.
+       - name: Secret-pattern scan
+         run: node web/scripts/secret-scan.mjs .
+ 
+       - name: Rust scoped formatting
+-        run: cargo fmt --check -p domain -p contracts -p reader-core -p server
++        run: cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server
+ 
+       - name: Rust clippy (workspace, warnings are errors)
+         run: cargo clippy --workspace --all-targets -- -D warnings
+ 
+       - name: Rust workspace tests
+         run: cargo test --workspace
+ 
+       - name: Build Axum content service
+         run: cargo build -p server
+ 
+@@ -86,12 +86,13 @@ jobs:
+         working-directory: web
+ 
+       - name: Install Playwright Chromium
+         run: npm run browser:install
+         working-directory: web
+ 
+       - name: Browser suites
+         run: npm run test:browser
+         working-directory: web
+ 
++      # Inspects tracked checkout content, so it is not vacuous on a clean tree.
+       - name: Whitespace / conflict-marker check
+-        run: git diff --check
++        run: node web/scripts/whitespace-check.mjs .
+diff --git a/README.md b/README.md
+index 8176fff..7d02334 100644
+--- a/README.md
++++ b/README.md
+@@ -62,23 +62,25 @@ GOOGLE_CLIENT_SECRET
+ RUST_CONTENT_API_ORIGIN
+ NEXT_PUBLIC_APP_URL
+ ```
+ 
+ `READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là progression API
+ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+ 
+ ## Release gates
+ 
+ `.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+-secret-pattern scan; `cargo fmt --check` scoped; clippy workspace `-D warnings`;
+-`cargo test --workspace`; `npm ci`; typecheck/lint; `build:wasm` → `build:web`;
+-aggregate tests; Playwright Chromium install + browser suites; `git diff --check`.
++secret-pattern scan; `cargo fmt --check` scoped including `reader-wasm`; clippy
++workspace `-D warnings`; `cargo test --workspace`; `npm ci`; `build:wasm` →
++`build:web` → typecheck/lint; aggregate tests; Playwright Chromium install +
++browser suites; tracked-file whitespace/conflict-marker scan (not vacuous on a
++clean checkout).
+ 
+ Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+ CI scoped vào `domain`, `contracts`, `reader-core`, `server`. Xem
+ `infra/deployment.md` cho runbook, caveat first-deploy-is-production, chặn
+ 402 fair-use trước đây, migration/rollback Neon và các external gate chưa chạy.
+ 
+ Observability: structured JSON logs có `correlationId`, redaction cho Cookie/
+ Authorization/ticket/password/email/DATABASE_URL/upstream key; metric names
+ `kaslyydex.user_requests` và `kaslyydex.user_request.duration_ms` chỉ với label
+ `operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Vercel
+diff --git a/infra/deployment.md b/infra/deployment.md
+index 203d2e1..19d0740 100644
+--- a/infra/deployment.md
++++ b/infra/deployment.md
+@@ -17,35 +17,35 @@ Two deployment facts must be resolved before any cloud action:
+    with another team/account or temporary project. Wait for the owner to resolve
+    the limit/team access.
+ 
+ ## Deterministic local release gate (secret-free)
+ 
+ The same commands run in `.github/workflows/ci.yml`; CI requests no secrets.
+ 
+ ```bash
+ # repository root
+ node web/scripts/secret-scan.mjs .
+-cargo fmt --check -p domain -p contracts -p reader-core -p server
++cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server
+ cargo clippy --workspace --all-targets -- -D warnings
+ cargo test --workspace
+ cargo build -p server
+ 
+ cd web
+ npm ci
+ npm run build:wasm        # must happen before the Next build
+ npm run build:web
+ npm run typecheck         # needs generated WASM glue and Next route types
+ npm run lint
+ npm run test:aggregate
+ npm run browser:install   # installs Playwright Chromium in CI
+ npm run test:browser
+-git diff --check
++node web/scripts/whitespace-check.mjs .
+ ```
+ 
+ Local Windows verification uses the installed Edge path discovered by
+ `web/scripts/browser.mjs`. CI installs Chromium; an operator can override the
+ binary with `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when a system browser is already
+ available. Full-workspace `cargo fmt --check` remains a pre-existing Leptos/UI
+ baseline exception; CI scopes formatting to maintained packages.
+ 
+ ## Required environment names
+ 
+@@ -100,20 +100,37 @@ server secrets with `NEXT_PUBLIC_`.
+    the chosen environment. No project settings were changed by Task 9.
+ 3. Enable Neon Managed Auth on a branch; configure the Google provider with owner
+    credentials; complete a real sign-in and live JWT/JWKS verification.
+ 4. Create a separate Neon branch/database for Preview. Apply migrations with
+    `cd web && npx drizzle-kit migrate` using a securely injected `DATABASE_URL`;
+    confirm only application tables are created and `neon_auth` is untouched.
+ 5. Deploy the built app manually, verify `health`/`ready`, content proxy, a real
+    browser-to-Neon account/progression flow and error paths. Record the actual
+    deployment URL/target. Do not call these gates passed until observed.
+ 
++## Vercel rollback (manual, owner-gated)
++
++This is separate from Neon migration rollback and was not performed here. No
++automatic rollback, token handling or credential capture is part of the gate.
++If a real deployment is unhealthy, the owner explicitly chooses a previous
++successful deployment in the Vercel dashboard or an authenticated CLI session,
++promotes/aliases it to the affected target, and records the target, deployment
++id and time. Then verify with:
++
++```bash
++node infra/healthcheck <owner-supplied-deployment-url>
++```
++
++The healthcheck prints status codes only and never echoes the supplied URL.
++Confirm liveness/readiness, content proxy and a read-only account request before
++resuming writes. The first-deploy-is-production caveat above remains unchanged.
++
+ ## Neon migration and rollback
+ 
+ Before migrating, create/verify a Neon branch or restore point and record the
+ current `drizzle.__drizzle_migrations` state. `drizzle-kit migrate` applies the
+ generated SQL files in `web/drizzle/0000..0006` idempotently using its migration
+ log; it has no automatic down command. Rollback procedure:
+ 
+ 1. Stop writes to the affected environment (or point the app at a known-good
+    branch) before changing `DATABASE_URL`.
+ 2. Restore the Neon branch to the pre-migration restore point, or re-point
+diff --git a/infra/healthcheck b/infra/healthcheck
+index 03e7119..46b8872 100644
+--- a/infra/healthcheck
++++ b/infra/healthcheck
+@@ -13,13 +13,13 @@ async function probe(path) {
+       cache: "no-store",
+       signal: AbortSignal.timeout(2_000),
+     });
+     return { status: response.status, ok: response.ok };
+   } catch {
+     return { status: 0, ok: false };
+   }
+ }
+ 
+ const liveness = await probe("/api/v1/health");
+-const result = { base, liveness, readiness: livenessOnly ? undefined : await probe("/api/v1/ready") };
++const result = { liveness, readiness: livenessOnly ? undefined : await probe("/api/v1/ready") };
+ console.log(JSON.stringify(result));
+ process.exit(liveness.ok && (livenessOnly || result.readiness.ok) ? 0 : 1);
+diff --git a/web/lib/observability.ts b/web/lib/observability.ts
+index 583fb9c..c7a21b5 100644
+--- a/web/lib/observability.ts
++++ b/web/lib/observability.ts
+@@ -4,29 +4,73 @@ import { AsyncLocalStorage } from "node:async_hooks";
+ import { randomUUID } from "node:crypto";
+ import { metric } from "@vercel/functions";
+ 
+ // Bounded label vocabulary. Never derive these from request paths, users or
+ // upstream error strings: metric labels must stay low-cardinality and PII-free.
+ export const OBSERVED_OPERATIONS = ["auth", "account", "community", "progression"] as const;
+ export type ObservedOperation = (typeof OBSERVED_OPERATIONS)[number];
+ 
+ const correlation = new AsyncLocalStorage<string>();
+ 
++// Longer names first so `set-cookie` wins over `cookie` and forwarded headers
++// win over plain `authorization`. Headers may use `:`/`=` or whitespace before
++// an auth scheme / cookie pair; generic fields need a real `:`/`=` separator so
++// ordinary prose such as "This ticket belongs to another account" survives.
++const HEADER_FIELDS = [
++  "x-forwarded-authorization",
++  "proxy-authorization",
++  "authorization",
++  "set-cookie",
++  "cookie",
++];
++const GENERIC_FIELDS = [
++  "connection-string",
++  "connection_string",
++  "database-url",
++  "database_url",
++  "upstream-key",
++  "upstream_key",
++  "api-key",
++  "api_key",
++  "password",
++  "passwd",
++  "pwd",
++  "secret",
++  "ticket",
++  "token",
++  "email",
++  "code",
++];
++const FIELD_PATTERN = [...HEADER_FIELDS, ...GENERIC_FIELDS].join("|");
++const HEADER_SEPARATOR = String.raw`(?:\s*[:=]\s*|\s+(?:(?=(?:Bearer|Basic)\b)|(?=[A-Za-z0-9_.%-]+=)))`;
++const GENERIC_SEPARATOR = String.raw`\s*[:=]\s*`;
++// Stop at a closing quote, line end, or the next known credential field. For
++// Cookie/Set-Cookie this redacts the whole header (every k=v pair), not just
++// the first value. `&` handles URL query strings such as ?code=...&token=...
++const VALUE_BOUNDARY = String.raw`(?=\s*(?:"|'|$|[\r\n]|[,;|&]\s*(?:${FIELD_PATTERN})(?:${HEADER_SEPARATOR}|${GENERIC_SEPARATOR})|\s+(?:${FIELD_PATTERN})(?:${HEADER_SEPARATOR}|${GENERIC_SEPARATOR})))`;
++const VALUE_PATTERN = String.raw`(?:"[^"]*"|'[^']*'|[^\r\n"']*?)`;
++const HEADER_PATTERN = new RegExp(
++  String.raw`\b(${HEADER_FIELDS.join("|")})${HEADER_SEPARATOR}${VALUE_PATTERN}${VALUE_BOUNDARY}`,
++  "gi",
++);
++const GENERIC_PATTERN = new RegExp(
++  String.raw`\b(${GENERIC_FIELDS.join("|")})${GENERIC_SEPARATOR}${VALUE_PATTERN}${VALUE_BOUNDARY}`,
++  "gi",
++);
++
+ function redactValue(value: string): string {
+   return value
+     .replace(/postgres(?:ql)?:\/\/[^\s"'<>]+/gi, "[redacted-database-url]")
+     .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted-token]")
+     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[redacted-email]")
+-    .replace(
+-      /\b(cookie|authorization|password|passwd|pwd|secret|ticket|token|api[_-]?key|upstream[_-]?key|database_url|connection_string)\s*[:=]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}]+)/gi,
+-      "$1=[redacted]",
+-    );
++    .replace(HEADER_PATTERN, "$1=[redacted]")
++    .replace(GENERIC_PATTERN, "$1=[redacted]");
+ }
+ 
+ /// Shared redaction for structured logs. It never echoes raw headers, bodies,
+ /// connection strings or credential-bearing query values.
+ export function redactSecrets(value: unknown): string {
+   return redactValue(String(value ?? "")).slice(0, 2000);
+ }
+ 
+ type LogFields = Record<string, string | number | boolean | undefined>;
+ 
+@@ -36,22 +80,25 @@ export function logStructured(
+   fields: LogFields = {},
+ ): void {
+   const entry = JSON.stringify({
+     service: "kaslyydex-web",
+     ts: new Date().toISOString(),
+     level,
+     event,
+     correlationId: correlation.getStore() ?? "none",
+     ...fields,
+   });
+-  if (level === "info") process.stdout.write(`${entry}\n`);
+-  else process.stderr.write(`${entry}\n`);
++  // Defense in depth: even a future field that accidentally contains a header
++  // or body is redacted before it reaches the log sink.
++  const line = redactValue(entry);
++  if (level === "info") process.stdout.write(`${line}\n`);
++  else process.stderr.write(`${line}\n`);
+ }
+ 
+ /// Call from existing error-to-response helpers so error details are logged once
+ /// in redacted form without adding them to the public error envelope.
+ export function logErrorEvent(error: unknown): void {
+   const value = error as { name?: string; code?: string; message?: string };
+   logStructured("error", "error", {
+     errorName: typeof value?.name === "string" ? value.name.slice(0, 64) : "Error",
+     errorCode: typeof value?.code === "string" ? value.code.slice(0, 64) : undefined,
+     message: redactSecrets(value?.message ?? error),
+diff --git a/web/package.json b/web/package.json
+index 2a7d00d..b030d27 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -5,22 +5,23 @@
+   "scripts": {
+     "dev": "next dev",
+     "build:wasm": "node scripts/build-wasm.mjs",
+     "prebuild": "npm run build:wasm",
+     "build": "next build",
+     "build:web": "next build",
+     "start": "next start",
+     "typecheck": "tsc --noEmit",
+     "browser:install": "node node_modules/playwright-core/cli.js install chromium",
+     "check:secrets": "node scripts/secret-scan.mjs ..",
++    "check:whitespace": "node scripts/whitespace-check.mjs ..",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+-    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs",
++    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs",
+     "test:browser": "node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs scripts/reader-playwright.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+     "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs",
+     "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
+     "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs",
+     "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs",
+     "test:notification-feed": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs",
+diff --git a/web/scripts/observability.test.mjs b/web/scripts/observability.test.mjs
+index 53d2e86..d57529a 100644
+--- a/web/scripts/observability.test.mjs
++++ b/web/scripts/observability.test.mjs
+@@ -1,34 +1,81 @@
+ import assert from "node:assert/strict";
+ import { test } from "node:test";
+ 
+-const { outcomeFor, redactSecrets, withObservedRoute, OBSERVED_OPERATIONS } = await import(
++const { logStructured, outcomeFor, redactSecrets, withObservedRoute, OBSERVED_OPERATIONS } = await import(
+   "../lib/observability.ts"
+ );
+ 
+-test("redaction removes credentials, tokens, emails and database URLs", () => {
++test("redaction removes every credential form, including opaque tokens and cookies", () => {
+   const input = [
+-    "Cookie: session=abc",
+-    "Authorization: Bearer eyJabc.def.ghi",
+-    "password=hunter2",
+-    "ticket=eyJhbGciOi.signature.part",
++    "Authorization: Bearer myopaqueapitoken123",
++    "Cookie: connect.sid=s%3Axyz; theme=cookie-alpha-123",
++    "cookie: first=cookie-beta-456; second=cookie-gamma-789",
++    "X-Forwarded-Authorization: Bearer forwardedopaque789",
++    "Proxy-Authorization: Basic cHJveHljb3BhcXVlNDU2",
++    "Set-Cookie: session=abc; Path=/; HttpOnly",
++    "GET /callback?code=oauthcode123456&token=opaque-query-999 HTTP/1.1",
++    "DATABASE_URL=" + "postgres" + "ql://reader:dbpassword123@db.example.com/kaslyydex",
+     "EMAIL=reader@example.com",
+-    "DATABASE_URL=" + "postgres" + "ql://reader:secret@db.example.com/kaslyydex",
+-    "upstream_key=abcdef123456",
+   ].join(" ");
+   const redacted = redactSecrets(input);
+-  for (const secret of ["session=abc", "hunter2", "reader@example.com", "db.example.com", "abcdef123456"]) {
++  for (const secret of [
++    "myopaqueapitoken123", "connect.sid=s%3Axyz", "cookie-alpha-123",
++    "cookie-beta-456", "cookie-gamma-789", "forwardedopaque789",
++    "cHJveHljb3BhcXVlNDU2", "session=abc", "oauthcode123456",
++    "opaque-query-999", "dbpassword123", "db.example.com", "reader@example.com",
++  ]) {
+     assert.ok(!redacted.includes(secret), `${secret} leaked`);
+   }
++  assert.doesNotMatch(redacted, /Bearer\s+\S/i, "bearer value survived");
+   assert.match(redacted, /\[redacted/);
+ });
+ 
++test("redaction handles repeated headers and header names without a colon", () => {
++  const redacted = redactSecrets(
++    "authorization:Bearer firstopaque111 authorization Bearer secondopaque222 " +
++    "COOKIE a=firstcookie333; b=secondcookie444",
++  );
++  for (const secret of ["firstopaque111", "secondopaque222", "firstcookie333", "secondcookie444"]) {
++    assert.ok(!redacted.includes(secret), `${secret} leaked`);
++  }
++});
++
++test("redaction keeps ordinary prose without credential separators", () => {
++  const prose = "This ticket belongs to another account. Authorization is required.";
++  assert.equal(redactSecrets(prose), prose);
++});
++
++test("logStructured redacts arbitrary field values and stays valid JSON", () => {
++  const write = process.stderr.write.bind(process.stderr);
++  let line = "";
++  process.stderr.write = (chunk) => {
++    line += String(chunk);
++    return true;
++  };
++  try {
++    logStructured("error", "error", {
++      message: "Authorization: Bearer logfieldopaque999 Cookie: a=cookie-log-111; b=cookie-log-222 " +
++        "code=oauthcodefromlog https://example.com/cb?token=querylogsecret333",
++    });
++  } finally {
++    process.stderr.write = write;
++  }
++  for (const secret of ["logfieldopaque999", "cookie-log-111", "cookie-log-222", "oauthcodefromlog", "querylogsecret333"]) {
++    assert.ok(!line.includes(secret), `${secret} leaked into structured log`);
++  }
++  const parsed = JSON.parse(line.trim());
++  assert.equal(parsed.event, "error");
++  assert.equal(parsed.level, "error");
++  assert.equal(typeof parsed.message, "string");
++});
++
+ test("metric outcomes are bounded and never echo request detail", () => {
+   assert.deepEqual(OBSERVED_OPERATIONS, ["auth", "account", "community", "progression"]);
+   assert.equal(outcomeFor(200), "success");
+   assert.equal(outcomeFor(401), "unauthenticated");
+   assert.equal(outcomeFor(409), "conflict");
+   assert.equal(outcomeFor(429), "rate_limited");
+   assert.equal(outcomeFor(503), "unavailable");
+   assert.equal(outcomeFor(500), "server_error");
+   assert.equal(outcomeFor(418), "client_error");
+ });
+diff --git a/web/scripts/whitespace-check.mjs b/web/scripts/whitespace-check.mjs
+new file mode 100644
+index 0000000..0ccb948
+--- /dev/null
++++ b/web/scripts/whitespace-check.mjs
+@@ -0,0 +1,56 @@
++// Usage: node scripts/whitespace-check.mjs [repoDir]
++// Inspects tracked files from the checkout/index, unlike `git diff --check`
++// on a clean checkout. Reports file:line without printing file contents.
++import { execFileSync } from "node:child_process";
++import { readFile } from "node:fs/promises";
++import { join, resolve } from "node:path";
++import { fileURLToPath } from "node:url";
++
++export function scanText(text, file = "<text>") {
++  const findings = [];
++  const lines = text.split(/\r?\n/);
++  for (let index = 0; index < lines.length; index += 1) {
++    if (/[ \t]+$/.test(lines[index])) {
++      findings.push({ file, line: index + 1, rule: "trailing-whitespace" });
++    }
++    if (/^(<{7}|>{7})(?:\s|$)/.test(lines[index])) {
++      findings.push({ file, line: index + 1, rule: "conflict-marker" });
++    }
++  }
++  return findings;
++}
++
++export async function scanRepo(repoDir) {
++  const files = execFileSync("git", ["ls-files", "-z"], { cwd: repoDir, encoding: "utf8" })
++    .split("\0")
++    .filter(Boolean);
++  const findings = [];
++  for (const file of files) {
++    let text;
++    try {
++      text = await readFile(join(repoDir, file), "utf8");
++    } catch {
++      continue;
++    }
++    if (text.includes("\0")) continue; // binary
++    findings.push(...scanText(text, file));
++  }
++  return { files: files.length, findings };
++}
++
++async function main(repoDir) {
++  const { files, findings } = await scanRepo(resolve(repoDir));
++  if (findings.length > 0) {
++    for (const finding of findings) {
++      console.error(`${finding.file}:${finding.line}: ${finding.rule}`);
++    }
++    console.error(`whitespace check failed: ${findings.length} finding(s)`);
++    process.exitCode = 1;
++    return;
++  }
++  console.log(`whitespace check passed: ${files} tracked files inspected, 0 findings`);
++}
++
++if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
++  await main(process.argv[2] ?? fileURLToPath(new URL("../..", import.meta.url)));
++}
+diff --git a/web/scripts/whitespace-check.test.mjs b/web/scripts/whitespace-check.test.mjs
+new file mode 100644
+index 0000000..51b144e
+--- /dev/null
++++ b/web/scripts/whitespace-check.test.mjs
+@@ -0,0 +1,42 @@
++import assert from "node:assert/strict";
++import { execFileSync, spawnSync } from "node:child_process";
++import { mkdirSync, rmSync, writeFileSync } from "node:fs";
++import { join } from "node:path";
++import { test } from "node:test";
++import { fileURLToPath } from "node:url";
++import { scanText } from "./whitespace-check.mjs";
++
++const webDir = fileURLToPath(new URL("..", import.meta.url));
++const script = fileURLToPath(new URL("./whitespace-check.mjs", import.meta.url));
++
++test("scanText detects trailing whitespace and conflict markers", () => {
++  assert.deepEqual(scanText("clean line\nsecond line\n"), []);
++  assert.deepEqual(scanText("bad line \n"), [
++    { file: "<text>", line: 1, rule: "trailing-whitespace" },
++  ]);
++  assert.deepEqual(scanText("<<<<<<< HEAD\n"), [
++    { file: "<text>", line: 1, rule: "conflict-marker" },
++  ]);
++});
++
++test("tracked-file whitespace gate RED on seeded file, GREEN after cleanup", () => {
++  const fixture = join(webDir, ".test-cache", `whitespace-${process.pid}`);
++  mkdirSync(fixture, { recursive: true });
++  try {
++    execFileSync("git", ["init", "-q"], { cwd: fixture });
++    writeFileSync(join(fixture, "trailing.txt"), "seeded line \n");
++    execFileSync("git", ["add", "trailing.txt"], { cwd: fixture });
++
++    const red = spawnSync(process.execPath, [script, fixture], { encoding: "utf8" });
++    assert.equal(red.status, 1, red.stderr);
++    assert.match(red.stderr, /trailing\.txt:1: trailing-whitespace/);
++
++    writeFileSync(join(fixture, "trailing.txt"), "clean line\n");
++    execFileSync("git", ["add", "trailing.txt"], { cwd: fixture });
++    const green = spawnSync(process.execPath, [script, fixture], { encoding: "utf8" });
++    assert.equal(green.status, 0, green.stderr);
++    assert.match(green.stdout, /0 findings/);
++  } finally {
++    rmSync(fixture, { recursive: true, force: true });
++  }
++});
