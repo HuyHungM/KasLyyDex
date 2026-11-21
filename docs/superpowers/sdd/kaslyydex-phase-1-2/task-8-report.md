@@ -52,3 +52,19 @@ Test proof: two concurrent chapter completions produced `total_xp=200`, `level=2
 ## Unverified external gates
 
 No live Neon Postgres, Vercel deployment, OAuth provider, real MangaDex traffic, browser-to-production-Postgres flow, push or merge was exercised. The anti-farm delay and visible-page checks remain pragmatic abuse reduction, not proof of human reading. Full-workspace Rust formatting and the repository-wide browser suite beyond the listed files were not changed or re-baselined.
+
+## Fix round 1 — ordinary current page vs monotone XP evidence
+
+Reviewer minor (load-bearing per task brief): `completeChapter`'s `onConflictDoUpdate` used `page: excluded('page')`, so an idempotent re-open with a backward reread could move the ordinary current page from the Task 6 `PUT /me/progress` position to this session's `lastPageSeen`. Root-cause fix: the conflict branch no longer writes `page` at all. The insert branch still sets `page = lastPageSeen` for a first-time completion; `maxPage` still takes `greatest(existing.maxPage, observed last page)`, and authoritative `total`, `lastReadAt`, `revision` and `updatedAt` remain server-owned. XP uniqueness, level and notification logic are unchanged. Deferred minors (`last_read_at` 1 ms drift, missing `reader_session_id` FK) were not touched.
+
+Regression (real PGlite migrations `0000`–`0006`): complete at page 10 → `PUT /me/progress` backward to page 2 → fresh session for the same chapter observes pages 1–8 → idempotent retry → assert `page=2`, `maxPage>=10`, `total_xp=100`, one `xp_events` row; a first-time completion on another chapter with pages 1–8 still writes `page=8`.
+
+| Phase | Command (from `web/`) | Result |
+| --- | --- | --- |
+| RED | `node --import tsx --conditions=react-server --test --test-name-pattern='idempotent re-completion' scripts/progression.test.mjs` | `tests 1; pass 0; fail 1` — `8 !== 2` at `completion must preserve the ordinary backward current page` |
+| GREEN | same command | `tests 1; pass 1; fail 0` |
+| GREEN focused | `node --import tsx --conditions=react-server --test scripts/progression.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs` | `tests 36; pass 36; fail 0` |
+| GREEN aggregate | `node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs scripts/notification-feed.test.mjs scripts/progression.test.mjs` | `tests 104; pass 104; fail 0` |
+| GREEN gates | `npx tsc --noEmit`; `npx eslint`; `npm run build` | typecheck clean, 0 ESLint errors (7 pre-existing image warnings), build clean |
+
+Rust was unchanged in this fix round, so Rust tests/clippy/fmt were not rerun. Browser fixtures were unchanged; no browser rerun was needed for a server-only upsert fix. Concurrent/backward-PUT racing was not separately simulated; the completion path's user-level advisory lock still serializes completions, while the ordinary PUT remains authoritative for `page`.

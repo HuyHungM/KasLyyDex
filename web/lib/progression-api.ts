@@ -371,7 +371,9 @@ export function createProgressionApi(deps: ProgressionDeps) {
             tables.chapterProgress.chapterId, tables.chapterProgress.language,
           ],
           set: {
-            page: excluded("page"),
+            // `page` is the ordinary reread position owned by PUT /me/progress;
+            // completion evidence must never move it on conflict. Only the
+            // monotone max page consumes this session's observed last page.
             maxPage: sql`greatest(${tables.chapterProgress.maxPage}, ${excluded("page")})`,
             total: excluded("total"),
             lastReadAt: sql`greatest(${tables.chapterProgress.lastReadAt} + 1, ${excluded("last_read_at")})`,

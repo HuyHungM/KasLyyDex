@@ -384,6 +384,75 @@ test("duplicate completions across sessions and languages never double XP", asyn
   }
 });
 
+test("idempotent re-completion never overwrites the ordinary backward current page", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const handler = api(db, realIdentity);
+    await meService.ensureProfile(db, realIdentity, { now: T0, allowlist: [] });
+    const first = await openSession(handler, realIdentity);
+    await validCoverage(handler, first.ticket);
+    now = T0 + 16_000;
+    const awarded = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: first.ticket })));
+    assert.equal(awarded.body.awarded, true);
+    const afterFirst = await db.select().from(schema.chapterProgress)
+      .where(eq(schema.chapterProgress.chapterId, CHAPTER)).limit(1);
+    assert.equal(afterFirst[0].page, 10, "first completion sets the observed current page");
+    assert.equal(afterFirst[0].maxPage, 10);
+
+    // Ordinary reread: Task 6 PUT is the authority for the current position.
+    const reread = await meService.putProgress(db, realIdentity.id, CHAPTER, {
+      mangaId: MANGA, lang: "vi", page: 2, total: 10,
+      chapter: "1", title: "Chương 1", coverFile: null,
+    }, T0 + 17_000);
+    assert.equal(reread.page, 2);
+    assert.equal(reread.maxPage, 10, "reread cannot regress monotone evidence");
+
+    // A fresh session for the same chapter only observes pages 1..8. Its
+    // completion evidence must not push the reread position forward again.
+    // Move past the durable 60s checkpoint window so the earlier batch ages out.
+    now = T0 + 61_000;
+    const second = await openSession(handler, realIdentity);
+    await validCoverage(handler, second.ticket, 8);
+    now = T0 + 77_000;
+    const retry = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: second.ticket })));
+    assert.equal(retry.status, 200, JSON.stringify(retry.body));
+    assert.equal(retry.body.awarded, false);
+
+    const afterRetry = await db.select().from(schema.chapterProgress)
+      .where(eq(schema.chapterProgress.chapterId, CHAPTER)).limit(1);
+    assert.equal(afterRetry[0].page, 2, "completion must preserve the ordinary backward current page");
+    assert.ok(afterRetry[0].maxPage >= 10, "XP coverage stays monotone");
+    const profile = await pg.query("select total_xp, level from profiles where user_id = $1", [realIdentity.id]);
+    assert.equal(profile.rows[0].total_xp, 100);
+    const events = await pg.query("select count(*)::int as n from xp_events where user_id = $1", [realIdentity.id]);
+    assert.equal(events.rows[0].n, 1);
+
+    // First-time completion on another chapter still sets its current page.
+    now = T0 + 122_000;
+    const otherHandler = api(db, realIdentity, { content: () => ({
+      ...content(),
+      async chapterMetadata(id) { return { ...(await content().chapterMetadata(id)), id }; },
+    }) });
+    const otherRes = await json(await otherHandler.sessionPost(request("/api/v1/reader-sessions", {
+      chapterId: OTHER, mangaId: MANGA, lang: "vi",
+    })));
+    assert.equal(otherRes.status, 200, JSON.stringify(otherRes.body));
+    await validCoverage(otherHandler, otherRes.body.ticket, 8);
+    now = T0 + 138_000;
+    const otherComplete = await json(await otherHandler.completePost(request("/api/v1/progress/complete", {
+      ticket: otherRes.body.ticket,
+    })));
+    assert.equal(otherComplete.body.awarded, true);
+    const otherProgress = await db.select().from(schema.chapterProgress)
+      .where(eq(schema.chapterProgress.chapterId, OTHER)).limit(1);
+    assert.equal(otherProgress[0].page, 8, "first completion still writes its current page");
+    assert.equal(otherProgress[0].maxPage, 8);
+    now = T0;
+  } finally {
+    await pg.close();
+  }
+});
+
 test("concurrent completions of different chapters serialize profile totals and level-up events", async () => {
   const { pg, db } = await migratedDb();
   try {
