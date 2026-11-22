@@ -1,0 +1,607 @@
+1c4524b feat: sync reader theme with site by default
+ crates/domain/src/lib.rs                |  22 ++++-
+ crates/reader-core/src/tests.rs         |   5 +-
+ crates/reader-wasm/src/lib.rs           |   5 +-
+ web/app/globals.css                     |  18 +---
+ web/components/account/SettingsForm.tsx |   1 +
+ web/components/reader/ReaderClient.tsx  |   4 +-
+ web/components/reader/ReaderToolbar.tsx |   1 +
+ web/lib/guest.ts                        |   6 +-
+ web/lib/me/service.ts                   |   2 +-
+ web/lib/validators.ts                   |   6 +-
+ web/scripts/reader-theme.test.mjs       | 168 ++++++++++++++++++++++++++++++++
+ 11 files changed, 212 insertions(+), 26 deletions(-)
+diff --git a/crates/domain/src/lib.rs b/crates/domain/src/lib.rs
+index 047b473..120d62f 100644
+--- a/crates/domain/src/lib.rs
++++ b/crates/domain/src/lib.rs
+@@ -63,24 +63,26 @@ impl ReaderMode {
+         }
+     }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+ #[serde(rename_all = "lowercase")]
+ pub enum ReaderBackground {
+     #[default]
++    Auto,
+     Light,
+     Sepia,
+     Dark,
+ }
+ 
+ impl ReaderBackground {
+     pub const fn as_str(self) -> &'static str {
+         match self {
++            Self::Auto => "auto",
+             Self::Light => "light",
+             Self::Sepia => "sepia",
+             Self::Dark => "dark",
+         }
+     }
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+@@ -103,17 +105,17 @@ const fn default_speed() -> u8 {
+     3
+ }
+ 
+ impl Default for ReaderSettings {
+     fn default() -> Self {
+         Self {
+             mode: ReaderMode::Vertical,
+             fit: default_fit(),
+-            bg: ReaderBackground::Light,
++            bg: ReaderBackground::Auto,
+             speed: default_speed(),
+         }
+     }
+ }
+ 
+ impl ReaderSettings {
+     pub fn is_valid(&self) -> bool {
+         (1..=5).contains(&self.speed)
+@@ -222,16 +224,34 @@ impl CultivationRealm {
+         }
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn reader_background_accepts_auto_and_roundtrips_wire_values() {
++        for (background, wire) in [
++            (ReaderBackground::Auto, "auto"),
++            (ReaderBackground::Light, "light"),
++            (ReaderBackground::Sepia, "sepia"),
++            (ReaderBackground::Dark, "dark"),
++        ] {
++            assert_eq!(background.as_str(), wire);
++            assert_eq!(serde_json::to_string(&background).unwrap(), format!("\"{wire}\""));
++            assert_eq!(
++                serde_json::from_str::<ReaderBackground>(&format!("\"{wire}\"")).unwrap(),
++                background
++            );
++        }
++        assert_eq!(ReaderSettings::default().bg, ReaderBackground::Auto);
++    }
++
+     #[test]
+     fn cultivation_level_and_realm_boundaries_are_validated() {
+         assert!(CultivationLevel::new(0).is_none());
+         assert!(CultivationLevel::new(1001).is_none());
+         assert!(serde_json::from_str::<CultivationLevel>("0").is_err());
+         assert!(serde_json::from_str::<CultivationLevel>("1001").is_err());
+         for (level, realm) in [
+             (1, CultivationRealm::Mortal),
+diff --git a/crates/reader-core/src/tests.rs b/crates/reader-core/src/tests.rs
+index 189c700..282bb72 100644
+--- a/crates/reader-core/src/tests.rs
++++ b/crates/reader-core/src/tests.rs
+@@ -50,28 +50,29 @@ fn reader_settings_preserve_horizontal_and_vertical_wire_values() {
+         ..ReaderSettings::default()
+     };
+     let vertical = ReaderSettings {
+         mode: ReaderMode::Vertical,
+         ..ReaderSettings::default()
+     };
+     assert_eq!(
+         serde_json::to_string(&horizontal).unwrap(),
+-        r#"{"mode":"horizontal","fit":true,"bg":"light","speed":3}"#
++        r#"{"mode":"horizontal","fit":true,"bg":"auto","speed":3}"#
+     );
+     assert_eq!(
+         serde_json::to_string(&vertical).unwrap(),
+-        r#"{"mode":"vertical","fit":true,"bg":"light","speed":3}"#
++        r#"{"mode":"vertical","fit":true,"bg":"auto","speed":3}"#
+     );
+     assert_eq!(
+         serde_json::from_str::<ReaderSettings>(
+             r#"{"mode":"horizontal","fit":true,"bg":"sepia","speed":3}"#
+         )
+         .unwrap()
+         .mode,
+         ReaderMode::Horizontal
+     );
++    assert_eq!(ReaderBackground::Auto.as_str(), "auto");
+     assert_eq!(ReaderBackground::Dark.as_str(), "dark");
+     let mut reader = ReaderState::with_settings(1, horizontal.clone()).unwrap();
+     assert_eq!(reader.settings().mode, ReaderMode::Horizontal);
+     reader.set_settings(vertical);
+     assert_eq!(reader.settings().mode, ReaderMode::Vertical);
+ }
+diff --git a/crates/reader-wasm/src/lib.rs b/crates/reader-wasm/src/lib.rs
+index 3050364..c7551a4 100644
+--- a/crates/reader-wasm/src/lib.rs
++++ b/crates/reader-wasm/src/lib.rs
+@@ -38,16 +38,17 @@ fn parse_mode(mode: &str) -> Result<ReaderMode, String> {
+         "vertical" => Ok(ReaderMode::Vertical),
+         "horizontal" => Ok(ReaderMode::Horizontal),
+         _ => Err(format!("invalid reader mode: {mode}")),
+     }
+ }
+ 
+ fn parse_background(bg: &str) -> Result<ReaderBackground, String> {
+     match bg {
++        "auto" => Ok(ReaderBackground::Auto),
+         "light" => Ok(ReaderBackground::Light),
+         "sepia" => Ok(ReaderBackground::Sepia),
+         "dark" => Ok(ReaderBackground::Dark),
+         _ => Err(format!("invalid reader background: {bg}")),
+     }
+ }
+ 
+ #[wasm_bindgen]
+@@ -164,25 +165,27 @@ mod tests {
+     #[test]
+     fn mode_and_background_changes_validate_against_core_enums() {
+         let mut state = try_new(2).unwrap();
+         try_set_mode(&mut state, "horizontal").unwrap();
+         assert_eq!(state.settings().mode, ReaderMode::Horizontal);
+         assert!(try_set_mode(&mut state, "diagonal").is_err());
+         try_set_background(&mut state, "sepia").unwrap();
+         assert_eq!(state.settings().bg, ReaderBackground::Sepia);
++        try_set_background(&mut state, "auto").unwrap();
++        assert_eq!(state.settings().bg, ReaderBackground::Auto);
+         assert!(try_set_background(&mut state, "neon").is_err());
+     }
+ 
+     #[test]
+     fn settings_json_roundtrip_preserves_wire_values() {
+         let mut state = try_new(2).unwrap();
+         try_set_mode(&mut state, "horizontal").unwrap();
+         let json = serde_json::to_string(state.settings()).unwrap();
+         assert_eq!(
+             json,
+-            r#"{"mode":"horizontal","fit":true,"bg":"light","speed":3}"#
++            r#"{"mode":"horizontal","fit":true,"bg":"auto","speed":3}"#
+         );
+         let restored: ReaderSettings = serde_json::from_str(&json).unwrap();
+         state.set_settings(restored);
+         assert_eq!(state.settings().mode, ReaderMode::Horizontal);
+     }
+ }
+diff --git a/web/app/globals.css b/web/app/globals.css
+index b81f7c8..d0c30af 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -304,31 +304,23 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .chapter-row .read { color: var(--muted); }
+ @media (min-width: 640px) {
+   .manga-head { grid-template-columns: 200px minmax(0, 1fr); }
+   .manga-cover { width: 100%; }
+   .chapter-row { grid-template-columns: 124px minmax(0, 1fr) auto; }
+   .ch-date { grid-column: auto; }
+ }
+ 
+-/* Trình đọc có bảng màu riêng để giữ lựa chọn của người đọc. */
++/* Trình đọc mặc định (auto) dùng bảng màu của site; chế độ thủ công tự ghi đè. */
+ .reader {
+-  color-scheme: light;
+-  --reader-bg: #f5f4ee;
+-  --surface: #fcfbf7;
+-  --text: #25271e;
+-  --muted: #5e6355;
+-  --line: #dcded3;
+-  --hover: #eceee4;
+-  --solid: #455e13;
+-  --solid-ink: #fff;
+-  --accent: #455e13;
+-  min-height: 100dvh; padding-bottom: calc(70px + var(--safe)); background: var(--reader-bg); color: var(--text);
++  min-height: 100dvh; padding-bottom: calc(70px + var(--safe)); background: var(--reader-bg, var(--bg)); color: var(--text);
+ }
+-.reader[data-bg="sepia"] { --reader-bg: #f1e7d2; --surface: #fbf4e4; --line: #d8c9ae; }
++.reader[data-bg="auto"] { --reader-bg: var(--bg); }
++.reader[data-bg="light"] { color-scheme: light; --reader-bg: #f5f4ee; --surface: #fcfbf7; --text: #25271e; --muted: #5e6355; --line: #dcded3; --hover: #eceee4; --solid: #455e13; --solid-ink: #fff; --accent: #455e13; }
++.reader[data-bg="sepia"] { color-scheme: light; --reader-bg: #f1e7d2; --surface: #fbf4e4; --text: #25271e; --muted: #5e6355; --line: #d8c9ae; --hover: #eceee4; --solid: #455e13; --solid-ink: #fff; --accent: #455e13; }
+ .reader[data-bg="dark"] { color-scheme: dark; --reader-bg: #101113; --surface: #18191c; --text: #f5f4ef; --muted: #a8a9a3; --line: #343638; --hover: #232528; --accent: #dcf885; --solid: #dcf885; --solid-ink: #202a0a; }
+ .reader:fullscreen { width: 100%; height: 100%; overflow: auto; }
+ .reader-bar { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line); background: var(--surface); }
+ .reader-bar-inner { display: flex; max-width: 1080px; align-items: center; gap: 6px 8px; margin-inline: auto; padding: 8px 12px; }
+ .reader-bar .back-link { display: block; min-width: 0; flex: 1; overflow: hidden; line-height: 44px; white-space: nowrap; text-overflow: ellipsis; }
+ .chapter-select { width: auto; max-width: min(35vw, 200px); }
+ .reader-title { color: var(--muted); font-size: .8125rem; }
+ .reader-main { max-width: 768px; margin-inline: auto; padding: 10px 0; }
+diff --git a/web/components/account/SettingsForm.tsx b/web/components/account/SettingsForm.tsx
+index fe971f0..5ee627c 100644
+--- a/web/components/account/SettingsForm.tsx
++++ b/web/components/account/SettingsForm.tsx
+@@ -46,16 +46,17 @@ function SettingsFields({
+           onChange={(value) => setMode(value as ReaderSettingsDto["mode"])}
+         />
+       </label>
+       <label>Nền
+         <Select
+           ariaLabel="Nền"
+           value={bg}
+           options={[
++            { value: "auto", label: "Tự động theo giao diện" },
+             { value: "light", label: "Sáng" },
+             { value: "sepia", label: "Ngà" },
+             { value: "dark", label: "Tối" },
+           ]}
+           onChange={(value) => setBg(value as ReaderSettingsDto["bg"])}
+         />
+       </label>
+       <label className="account-check"><input type="checkbox" checked={fit} onChange={(event) => setFit(event.target.checked)} /> Vừa khung hình</label>
+diff --git a/web/components/reader/ReaderClient.tsx b/web/components/reader/ReaderClient.tsx
+index 54ae067..91079f9 100644
+--- a/web/components/reader/ReaderClient.tsx
++++ b/web/components/reader/ReaderClient.tsx
+@@ -5,17 +5,17 @@ import { useRouter } from "next/navigation";
+ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+ import type { ReaderWasm } from "@/generated/reader-wasm";
+ import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
+ import { sourceLabel } from "@/lib/contracts";
+ import type { ReaderSettingsDto } from "@/lib/validators";
+ import { accountGet, accountMutate, parseAccountResponse, useAccountSession } from "@/lib/account/client";
+ import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
+ import {
+-  DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
++  getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
+   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
+ } from "@/lib/guest";
+ import ReaderPages from "./ReaderPages";
+ import ReaderToolbar from "./ReaderToolbar";
+ import CommentSection from "@/components/comments/CommentSection";
+ 
+ type Props = {
+   manga: MangaSummaryDto;
+@@ -99,17 +99,17 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+   const xp = useRef<XpTrack>({
+     generation: 0, ticket: null, issuedAt: 0, pending: new Set(), sent: new Set(),
+     sends: [], observer: null, timer: null, inFlight: false, completed: false,
+   });
+   const { session } = useAccountSession();
+ 
+   const [page, setPage] = useState(0);
+   const [progress, setProgress] = useState(0);
+-  const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
++  const [settings, setSettings] = useState<ReaderSettings>(() => getSettings());
+   const [wasmError, setWasmError] = useState<string | null>(null);
+   const [wasmAttempt, setWasmAttempt] = useState(0);
+   const [loaded, setLoaded] = useState(false);
+   const [running, setRunning] = useState(false);
+   const [remoteReadyKey, setRemoteReadyKey] = useState("");
+   const [syncError, setSyncError] = useState<string | null>(null);
+   const [syncAttempt, setSyncAttempt] = useState(0);
+   const [award, setAward] = useState<string | null>(null);
+diff --git a/web/components/reader/ReaderToolbar.tsx b/web/components/reader/ReaderToolbar.tsx
+index aaa1c1a..5d436c0 100644
+--- a/web/components/reader/ReaderToolbar.tsx
++++ b/web/components/reader/ReaderToolbar.tsx
+@@ -52,16 +52,17 @@ export default function ReaderToolbar({
+                 }}
+               />
+             </label>
+             <label>Nền đọc
+               <Select
+                 ariaLabel="Nền đọc"
+                 value={settings.bg}
+                 options={[
++                  { value: "auto", label: "Tự động theo giao diện" },
+                   { value: "light", label: "Sáng" },
+                   { value: "sepia", label: "Giấy ấm" },
+                   { value: "dark", label: "Tối" },
+                 ]}
+                 onChange={(value) => onSettings({ bg: value as ReaderSettings["bg"] })}
+               />
+             </label>
+             <button
+diff --git a/web/lib/guest.ts b/web/lib/guest.ts
+index c243979..fe747be 100644
+--- a/web/lib/guest.ts
++++ b/web/lib/guest.ts
+@@ -32,24 +32,24 @@ export type GuestLibraryEntry = {
+   followedAt: number;
+   lastChapterId: string | null;
+   lastReadPublish: number;
+ };
+ 
+ export type ReaderSettings = {
+   mode: "vertical" | "horizontal";
+   fit: boolean;
+-  bg: "light" | "sepia" | "dark";
++  bg: "auto" | "light" | "sepia" | "dark";
+   speed: number;
+ };
+ 
+ export const DEFAULT_SETTINGS: ReaderSettings = {
+   mode: "vertical",
+   fit: true,
+-  bg: "light",
++  bg: "auto",
+   speed: 3,
+ };
+ 
+ type Loose = Record<string, unknown>;
+ 
+ function obj(value: unknown): Loose {
+   return value && typeof value === "object" && !Array.isArray(value) ? (value as Loose) : {};
+ }
+@@ -235,17 +235,17 @@ export function normalizeSettings(value: unknown): ReaderSettings {
+   const bg = text(raw.bg);
+   const parsedSpeed = number(raw.speed, DEFAULT_SETTINGS.speed);
+   const speed = parsedSpeed >= 1 && parsedSpeed <= 5
+     ? Math.round(parsedSpeed)
+     : DEFAULT_SETTINGS.speed;
+   return {
+     mode: mode === "horizontal" ? "horizontal" : "vertical",
+     fit: typeof raw.fit === "boolean" ? raw.fit : DEFAULT_SETTINGS.fit,
+-    bg: bg === "sepia" || bg === "dark" ? bg : "light",
++    bg: bg === "auto" || bg === "light" || bg === "sepia" || bg === "dark" ? bg : DEFAULT_SETTINGS.bg,
+     speed,
+   };
+ }
+ 
+ let settingsCache = { raw: "", value: DEFAULT_SETTINGS };
+ 
+ export function getSettings(): ReaderSettings {
+   const raw = readRaw(KEYS.reader) ?? "";
+diff --git a/web/lib/me/service.ts b/web/lib/me/service.ts
+index e0eed2e..c4c5c8d 100644
+--- a/web/lib/me/service.ts
++++ b/web/lib/me/service.ts
+@@ -319,17 +319,17 @@ export async function getLevel(db: AppDatabase, userId: string): Promise<{
+     level: snapshot.level, totalXp: snapshot.totalXp, title: snapshot.title,
+     realm: snapshot.realm.key, source: "progression_v1", ruleVersion: snapshot.ruleVersion,
+   };
+ }
+ 
+ export async function getSettings(db: AppDatabase, userId: string): Promise<ReaderSettingsDto> {
+   const rows = await db.select().from(tables.readerPreferences)
+     .where(eq(tables.readerPreferences.userId, userId)).limit(1);
+-  if (rows.length === 0) return { mode: "vertical", fit: true, bg: "light", speed: 3 };
++  if (rows.length === 0) return { mode: "vertical", fit: true, bg: "auto", speed: 3 };
+   return { mode: rows[0].mode as ReaderSettingsDto["mode"], fit: rows[0].fit, bg: rows[0].bg as ReaderSettingsDto["bg"], speed: rows[0].speed };
+ }
+ 
+ export async function putSettings(
+   db: AppDatabase,
+   userId: string,
+   input: ReaderSettingsDto,
+   now: number,
+diff --git a/web/lib/validators.ts b/web/lib/validators.ts
+index 7beeba1..7e716cd 100644
+--- a/web/lib/validators.ts
++++ b/web/lib/validators.ts
+@@ -1,22 +1,22 @@
+ // Browser-safe input boundary. Nothing here trusts client-supplied ids, roles,
+ // XP, levels or timestamps; callers derive identity from the managed session.
+ 
+ export type ReaderSettingsDto = {
+   mode: "vertical" | "horizontal";
+   fit: boolean;
+-  bg: "light" | "sepia" | "dark";
++  bg: "auto" | "light" | "sepia" | "dark";
+   speed: number;
+ };
+ 
+ export const DEFAULT_READER_SETTINGS: ReaderSettingsDto = {
+   mode: "vertical",
+   fit: true,
+-  bg: "light",
++  bg: "auto",
+   speed: 3,
+ };
+ 
+ export const LIBRARY_STATUSES = ["reading", "planned", "completed", "paused", "dropped"] as const;
+ export type LibraryStatus = (typeof LIBRARY_STATUSES)[number];
+ 
+ export class ValidationError extends Error {
+   readonly status: number;
+@@ -262,17 +262,17 @@ export function parseProgressInput(body: Record<string, unknown>): ProgressInput
+ 
+ export function parseSettingsInput(body: Record<string, unknown>): ReaderSettingsDto {
+   assertAllowedKeys(body, ["mode", "fit", "bg", "speed"]);
+   const mode = body.mode === undefined ? DEFAULT_READER_SETTINGS.mode : body.mode;
+   const bg = body.bg === undefined ? DEFAULT_READER_SETTINGS.bg : body.bg;
+   if (mode !== "vertical" && mode !== "horizontal") {
+     throw new ValidationError(400, "INVALID_INPUT", "Unknown reader mode.");
+   }
+-  if (bg !== "light" && bg !== "sepia" && bg !== "dark") {
++  if (bg !== "auto" && bg !== "light" && bg !== "sepia" && bg !== "dark") {
+     throw new ValidationError(400, "INVALID_INPUT", "Unknown reader background.");
+   }
+   if (body.fit !== undefined && typeof body.fit !== "boolean") {
+     throw new ValidationError(400, "INVALID_INPUT", "fit must be a boolean.");
+   }
+   return {
+     mode,
+     fit: body.fit === undefined ? DEFAULT_READER_SETTINGS.fit : body.fit,
+diff --git a/web/scripts/reader-theme.test.mjs b/web/scripts/reader-theme.test.mjs
+new file mode 100644
+index 0000000..e398174
+--- /dev/null
++++ b/web/scripts/reader-theme.test.mjs
+@@ -0,0 +1,168 @@
++import assert from "node:assert/strict";
++import { readFileSync } from "node:fs";
++import { after, before, beforeEach, test } from "node:test";
++import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
++
++const guest = await import("../lib/guest.ts");
++const validators = await import("../lib/validators.ts");
++
++class MemoryStorage {
++  constructor(seed = {}) {
++    this.data = new Map(Object.entries(seed));
++  }
++  getItem(key) {
++    return this.data.has(key) ? this.data.get(key) : null;
++  }
++  setItem(key, value) {
++    this.data.set(key, String(value));
++  }
++}
++
++function seedSettings(value) {
++  globalThis.localStorage = new MemoryStorage(
++    value === null ? {} : { [guest.KEYS.reader]: JSON.stringify(value) },
++  );
++}
++
++beforeEach(() => {
++  seedSettings(null);
++});
++
++// Real cascade check: feed the site theme and reader rules from globals.css
++// into a headless page, no app server required.
++const cssSource = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
++const themeCss = [...cssSource.matchAll(
++  /(?::root(?:\[data-theme="light"\])?|\.reader(?:\[data-bg="[^"]+"\])?)\s*\{[^}]*\}/g,
++)].map((match) => match[0]).join("\n");
++
++let browser;
++before(async () => {
++  browser = await chromium.launch({ executablePath: browserExecutable(), headless: true });
++});
++after(async () => {
++  await browser?.close();
++});
++
++async function mount(page, bg, theme) {
++  await page.evaluate(({ source, bg, theme }) => {
++    document.documentElement.dataset.theme = theme;
++    document.querySelector("style[data-theme-css]")?.remove();
++    const style = document.createElement("style");
++    style.dataset.themeCss = "true";
++    style.textContent = source;
++    document.head.append(style);
++    document.querySelector(".reader")?.remove();
++    const reader = document.createElement("div");
++    reader.className = "reader";
++    reader.dataset.bg = bg;
++    reader.textContent = "reader";
++    document.body.append(reader);
++  }, { source: themeCss, bg, theme });
++}
++
++async function openHarness(bg, theme) {
++  const context = await browser.newContext();
++  await context.route("http://theme.test/", (route) => route.fulfill({
++    status: 200,
++    contentType: "text/html",
++    body: "<!doctype html><html><head></head><body></body></html>",
++  }));
++  const page = await context.newPage();
++  await page.goto("http://theme.test/");
++  await mount(page, bg, theme);
++  return { context, page };
++}
++
++async function palettes(page) {
++  return page.evaluate(() => {
++    const read = (element, withSiteBg) => {
++      const style = getComputedStyle(element);
++      const palette = {
++        readerBg: style.getPropertyValue("--reader-bg").trim(),
++        surface: style.getPropertyValue("--surface").trim(),
++        text: style.getPropertyValue("--text").trim(),
++        line: style.getPropertyValue("--line").trim(),
++        accent: style.getPropertyValue("--accent").trim(),
++        scheme: style.colorScheme,
++      };
++      if (withSiteBg) palette.bg = style.getPropertyValue("--bg").trim();
++      return palette;
++    };
++    return {
++      reader: read(document.querySelector(".reader"), false),
++      site: read(document.documentElement, true),
++    };
++  });
++}
++
++test("unset or invalid reader settings normalize to auto background", () => {
++  assert.equal(guest.DEFAULT_SETTINGS.bg, "auto");
++  assert.equal(guest.getSettings().bg, "auto");
++  assert.equal(guest.normalizeSettings(null).bg, "auto");
++  assert.equal(guest.normalizeSettings({}).bg, "auto");
++  assert.equal(guest.normalizeSettings({ bg: "neon" }).bg, "auto");
++});
++
++test("saved manual backgrounds stay unchanged through normalization", () => {
++  for (const bg of ["light", "sepia", "dark", "auto"]) {
++    seedSettings({ mode: "horizontal", fit: false, bg, speed: 4 });
++    assert.deepEqual(guest.getSettings(), { mode: "horizontal", fit: false, bg, speed: 4 });
++  }
++  seedSettings({ mode: "horizontal", fit: false, bg: "sepia", speed: 99 });
++  assert.deepEqual(guest.getSettings(), { mode: "horizontal", fit: false, bg: "sepia", speed: 3 });
++});
++
++test("account settings boundary accepts the auto background", () => {
++  assert.equal(validators.DEFAULT_READER_SETTINGS.bg, "auto");
++  assert.equal(validators.parseSettingsInput({ mode: "vertical", fit: true, bg: "auto", speed: 3 }).bg, "auto");
++});
++
++test("reader in auto follows the site light and dark dataset", async () => {
++  for (const theme of ["dark", "light"]) {
++    const { context, page } = await openHarness("auto", theme);
++    const { reader, site } = await palettes(page);
++    assert.equal(reader.readerBg, site.bg, "auto reader background must be the site --bg");
++    for (const key of ["surface", "text", "line", "accent"]) {
++      assert.equal(reader[key], site[key], `auto reader ${key} must be the site --${key}`);
++    }
++    assert.equal(reader.scheme, site.scheme, "auto reader color-scheme must follow the site");
++    await context.close();
++  }
++});
++
++test("switching the site theme repaints the auto reader without reload", async () => {
++  const { context, page } = await openHarness("auto", "dark");
++  const darkSite = (await palettes(page)).site;
++  await page.evaluate(() => {
++    document.documentElement.dataset.theme = "light";
++  });
++  const after = await palettes(page);
++  assert.equal(after.reader.readerBg, after.site.bg);
++  assert.equal(after.reader.surface, after.site.surface);
++  assert.notEqual(after.site.bg, darkSite.bg);
++  assert.equal(after.reader.scheme, "light");
++  await context.close();
++});
++
++test("manual dark reader ignores site theme changes and persists after reload", async () => {
++  const { context, page } = await openHarness("dark", "light");
++  const before = await palettes(page);
++  assert.notEqual(before.reader.surface, before.site.surface);
++  await page.evaluate(() => {
++    document.documentElement.dataset.theme = "dark";
++  });
++  const afterSwitch = await palettes(page);
++  assert.deepEqual(afterSwitch.reader, before.reader, "manual override must not follow the site theme");
++
++  await page.evaluate((key) => {
++    localStorage.setItem(key, JSON.stringify({ mode: "vertical", fit: true, bg: "dark", speed: 3 }));
++  }, guest.KEYS.reader);
++  await page.reload();
++  const stored = await page.evaluate((key) => localStorage.getItem(key), guest.KEYS.reader);
++  const restored = guest.normalizeSettings(JSON.parse(stored));
++  assert.equal(restored.bg, "dark");
++  await mount(page, restored.bg, "light");
++  assert.deepEqual((await palettes(page)).reader, before.reader, "manual override must persist after reload");
++  await context.close();
++});

@@ -1,0 +1,1250 @@
+445d8ec feat: fallback unreadable chapters to Comick
+ crates/contracts/src/lib.rs          |   3 +
+ crates/core/src/fallback.rs          | 583 +++++++++++++++++++++++++++++++++++
+ crates/core/src/lib.rs               |   3 +-
+ crates/core/src/mangadex.rs          |   2 +
+ crates/server/src/main.rs            | 102 ++++--
+ web/scripts/source-fallback.test.mjs | 247 +++++++++++++++
+ 6 files changed, 907 insertions(+), 33 deletions(-)
+diff --git a/crates/contracts/src/lib.rs b/crates/contracts/src/lib.rs
+index 68114e2..b673854 100644
+--- a/crates/contracts/src/lib.rs
++++ b/crates/contracts/src/lib.rs
+@@ -72,16 +72,18 @@ pub struct ChapterDto {
+     pub pages: u64,
+     pub external_url: Option<String>,
+     pub publish_at: String,
+     pub group: String,
+     #[serde(default = "default_source")]
+     pub source: String,
+     #[serde(default = "default_source_label")]
+     pub source_label: String,
++    #[serde(default)]
++    pub readable: bool,
+ }
+ 
+ fn default_source() -> String {
+     "mangadex".to_owned()
+ }
+ 
+ fn default_source_label() -> String {
+     "MangaDex".to_owned()
+@@ -257,16 +259,17 @@ mod tests {
+             title: String::new(),
+             lang: "vi".into(),
+             pages: 12,
+             external_url: None,
+             publish_at: String::new(),
+             group: String::new(),
+             source: "mangadex".into(),
+             source_label: "MangaDex".into(),
++            readable: true,
+         };
+         let chapters = serde_json::to_value(chapter).unwrap();
+         for field in [
+             "id",
+             "chapter",
+             "volume",
+             "title",
+             "lang",
+diff --git a/crates/core/src/fallback.rs b/crates/core/src/fallback.rs
+new file mode 100644
+index 0000000..3a65ef6
+--- /dev/null
++++ b/crates/core/src/fallback.rs
+@@ -0,0 +1,583 @@
++use crate::{comick, imgcache, mangadex, Comick, Md};
++use comick::{is_comick_chapter_id, ComickChapter};
++use contracts::{ChapterDto, ChapterMetadataDto, ChaptersResponse, MangaSummaryDto, PagesResponse};
++use mangadex::is_uuid;
++use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
++use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
++use std::collections::HashMap;
++use std::path::{Path, PathBuf};
++use std::time::{SystemTime, UNIX_EPOCH};
++
++const SOURCE: &str = "comick";
++const SOURCE_LABEL: &str = "Comick";
++const POSITIVE_TTL_SECS: u64 = 3_600;
++const NEGATIVE_TTL_SECS: u64 = 60;
++const MAX_TTL_SECS: u64 = 86_400;
++const MAX_CACHE_BYTES: u64 = 4_096;
++const MAX_CACHE_FILES: usize = 512;
++const MAX_TITLE_CANDIDATES: usize = 3;
++
++#[derive(Clone)]
++pub struct ContentState {
++    pub md: Md,
++    pub comick: Option<Comick>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++struct CachedMatch {
++    manga_id: String,
++    comic_id: String,
++    chapter_id: String,
++    chapter: String,
++    lang: String,
++    title: String,
++    publish_at: String,
++    group: String,
++    pages: u64,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++enum CacheValue {
++    Hit { mapping: CachedMatch },
++    Miss,
++}
++
++#[derive(Serialize, Deserialize)]
++struct CacheEnvelope {
++    expires: u64,
++    value: CacheValue,
++}
++
++/// Source-aware chapter lists: MangaDex stays primary; Comick only fills gaps.
++pub async fn enrich_chapters(
++    state: &ContentState,
++    manga: &MangaSummaryDto,
++    mut chapters: ChaptersResponse,
++) -> Result<ChaptersResponse, String> {
++    let Some(comick) = state.comick.as_ref() else {
++        return Ok(chapters);
++    };
++    let needs_fallback = chapters
++        .vi
++        .iter()
++        .chain(chapters.en.iter())
++        .any(|chapter| !is_readable(chapter));
++    if !needs_fallback {
++        return Ok(chapters);
++    }
++    let titles = comick.search_titles(&manga.title).await.unwrap_or_default();
++    let titles: Vec<_> = titles
++        .into_iter()
++        .filter(|title| title_matches(&manga.title, title))
++        .take(MAX_TITLE_CANDIDATES)
++        .collect();
++    if titles.is_empty() {
++        return Ok(chapters);
++    }
++
++    // One bounded search + up to two language fetches per title candidate.
++    let mut candidates = Vec::new();
++    let mut comic_by_chapter = HashMap::new();
++    for title in &titles {
++        for lang in ["vi", "en"] {
++            if let Ok(found) = comick.chapters(&title.hid, lang).await {
++                for candidate in found {
++                    comic_by_chapter.insert(candidate.id.clone(), title.hid.clone());
++                    candidates.push(candidate);
++                }
++            }
++        }
++    }
++    if candidates.is_empty() {
++        return Ok(chapters);
++    }
++
++    chapters.vi = enrich_list(
++        comick,
++        manga.id.as_str(),
++        chapters.vi,
++        &candidates,
++        &comic_by_chapter,
++    )
++    .await;
++    chapters.en = enrich_list(
++        comick,
++        manga.id.as_str(),
++        chapters.en,
++        &candidates,
++        &comic_by_chapter,
++    )
++    .await;
++    Ok(chapters)
++}
++
++/// Source-aware page lookup; every returned URL stays on this origin.
++pub async fn chapter_pages(
++    state: &ContentState,
++    chapter_id: &str,
++) -> Result<PagesResponse, String> {
++    if is_comick_chapter_id(chapter_id) {
++        let comick = state
++            .comick
++            .as_ref()
++            .ok_or_else(|| "Comick catalog unavailable".to_owned())?;
++        let urls = comick.page_urls(chapter_id).await?;
++        if urls.is_empty() {
++            return Err("Comick chapter has no readable pages.".to_owned());
++        }
++        return Ok(PagesResponse {
++            pages: urls.iter().map(|url| image_proxy_path(url)).collect(),
++        });
++    }
++    if !is_uuid(chapter_id) {
++        return Err("Mã chương không hợp lệ.".to_owned());
++    }
++    state.md.pages(chapter_id).await
++}
++
++/// Fallback metadata comes from the cached mapping made by `enrich_chapters`.
++pub async fn chapter_metadata(
++    state: &ContentState,
++    chapter_id: &str,
++) -> Result<ChapterMetadataDto, String> {
++    if is_comick_chapter_id(chapter_id) {
++        let mapping = cached_mapping(chapter_id)
++            .ok_or_else(|| "Comick chapter mapping unavailable".to_owned())?;
++        return Ok(ChapterMetadataDto {
++            id: mapping.chapter_id,
++            manga_id: mapping.manga_id,
++            lang: mapping.lang,
++            pages: mapping.pages,
++            external_url: None,
++            unavailable: mapping.pages == 0,
++            chapter: Some(mapping.chapter),
++            title: mapping.title,
++        });
++    }
++    if !is_uuid(chapter_id) {
++        return Err("Mã chương không hợp lệ.".to_owned());
++    }
++    state.md.chapter_metadata(chapter_id).await
++}
++
++/// Bounded, path-safe disk key: source, primary manga, chapter and language.
++pub fn fallback_cache_key(manga_id: &str, chapter: &str, lang: &str) -> String {
++    let number = normalize_chapter_number(Some(chapter)).unwrap_or_else(|| chapter.to_owned());
++    let raw = format!("{SOURCE}\0{manga_id}\0{number}\0{lang}");
++    format!("fallback-comick-{:x}", Sha256::digest(raw.as_bytes()))
++}
++
++async fn enrich_list(
++    comick: &Comick,
++    manga_id: &str,
++    chapters: Vec<ChapterDto>,
++    candidates: &[ComickChapter],
++    comic_by_chapter: &HashMap<String, String>,
++) -> Vec<ChapterDto> {
++    let mut out = Vec::with_capacity(chapters.len());
++    for chapter in chapters {
++        if is_readable(&chapter) {
++            out.push(chapter);
++            continue;
++        }
++        let number = chapter.chapter.as_deref().unwrap_or("");
++        let key = fallback_cache_key(manga_id, number, &chapter.lang);
++        let mapping = match read_cache_value(&key) {
++            Some(CacheValue::Hit { mapping }) if is_comick_chapter_id(&mapping.chapter_id) => {
++                Some(mapping)
++            }
++            Some(CacheValue::Miss) => None,
++            _ => {
++                let mut found = None;
++                if let Some(candidate) = match_chapter(number, &chapter.lang, candidates) {
++                    if let Ok(urls) = comick.page_urls(&candidate.id).await {
++                        if !urls.is_empty() {
++                            found = Some(CachedMatch {
++                                manga_id: manga_id.to_owned(),
++                                comic_id: comic_by_chapter
++                                    .get(&candidate.id)
++                                    .cloned()
++                                    .unwrap_or_else(|| candidate.id.clone()),
++                                chapter_id: candidate.id.clone(),
++                                chapter: number.to_owned(),
++                                lang: candidate.lang.clone(),
++                                title: candidate.title.clone(),
++                                publish_at: candidate.publish_at.clone(),
++                                group: candidate.group.clone(),
++                                pages: urls.len() as u64,
++                            });
++                        }
++                    }
++                }
++                match found {
++                    Some(mapping) => {
++                        write_cache_value(
++                            &key,
++                            &CacheValue::Hit {
++                                mapping: mapping.clone(),
++                            },
++                            POSITIVE_TTL_SECS,
++                        );
++                        Some(mapping)
++                    }
++                    None => {
++                        write_cache_value(&key, &CacheValue::Miss, NEGATIVE_TTL_SECS);
++                        None
++                    }
++                }
++            }
++        };
++        out.push(mapping.map(fallback_chapter).unwrap_or(chapter));
++    }
++    out
++}
++
++fn fallback_chapter(mapping: CachedMatch) -> ChapterDto {
++    ChapterDto {
++        id: mapping.chapter_id.into(),
++        chapter: Some(mapping.chapter),
++        volume: None,
++        title: mapping.title,
++        lang: mapping.lang,
++        pages: mapping.pages,
++        external_url: None,
++        publish_at: mapping.publish_at,
++        group: mapping.group,
++        source: SOURCE.to_owned(),
++        source_label: SOURCE_LABEL.to_owned(),
++        readable: true,
++    }
++}
++
++fn is_readable(chapter: &ChapterDto) -> bool {
++    chapter.readable || (chapter.pages > 0 && chapter.external_url.is_none())
++}
++
++fn title_matches(manga_title: &str, candidate: &comick::ComickTitle) -> bool {
++    let wanted = normalize_title(manga_title);
++    wanted == normalize_title(&candidate.title)
++        || candidate
++            .aliases
++            .iter()
++            .any(|alias| wanted == normalize_title(alias))
++}
++
++fn normalize_title(value: &str) -> String {
++    value
++        .chars()
++        .flat_map(char::to_lowercase)
++        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
++        .collect::<String>()
++        .split_whitespace()
++        .collect::<Vec<_>>()
++        .join(" ")
++}
++
++/// Canonical numeric chapter label. Decimal labels stay distinct from neighbors.
++fn normalize_chapter_number(raw: Option<&str>) -> Option<String> {
++    let value = raw?.trim();
++    let value = value.strip_prefix('#').unwrap_or(value).trim();
++    if value.is_empty() {
++        return None;
++    }
++    let (whole, fraction) = match value.split_once('.') {
++        Some((whole, fraction)) => (whole, Some(fraction)),
++        None => (value, None),
++    };
++    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) {
++        return None;
++    }
++    if fraction.is_some_and(|fraction| {
++        fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit())
++    }) {
++        return None;
++    }
++    let whole = whole.trim_start_matches('0');
++    let mut out = if whole.is_empty() { "0" } else { whole }.to_owned();
++    if let Some(fraction) = fraction {
++        let fraction = fraction.trim_end_matches('0');
++        if !fraction.is_empty() {
++            out.push('.');
++            out.push_str(fraction);
++        }
++    }
++    Some(out)
++}
++
++fn match_chapter<'a>(
++    chapter: &str,
++    lang: &str,
++    candidates: &'a [ComickChapter],
++) -> Option<&'a ComickChapter> {
++    let number = normalize_chapter_number(Some(chapter))?;
++    let mut matches: Vec<_> = candidates
++        .iter()
++        .enumerate()
++        .filter(|(_, candidate)| {
++            candidate.lang.eq_ignore_ascii_case(lang)
++                && normalize_chapter_number(candidate.chapter.as_deref()).as_deref()
++                    == Some(number.as_str())
++        })
++        .collect();
++    // Language preference first (vi before en), provider order breaks ties.
++    matches.sort_by_key(|(index, candidate)| (language_rank(&candidate.lang), *index));
++    matches.first().map(|(_, candidate)| *candidate)
++}
++
++fn language_rank(lang: &str) -> u8 {
++    if lang.eq_ignore_ascii_case("vi") {
++        0
++    } else if lang.eq_ignore_ascii_case("en") {
++        1
++    } else {
++        2
++    }
++}
++
++fn image_proxy_path(url: &str) -> String {
++    format!(
++        "/api/content/img?u={}",
++        utf8_percent_encode(url, NON_ALPHANUMERIC)
++    )
++}
++
++fn now_secs() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_secs()
++}
++
++fn read_cache_value(key: &str) -> Option<CacheValue> {
++    read_cache_value_at(&imgcache::cache_dir(), key, now_secs())
++}
++
++fn read_cache_value_at(dir: &Path, key: &str, now: u64) -> Option<CacheValue> {
++    let path = dir.join(key);
++    let meta = std::fs::metadata(&path).ok()?;
++    if meta.len() > MAX_CACHE_BYTES {
++        return None;
++    }
++    let bytes = std::fs::read(&path).ok()?;
++    let envelope: CacheEnvelope = serde_json::from_slice(&bytes).ok()?;
++    (envelope.expires > now).then_some(envelope.value)
++}
++
++fn write_cache_value(key: &str, value: &CacheValue, ttl_secs: u64) {
++    write_cache_value_at(&imgcache::cache_dir(), key, value, ttl_secs, now_secs());
++}
++
++fn write_cache_value_at(dir: &Path, key: &str, value: &CacheValue, ttl_secs: u64, now: u64) {
++    let Ok(bytes) = serde_json::to_vec(&CacheEnvelope {
++        expires: now.saturating_add(ttl_secs.min(MAX_TTL_SECS)),
++        value: value.clone(),
++    }) else {
++        return;
++    };
++    if bytes.len() as u64 > MAX_CACHE_BYTES || std::fs::create_dir_all(dir).is_err() {
++        return;
++    }
++    prune_cache(dir);
++    let _ = std::fs::write(dir.join(key), bytes);
++}
++
++fn prune_cache(dir: &Path) {
++    let Ok(entries) = std::fs::read_dir(dir) else {
++        return;
++    };
++    let mut files: Vec<(PathBuf, SystemTime)> = entries
++        .filter_map(Result::ok)
++        .filter(|entry| {
++            entry
++                .file_name()
++                .to_string_lossy()
++                .starts_with("fallback-comick-")
++        })
++        .filter_map(|entry| Some((entry.path(), entry.metadata().ok()?.modified().ok()?)))
++        .collect();
++    if files.len() < MAX_CACHE_FILES {
++        return;
++    }
++    files.sort_by_key(|(_, modified)| *modified);
++    let excess = files.len() - MAX_CACHE_FILES + 1;
++    for (path, _) in files.into_iter().take(excess) {
++        let _ = std::fs::remove_file(path);
++    }
++}
++
++fn cached_mapping(chapter_id: &str) -> Option<CachedMatch> {
++    let dir = imgcache::cache_dir();
++    let entries = std::fs::read_dir(dir).ok()?;
++    let now = now_secs();
++    for entry in entries.filter_map(Result::ok) {
++        let path = entry.path();
++        if !path
++            .file_name()
++            .and_then(|name| name.to_str())
++            .is_some_and(|name| name.starts_with("fallback-comick-"))
++        {
++            continue;
++        }
++        let bytes = match std::fs::read(&path) {
++            Ok(bytes) => bytes,
++            Err(_) => continue,
++        };
++        let envelope: CacheEnvelope = match serde_json::from_slice(&bytes) {
++            Ok(envelope) => envelope,
++            Err(_) => continue,
++        };
++        if envelope.expires <= now {
++            continue;
++        }
++        if let CacheValue::Hit { mapping } = envelope.value {
++            if mapping.chapter_id == chapter_id {
++                return Some(mapping);
++            }
++        }
++    }
++    None
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn manga() -> MangaSummaryDto {
++        MangaSummaryDto {
++            id: "manga-1".into(),
++            title: "Fixture Manga".into(),
++            cover_file: None,
++            status: "ongoing".into(),
++            year: None,
++            description: String::new(),
++            tags: vec![],
++            tag_ids: vec![],
++            author: String::new(),
++            artist: String::new(),
++            rating: None,
++            follows: None,
++            latest_chapter: None,
++            source: "mangadex".into(),
++            source_label: "MangaDex".into(),
++        }
++    }
++
++    fn chapter(
++        id: &str,
++        number: &str,
++        lang: &str,
++        pages: u64,
++        external: Option<&str>,
++    ) -> ChapterDto {
++        ChapterDto {
++            id: id.into(),
++            chapter: Some(number.into()),
++            volume: None,
++            title: String::new(),
++            lang: lang.into(),
++            pages,
++            external_url: external.map(str::to_owned),
++            publish_at: String::new(),
++            group: String::new(),
++            source: "mangadex".into(),
++            source_label: "MangaDex".into(),
++            readable: pages > 0 && external.is_none(),
++        }
++    }
++
++    fn candidate(id: &str, number: &str, lang: &str) -> ComickChapter {
++        ComickChapter {
++            id: format!("comick:{id}"),
++            chapter: Some(number.into()),
++            lang: lang.into(),
++            title: String::new(),
++            publish_at: String::new(),
++            group: String::new(),
++        }
++    }
++
++    fn temp_dir(name: &str) -> PathBuf {
++        let unique = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap_or_default()
++            .as_nanos();
++        let dir = std::env::temp_dir().join(format!("kaslyydex-{name}-{unique}"));
++        std::fs::create_dir_all(&dir).expect("temp cache dir");
++        dir
++    }
++
++    #[tokio::test]
++    async fn fallback_skips_readable_mangadex_chapter() {
++        let state = ContentState {
++            md: Md::new(reqwest::Client::new()),
++            comick: None,
++        };
++        let primary = chapter("md-1", "10.1", "vi", 12, None);
++        let input = ChaptersResponse {
++            vi: vec![primary.clone()],
++            en: vec![],
++        };
++        let output = enrich_chapters(&state, &manga(), input)
++            .await
++            .expect("primary chapters survive without Comick");
++        assert_eq!(output.vi, vec![primary]);
++        assert!(output.en.is_empty());
++    }
++
++    #[test]
++    fn fallback_matches_decimal_chapter_and_language() {
++        let candidates = [
++            candidate("ten", "10", "vi"),
++            candidate("decimal", "10.1", "vi"),
++            candidate("other", "10.2", "vi"),
++            candidate("english", "10.1", "en"),
++        ];
++        let matched = match_chapter("10.1", "vi", &candidates).expect("decimal match");
++        assert_eq!(matched.id, "comick:decimal");
++        assert!(match_chapter("10", "vi", &candidates[1..2]).is_none());
++        assert!(match_chapter("10.2", "vi", &candidates[1..2]).is_none());
++    }
++
++    #[test]
++    fn fallback_rejects_mismatched_chapter_number() {
++        let candidates = [candidate("decimal", "10.1", "vi")];
++        assert!(match_chapter("10", "vi", &candidates).is_none());
++        assert!(match_chapter("10.2", "vi", &candidates).is_none());
++        assert_eq!(
++            match_chapter("10.1", "vi", &candidates).map(|c| c.id.as_str()),
++            Some("comick:decimal")
++        );
++    }
++
++    #[test]
++    fn fallback_prefers_vi_then_en() {
++        let candidates = [
++            candidate("english", "10.1", "en"),
++            candidate("vietnamese", "10.1", "vi"),
++        ];
++        let matched = match_chapter("10.1", "vi", &candidates).expect("language match");
++        assert_eq!(matched.lang, "vi");
++        assert_eq!(matched.id, "comick:vietnamese");
++    }
++
++    #[test]
++    fn fallback_negative_result_is_cached_briefly() {
++        let dir = temp_dir("fallback-negative");
++        let key = fallback_cache_key("manga-1", "10.1", "vi");
++        assert!(!key.contains(':'));
++        assert!(!key.contains('/'));
++        assert!(!key.contains('\\'));
++        write_cache_value_at(&dir, &key, &CacheValue::Miss, NEGATIVE_TTL_SECS, 1_000);
++        assert_eq!(
++            read_cache_value_at(&dir, &key, 1_001),
++            Some(CacheValue::Miss)
++        );
++        assert_eq!(
++            read_cache_value_at(&dir, &key, 1_000 + NEGATIVE_TTL_SECS + 1),
++            None
++        );
++        let _ = std::fs::remove_dir_all(dir);
++    }
++}
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index 9eac990..3d1bf1b 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -1,7 +1,8 @@
+ pub mod comick;
+ pub mod dns;
++pub mod fallback;
+ pub mod imgcache;
+ pub mod mangadex;
+ 
+ pub use comick::Comick;
+-pub use mangadex::Md;
+\ No newline at end of file
++pub use mangadex::Md;
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 249a5ac..1101a11 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -500,16 +500,18 @@ fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<
+                 .as_str()
+                 .or(attributes["publishAt"].as_str())
+         }
+         .unwrap_or_default()
+         .to_owned(),
+         group,
+         source: "mangadex".to_owned(),
+         source_label: "MangaDex".to_owned(),
++        readable: attributes["pages"].as_u64().unwrap_or(0) > 0
++            && attributes["externalUrl"].as_str().is_none(),
+     })
+ }
+ 
+ fn chapter_metadata_dto(chapter: &Value) -> Option<ChapterMetadataDto> {
+     let id = chapter["id"].as_str().filter(|id| !id.trim().is_empty())?;
+     let relationships = chapter["relationships"].as_array()?;
+     let manga = relationships.iter().find(|relationship| {
+         relationship["type"] == "manga"
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index b221ca0..88e32a4 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -1,17 +1,21 @@
+ use axum::body::Body;
+ use axum::extract::{Path, Query, State};
+ use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::get;
+ use axum::{Json, Router};
+ use contracts::{ApiError, ApiErrorEnvelope};
++use manga_core::comick::is_comick_chapter_id;
++use manga_core::fallback::{
++    chapter_metadata as fallback_metadata, chapter_pages, enrich_chapters, ContentState,
++};
+ use manga_core::mangadex::is_uuid;
+-use manga_core::Md;
++use manga_core::{Comick, Md};
+ use serde::Serialize;
+ use serde_json::json;
+ use std::collections::HashMap;
+ use std::sync::atomic::{AtomicU64, Ordering};
+ use std::time::{Instant, SystemTime, UNIX_EPOCH};
+ use tower_http::compression::CompressionLayer;
+ use tower_http::services::{ServeDir, ServeFile};
+ 
+@@ -198,31 +202,33 @@ async fn ready() -> Response {
+             "ok": false,
+             "checks": { "configuration": "invalid", "database": "not_applicable", "upstream": "skipped" }
+         }));
+         *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+         response
+     }
+ }
+ 
+-async fn popular(State(md): State<Md>) -> Result<Response, Err> {
+-    Ok(json_cached(md.popular().await.map_err(bad)?, 60))
++async fn popular(State(state): State<ContentState>) -> Result<Response, Err> {
++    Ok(json_cached(state.md.popular().await.map_err(bad)?, 60))
+ }
+ 
+-async fn latest(State(md): State<Md>) -> Result<Response, Err> {
+-    Ok(json_cached(md.latest().await.map_err(bad)?, 60))
++async fn latest(State(state): State<ContentState>) -> Result<Response, Err> {
++    Ok(json_cached(state.md.latest().await.map_err(bad)?, 60))
+ }
+ 
+ async fn search(
+-    State(md): State<Md>,
++    State(state): State<ContentState>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+     let q = parse_search_query(q)?;
+     Ok(json_cached(
+-        md.search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort)
++        state
++            .md
++            .search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort)
+             .await
+             .map_err(bad)?,
+         60,
+     ))
+ }
+ 
+ #[derive(Debug)]
+ struct SearchQuery {
+@@ -327,114 +333,133 @@ fn parse_notification_feed_query(q: HashMap<String, String>) -> Result<Notificat
+     Ok(NotificationFeedQuery {
+         lang: lang.to_owned(),
+         since,
+         offset,
+         limit,
+     })
+ }
+ 
+-async fn tags(State(md): State<Md>) -> Result<Response, Err> {
+-    Ok(json_cached(md.tags().await.map_err(bad)?, 86_400))
++async fn tags(State(state): State<ContentState>) -> Result<Response, Err> {
++    Ok(json_cached(state.md.tags().await.map_err(bad)?, 86_400))
+ }
+ 
+ async fn rank(
+-    State(md): State<Md>,
++    State(state): State<ContentState>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+     let kind = q.get("kind").map(String::as_str).unwrap_or("follows");
+     if !matches!(kind, "follows" | "rating") {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Kiểu xếp hạng không hợp lệ.",
+         ));
+     }
+-    Ok(json_cached(md.rank(kind).await.map_err(bad)?, 300))
++    Ok(json_cached(state.md.rank(kind).await.map_err(bad)?, 300))
+ }
+ 
+-async fn manga(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
++async fn manga(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+-    Ok(json_cached(md.manga(&id).await.map_err(bad)?, 3600))
++    Ok(json_cached(state.md.manga(&id).await.map_err(bad)?, 3600))
+ }
+ 
+-async fn chapters(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
++async fn chapters(
++    State(state): State<ContentState>,
++    Path(id): Path<String>,
++) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+-    Ok(json_cached(md.chapters(&id).await.map_err(bad)?, 60))
++    let primary = state.md.chapters(&id).await.map_err(bad)?;
++    let enriched = match state.md.manga(&id).await {
++        Ok(manga) => enrich_chapters(&state, &manga, (*primary).clone())
++            .await
++            .unwrap_or_else(|_| (*primary).clone()),
++        Err(_) => (*primary).clone(),
++    };
++    Ok(json_cached(enriched, 60))
+ }
+ 
+ /// Single-chapter metadata for the BFF ticket. Capped public chapter lists
+ /// cannot prove ownership past 2000 entries; this entity lookup can.
+-async fn chapter_metadata(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+-    if !is_uuid(&id) {
++async fn chapter_metadata(
++    State(state): State<ContentState>,
++    Path(id): Path<String>,
++) -> Result<Response, Err> {
++    if !is_uuid(&id) && !is_comick_chapter_id(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã chương không hợp lệ.",
+         ));
+     }
+-    Ok(json_no_store(md.chapter_metadata(&id).await.map_err(bad)?))
++    Ok(json_no_store(
++        fallback_metadata(&state, &id).await.map_err(bad)?,
++    ))
+ }
+ 
+ async fn notification_feed(
+-    State(md): State<Md>,
++    State(state): State<ContentState>,
+     Path(id): Path<String>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+     let query = parse_notification_feed_query(q)?;
+-    let page = md
++    let page = state
++        .md
+         .notification_feed(
+             &id,
+             &query.lang,
+             query.since.as_deref(),
+             query.offset,
+             query.limit,
+         )
+         .await
+         .map_err(bad)?;
+     Ok(json_no_store(page))
+ }
+ 
+-async fn pages(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+-    if !is_uuid(&id) {
++async fn pages(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
++    if !is_uuid(&id) && !is_comick_chapter_id(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã chương không hợp lệ.",
+         ));
+     }
+-    Ok(json_cached(md.pages(&id).await.map_err(bad)?, 120))
++    Ok(json_cached(
++        chapter_pages(&state, &id).await.map_err(bad)?,
++        120,
++    ))
+ }
+ 
+ /// Same-origin image proxy: disk-cached, host allowlist enforced in core.
+ async fn img(
+-    State(md): State<Md>,
++    State(state): State<ContentState>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+     let raw = q.get("u").cloned().unwrap_or_default();
+-    let path = manga_core::imgcache::ensure(&md.http, &raw)
++    let path = manga_core::imgcache::ensure(&state.md.http, &raw)
+         .await
+         .map_err(bad)?;
+     let ctype = if path.extension().map(|e| e == "png").unwrap_or(false) {
+         "image/png"
+     } else {
+         "image/jpeg"
+     };
+     let bytes = tokio::fs::read(&path)
+@@ -488,17 +513,17 @@ async fn static_cache_headers(
+         res.headers_mut()
+             .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+     }
+     res
+ }
+ 
+ /// Browser-facing content namespace. Legacy /api/* paths remain registered
+ /// below for existing native/UI clients; both share these handlers and state.
+-fn content_routes() -> Router<Md> {
++fn content_routes() -> Router<ContentState> {
+     Router::new()
+         .route("/api/content/popular", get(popular))
+         .route("/api/content/latest", get(latest))
+         .route("/api/content/search", get(search))
+         .route("/api/content/tags", get(tags))
+         .route("/api/content/rank", get(rank))
+         .route("/api/content/manga/{id}", get(manga))
+         .route("/api/content/manga/{id}/chapters", get(chapters))
+@@ -508,17 +533,20 @@ fn content_routes() -> Router<Md> {
+         )
+         .route("/api/content/chapter/{id}", get(chapter_metadata))
+         .route("/api/content/chapter/{id}/pages", get(pages))
+         .route("/api/content/img", get(img))
+ }
+ 
+ #[tokio::main]
+ async fn main() {
+-    let md = Md::new(manga_core::dns::PublicDns::client());
++    let state = ContentState {
++        md: Md::new(manga_core::dns::PublicDns::client()),
++        comick: Some(Comick::new()),
++    };
+     let dist = std::env::var("DIST_DIR").unwrap_or_else(|_| "crates/ui/dist".into());
+     let spa = ServeDir::new(&dist).fallback(ServeFile::new(format!("{dist}/index.html")));
+ 
+     let app = Router::new()
+         .route("/api/v1/health", get(health))
+         .route("/api/v1/ready", get(ready))
+         .route("/api/popular", get(popular))
+         .route("/api/latest", get(latest))
+@@ -530,17 +558,17 @@ async fn main() {
+         .route("/api/chapter/{id}", get(chapter_metadata))
+         .route("/api/chapter/{id}/pages", get(pages))
+         .route("/api/img", get(img))
+         .merge(content_routes())
+         .fallback_service(spa)
+         .layer(axum::middleware::from_fn(static_cache_headers))
+         .layer(CompressionLayer::new())
+         .layer(axum::middleware::from_fn(request_logging))
+-        .with_state(md);
++        .with_state(state);
+ 
+     let port: u16 = std::env::var("PORT")
+         .ok()
+         .and_then(|p| p.parse().ok())
+         .unwrap_or(3100);
+     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+         .await
+         .expect("bind");
+@@ -615,27 +643,37 @@ mod tests {
+                 StatusCode::BAD_REQUEST,
+                 "{name}={value}"
+             );
+         }
+     }
+ 
+     #[tokio::test]
+     async fn content_handlers_reject_invalid_ids_before_any_upstream_call() {
+-        let md = Md::new(manga_core::dns::PublicDns::client());
++        let state = ContentState {
++            md: Md::new(manga_core::dns::PublicDns::client()),
++            comick: None,
++        };
+         for (result, message) in [
+             (
+-                manga(State(md.clone()), Path("not-a-uuid".into())).await,
++                manga(State(state.clone()), Path("not-a-uuid".into())).await,
+                 "manga",
+             ),
+             (
+-                chapters(State(md.clone()), Path("google|opaque".into())).await,
++                chapters(State(state.clone()), Path("google|opaque".into())).await,
+                 "chapters",
+             ),
+-            (pages(State(md), Path("short".into())).await, "pages"),
++            (
++                pages(State(state.clone()), Path("short".into())).await,
++                "pages",
++            ),
++            (
++                chapter_metadata(State(state), Path("comick:".into())).await,
++                "chapter_metadata",
++            ),
+         ] {
+             let (status, Json(body)) = result.unwrap_err();
+             assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+             assert_eq!(body.error.code, "VALIDATION_ERROR", "{message}");
+         }
+     }
+ 
+     #[test]
+diff --git a/web/scripts/source-fallback.test.mjs b/web/scripts/source-fallback.test.mjs
+new file mode 100644
+index 0000000..dcef827
+--- /dev/null
++++ b/web/scripts/source-fallback.test.mjs
+@@ -0,0 +1,247 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { existsSync, mkdirSync } from "node:fs";
++import { connect } from "node:net";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { freePort, repoDir, startHttpServer, webDir } from "./test-helpers.mjs";
++
++// Real Axum process + loopback MangaDex/Comick fixtures. No remote calls, auth,
++// database, or deployment configuration is involved.
++const MANGA = {
++  external: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++  readable: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++  error: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
++  noMatch: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
++};
++const TITLES = {
++  [MANGA.external]: "Fallback Manga",
++  [MANGA.readable]: "Readable Manga",
++  [MANGA.error]: "Error Manga",
++  [MANGA.noMatch]: "No Match Manga",
++};
++const EXTERNAL_URL = "https://example.com/external-chapter";
++
++let mangadexFixture;
++let comickFixture;
++let axum;
++let axumUrl;
++let comickRequests = [];
++let lastSearchTitle = "";
++
++function waitForTcp(port, deadlineMs = 20_000) {
++  return new Promise((resolve, reject) => {
++    const deadline = Date.now() + deadlineMs;
++    const attempt = () => {
++      const socket = connect({ host: "127.0.0.1", port });
++      socket.once("connect", () => { socket.destroy(); resolve(); });
++      socket.once("error", (error) => {
++        socket.destroy();
++        if (Date.now() > deadline) reject(error);
++        else setTimeout(attempt, 100);
++      });
++    };
++    attempt();
++  });
++}
++
++function json(res, body, status = 200) {
++  res.writeHead(status, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++function mdChapter(id, chapter, pages, externalUrl) {
++  return {
++    id,
++    attributes: {
++      chapter,
++      pages,
++      externalUrl,
++      translatedLanguage: "vi",
++      readableAt: "2026-11-21T00:00:00Z",
++    },
++    relationships: [{ type: "manga", id }],
++  };
++}
++
++function comickChapter(hid, chapter, lang = "vi") {
++  return {
++    hid,
++    chapter,
++    lang,
++    title: `Fallback ${chapter}`,
++    published_at: "2026-11-21T00:00:00Z",
++    groups: [{ title: "Fallback Group" }],
++  };
++}
++
++async function get(path) {
++  const response = await fetch(`${axumUrl}${path}`);
++  return { response, body: await response.json() };
++}
++
++before(async () => {
++  mangadexFixture = await startHttpServer((req, res) => {
++    const url = new URL(req.url ?? "", "http://fixture.local");
++    if (url.pathname.startsWith("/statistics/manga")) return json(res, { statistics: {} });
++    if (url.pathname.startsWith("/manga/") && url.pathname.endsWith("/feed")) {
++      const id = url.pathname.split("/")[2];
++      if (url.searchParams.get("translatedLanguage[]") !== "vi") return json(res, { total: 0, data: [] });
++      if (id === MANGA.external) {
++        return json(res, { total: 1, data: [mdChapter(
++          "11111111-1111-4111-8111-111111111111", "10.1", 0, EXTERNAL_URL,
++        )] });
++      }
++      if (id === MANGA.readable) {
++        return json(res, { total: 1, data: [mdChapter(
++          "22222222-2222-4222-8222-222222222222", "10.1", 12, null,
++        )] });
++      }
++      if (id === MANGA.error) {
++        return json(res, { total: 1, data: [mdChapter(
++          "33333333-3333-4333-8333-333333333333", "10.1", 0, EXTERNAL_URL,
++        )] });
++      }
++      if (id === MANGA.noMatch) {
++        return json(res, { total: 1, data: [mdChapter(
++          "44444444-4444-4444-8444-444444444444", "10.1", 0, EXTERNAL_URL,
++        )] });
++      }
++      return json(res, { total: 0, data: [] });
++    }
++    if (url.pathname.startsWith("/manga/")) {
++      const id = url.pathname.split("/")[2];
++      const title = TITLES[id] ?? "Fixture Manga";
++      return json(res, { data: {
++        id,
++        attributes: { title: { vi: title }, status: "ongoing", description: { vi: title } },
++        relationships: [],
++      } });
++    }
++    if (url.pathname === "/at-home/server/22222222-2222-4222-8222-222222222222") {
++      return json(res, { baseUrl: "https://uploads.mangadex.org", chapter: { hash: "abc", data: ["1.png"], dataSaver: [] } });
++    }
++    return json(res, { total: 0, data: [] });
++  });
++
++  comickFixture = await startHttpServer((req, res) => {
++    const url = new URL(req.url ?? "", "http://fixture.local");
++    comickRequests.push(url.pathname + url.search);
++    if (url.pathname === "/v1.0/search/") {
++      const title = url.searchParams.get("q") ?? "";
++      lastSearchTitle = title;
++      if (title.includes("Error")) return json(res, "upstream failure", 500);
++      return json(res, [{ hid: "comic-1", title, md_titles: [] }]);
++    }
++    if (url.pathname.endsWith("/chapters")) {
++      if (lastSearchTitle.includes("Error")) return json(res, "upstream failure", 500);
++      const number = lastSearchTitle.includes("No Match") ? "99" : "10.1";
++      return json(res, { chapters: [comickChapter("chap-101", number)], total: 1, limit: 12 });
++    }
++    if (url.pathname.startsWith("/chapter/") && url.pathname.endsWith("/get_images")) {
++      return json(res, [{ b2key: "page-1.jpg" }, { b2key: "page-2.jpg" }]);
++    }
++    return json(res, [], 404);
++  });
++
++  const port = await freePort();
++  axumUrl = `http://127.0.0.1:${port}`;
++  const binary = join(repoDir, "target", "debug", process.platform === "win32" ? "server.exe" : "server");
++  assert.ok(existsSync(binary), `build Axum first: cargo build -p server (missing ${binary})`);
++  const cacheDir = join(webDir, ".test-cache", `source-fallback-${process.pid}`);
++  mkdirSync(cacheDir, { recursive: true });
++  axum = spawn(binary, [], {
++    cwd: repoDir,
++    env: {
++      ...process.env,
++      PORT: String(port),
++      MANGADEX_API_ORIGIN: mangadexFixture.baseUrl,
++      COMICK_API_ORIGIN: comickFixture.baseUrl,
++      CACHE_DIR: cacheDir,
++      DIST_DIR: join(webDir, "public"),
++    },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  await waitForTcp(port);
++});
++
++after(async () => {
++  if (axum && axum.exitCode === null) axum.kill("SIGKILL");
++  await mangadexFixture?.close();
++  await comickFixture?.close();
++});
++
++test("external MangaDex chapter falls back to a readable Comick chapter", async () => {
++  const { response, body } = await get(`/api/content/manga/${MANGA.external}/chapters`);
++  assert.equal(response.status, 200);
++  const chapter = body.vi[0];
++  assert.equal(chapter.id, "comick:chap-101");
++  assert.equal(chapter.source, "comick");
++  assert.equal(chapter.source_label, "Comick");
++  assert.equal(chapter.readable, true);
++  assert.equal(chapter.external_url, null);
++  assert.equal(chapter.pages, 2);
++  const decoded = comickRequests.map((value) => decodeURIComponent(value));
++  assert.ok(
++    decoded.includes("/v1.0/comic/comic-1/chapters?lang=vi&page=1&limit=12"),
++    `Comick chapter request did not strip the comick: prefix: ${JSON.stringify(decoded)}`,
++  );
++});
++
++test("readable MangaDex chapter is never handed to Comick", async () => {
++  const before = comickRequests.length;
++  const { response, body } = await get(`/api/content/manga/${MANGA.readable}/chapters`);
++  assert.equal(response.status, 200);
++  assert.equal(body.vi[0].id, "22222222-2222-4222-8222-222222222222");
++  assert.equal(body.vi[0].source, "mangadex");
++  assert.equal(body.vi[0].readable, true);
++  assert.equal(comickRequests.length, before);
++});
++
++test("Comick upstream failure keeps the MangaDex external link", async () => {
++  const { response, body } = await get(`/api/content/manga/${MANGA.error}/chapters`);
++  assert.equal(response.status, 200);
++  const chapter = body.vi[0];
++  assert.equal(chapter.id, "33333333-3333-4333-8333-333333333333");
++  assert.equal(chapter.source, "mangadex");
++  assert.equal(chapter.external_url, EXTERNAL_URL);
++  assert.equal(chapter.pages, 0);
++});
++
++test("no confident chapter match keeps the original external chapter", async () => {
++  const { response, body } = await get(`/api/content/manga/${MANGA.noMatch}/chapters`);
++  assert.equal(response.status, 200);
++  const chapter = body.vi[0];
++  assert.equal(chapter.id, "44444444-4444-4444-8444-444444444444");
++  assert.equal(chapter.source, "mangadex");
++  assert.equal(chapter.external_url, EXTERNAL_URL);
++});
++
++test("Comick pages are same-origin proxies built from returned page URLs", async () => {
++  const before = comickRequests.length;
++  const { response, body } = await get(`/api/content/chapter/${encodeURIComponent("comick:chap-101")}/pages`);
++  assert.equal(response.status, 200);
++  assert.equal(body.pages.length, 2);
++  assert.ok(body.pages.every((page) => page.startsWith("/api/content/img?u=")), JSON.stringify(body.pages));
++  assert.equal(new URL(body.pages[0], axumUrl).searchParams.get("u"), "https://meo.comick.pictures/page-1.jpg");
++  assert.equal(new URL(body.pages[1], axumUrl).searchParams.get("u"), "https://meo.comick.pictures/page-2.jpg");
++  const decoded = comickRequests.slice(before).map((value) => decodeURIComponent(value));
++  assert.ok(
++    decoded.includes("/chapter/chap-101/get_images"),
++    `Comick image request did not strip the comick: prefix: ${JSON.stringify(decoded)}`,
++  );
++});
++
++test("legacy chapter pages alias dispatches source-aware IDs too", async () => {
++  const { response, body } = await get(`/api/chapter/${encodeURIComponent("comick:chap-101")}/pages`);
++  assert.equal(response.status, 200);
++  assert.equal(body.pages.length, 2);
++});
++
++test("malformed comick chapter ID is a structured 400 before any upstream call", async () => {
++  const before = comickRequests.length;
++  const { response, body } = await get(`/api/content/chapter/${encodeURIComponent("comick:")}/pages`);
++  assert.equal(response.status, 400);
++  assert.equal(body.error.code, "VALIDATION_ERROR");
++  assert.equal(comickRequests.length, before);
++});

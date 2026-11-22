@@ -1,0 +1,221 @@
+d033d71 fix: keep dropdown chevron transition under reduced-motion guard
+ web/app/globals.css         |  3 +-
+ web/scripts/select.test.mjs | 83 +++++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 82 insertions(+), 4 deletions(-)
+diff --git a/web/app/globals.css b/web/app/globals.css
+index dedb4e7..3bc5cac 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -237,34 +237,35 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ /* Shared dropdown: the trigger keeps focus while the listbox handles selection. */
+ .select { position: relative; display: inline-block; width: 100%; min-width: 0; }
+ .select-trigger {
+   display: flex; width: 100%; min-height: 44px; align-items: center; justify-content: space-between;
+   gap: 8px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px;
+   background: var(--surface); color: var(--text); text-align: left; font-size: .875rem; font-weight: 600;
+ }
+ .select-trigger:hover:not(:disabled) { background: var(--hover); }
+ .select[data-open="true"] .select-trigger { border-color: var(--accent); }
+ .select-value { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+-.select-chevron { color: var(--muted); transition: transform .12s ease; }
++.select-chevron { color: var(--muted); }
+ .select[data-open="true"] .select-chevron { transform: rotate(180deg); }
+ .select-list {
+   position: absolute; z-index: 20; inset: calc(100% + 4px) 0 auto; display: block;
+   max-height: min(280px, 50dvh); overflow-y: auto; margin: 0; padding: 4px;
+   border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+   box-shadow: 0 10px 24px #0003; list-style: none;
+ }
+ .select-list[hidden] { display: none; }
+ .select-option { min-height: 40px; padding: 8px 10px; border-radius: 6px; color: var(--text); font-size: .875rem; cursor: pointer; }
+ .select-option:hover { background: var(--hover); }
+ .select-option[aria-selected="true"] { background: var(--soft); color: var(--accent); font-weight: 600; }
+ .select-option[aria-disabled="true"] { opacity: .5; cursor: default; }
+ @media (prefers-reduced-motion: no-preference) {
++  .select-chevron { transition: transform .12s ease; }
+   .select[data-open="true"] .select-list:not([hidden]) { animation: select-in .12s ease-out both; }
+   @keyframes select-in { from { opacity: 0; transform: translateY(-3px); } }
+ }
+ 
+ .genre-group { margin-bottom: 13px; padding: 17px 16px; }
+ .genre-group h2 { margin-bottom: 13px; }
+ .result-info { margin-bottom: 14px; color: var(--muted); }
+ .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 26px; }
+ .page-info { color: var(--muted); font-size: .875rem; }
+ .shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(244px, 100%), 1fr)); gap: 14px; }
+diff --git a/web/scripts/select.test.mjs b/web/scripts/select.test.mjs
+index 4eabe6f..8312dc1 100644
+--- a/web/scripts/select.test.mjs
++++ b/web/scripts/select.test.mjs
+@@ -1,19 +1,21 @@
+ import assert from "node:assert/strict";
+-import { existsSync } from "node:fs";
++import { existsSync, readFileSync } from "node:fs";
++import { join } from "node:path";
+ import { build } from "esbuild";
+ import { after, before, test } from "node:test";
+ import { chromium } from "playwright-core";
+ import { browserExecutable } from "./browser.mjs";
+ import { startNext, stop, webDir } from "./test-helpers.mjs";
+ 
+ const EDGE = browserExecutable();
++const css = readFileSync(join(webDir, "app/globals.css"), "utf8").replace(/^@import[^;]+;\s*/, "");
+ 
+ /// Bundle the real component into a throwaway harness so keyboard, ARIA and
+ /// form-submission behavior is exercised against Select itself, not a mock.
+ const harness = `
+ import React, { useState } from "react";
+ import { createRoot } from "react-dom/client";
+ import Select from "./components/ui/Select.tsx";
+ 
+ function Harness() {
+   const [plain, setPlain] = useState("one");
+@@ -35,20 +37,28 @@ function Harness() {
+         { value: "ongoing", label: "Ongoing" },
+         { value: "completed", label: "Completed" },
+       ],
+     }),
+     React.createElement("label", null, "Labelled",
+       React.createElement(Select, {
+         id: "labelled", defaultValue: "a", ariaLabel: "Labelled",
+         options: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+       }),
+     ),
++    React.createElement(Select, {
++      id: "edged", defaultValue: "a", ariaLabel: "Edged",
++      options: [
++        { value: "x", label: "First disabled", disabled: true },
++        { value: "a", label: "Alpha" },
++        { value: "z", label: "Last disabled", disabled: true },
++      ],
++    }),
+     React.createElement(Select, {
+       id: "disabled", disabled: true, defaultValue: "one", ariaLabel: "Disabled",
+       options: [{ value: "one", label: "One" }, { value: "two", label: "Two" }],
+     }),
+     React.createElement("p", { id: "selected" }, plain),
+   );
+ }
+ createRoot(document.getElementById("root")).render(React.createElement(Harness));
+ `;
+ 
+@@ -63,29 +73,36 @@ before(async () => {
+     target: "chrome120", logLevel: "silent",
+   });
+   bundle = result.outputFiles[0].text;
+   browser = await chromium.launch({ executablePath: EDGE, headless: true });
+ });
+ 
+ after(async () => {
+   await browser?.close();
+ });
+ 
+-async function openHarness() {
+-  const context = await browser.newContext();
++async function openHarness(options = {}, withCss = false) {
++  const context = await browser.newContext(options);
+   const page = await context.newPage();
+   await page.setContent('<!doctype html><html><body><div id="root"></div></body></html>');
++  if (withCss) await page.addStyleTag({ content: css });
+   await page.addScriptTag({ content: bundle });
+   await page.getByRole("combobox", { name: "Plain" }).waitFor();
+   return { context, page };
+ }
+ 
++async function activeName(page, trigger) {
++  const id = await trigger.getAttribute("aria-activedescendant");
++  assert.ok(id, "expected an active option while the listbox is open");
++  return (await page.locator(`[id="${id}"]`).textContent()).trim();
++}
++
+ test("click opens the listbox and Escape closes it", async () => {
+   const { context, page } = await openHarness();
+   const trigger = page.getByRole("combobox", { name: "Plain" });
+   assert.equal(await trigger.getAttribute("aria-expanded"), "false");
+   await trigger.click();
+   const list = page.getByRole("listbox");
+   await list.waitFor({ state: "visible" });
+   assert.equal(await trigger.getAttribute("aria-expanded"), "true");
+   assert.ok(await trigger.getAttribute("aria-controls"));
+   assert.equal(await page.getByRole("option").count(), 4);
+@@ -103,20 +120,80 @@ test("arrow keys skip disabled options and Enter selects the active one", async
+   await page.keyboard.press("ArrowDown");
+   await page.keyboard.press("ArrowDown");
+   await page.keyboard.press("ArrowUp");
+   await page.keyboard.press("Enter");
+   assert.equal(await page.locator("#selected").textContent(), "two");
+   assert.match(await trigger.textContent(), /Two/);
+   await page.getByRole("listbox").waitFor({ state: "hidden" });
+   await context.close();
+ });
+ 
++test("Space opens the listbox and selects the active option", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Plain" });
++  await trigger.focus();
++  await page.keyboard.press("Space");
++  const list = page.getByRole("listbox");
++  await list.waitFor({ state: "visible" });
++  assert.equal(await trigger.getAttribute("aria-expanded"), "true");
++  assert.equal(await activeName(page, trigger), "One");
++  await page.keyboard.press("ArrowDown");
++  await page.keyboard.press("Space");
++  assert.equal(await page.locator("#selected").textContent(), "two");
++  await list.waitFor({ state: "hidden" });
++  await context.close();
++});
++
++test("Home and End move the active option and Enter commits it", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Plain" });
++  await trigger.click();
++  const list = page.getByRole("listbox");
++  await list.waitFor({ state: "visible" });
++  await page.keyboard.press("End");
++  assert.equal(await activeName(page, trigger), "Four");
++  await page.keyboard.press("Enter");
++  assert.equal(await page.locator("#selected").textContent(), "four");
++  await trigger.click();
++  await page.keyboard.press("Home");
++  assert.equal(await activeName(page, trigger), "One");
++  await page.keyboard.press("Enter");
++  assert.equal(await page.locator("#selected").textContent(), "one");
++  await list.waitFor({ state: "hidden" });
++  await context.close();
++});
++
++test("Home and End never activate disabled endpoint options", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Edged" });
++  await trigger.click();
++  await page.keyboard.press("Home");
++  assert.equal(await activeName(page, trigger), "Alpha");
++  await page.keyboard.press("End");
++  assert.equal(await activeName(page, trigger), "Alpha");
++  await page.keyboard.press("Enter");
++  assert.match(await trigger.textContent(), /Alpha/);
++  await context.close();
++});
++
++test("chevron transition is disabled under reduced motion", async () => {
++  const reduced = await openHarness({ reducedMotion: "reduce" }, true);
++  const chevron = reduced.page.getByRole("combobox", { name: "Plain" }).locator(".select-chevron");
++  assert.equal(await chevron.evaluate((element) => getComputedStyle(element).transitionDuration), "0s");
++  await reduced.context.close();
++
++  const normal = await openHarness({ reducedMotion: "no-preference" }, true);
++  const normalChevron = normal.page.getByRole("combobox", { name: "Plain" }).locator(".select-chevron");
++  assert.equal(await normalChevron.evaluate((element) => getComputedStyle(element).transitionDuration), "0.12s");
++  await normal.context.close();
++});
++
+ test("clicking outside closes the listbox", async () => {
+   const { context, page } = await openHarness();
+   const trigger = page.getByRole("combobox", { name: "Plain" });
+   await trigger.click();
+   const list = page.getByRole("listbox");
+   await list.waitFor({ state: "visible" });
+   await page.locator("#outside").click();
+   await list.waitFor({ state: "hidden" });
+   assert.equal(await trigger.getAttribute("aria-expanded"), "false");
+   await context.close();

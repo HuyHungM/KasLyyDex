@@ -1,0 +1,1356 @@
+12e1a7d chore: gate and document multi-source reading UX
+ .github/workflows/ci.yml              |  10 +-
+ CHANGELOG.md                          |  31 ++
+ README.md                             |  57 ++-
+ crates/core/src/comick.rs             |  10 +-
+ crates/domain/src/lib.rs              |   5 +-
+ docs/WEB-STATUS.md                    |  35 ++
+ infra/axum.md                         |  34 ++
+ web/package.json                      |   8 +-
+ web/scripts/whitespace-baseline.txt   | 787 ++++++++++++++++++++++++++++++++++
+ web/scripts/whitespace-check.mjs      |  44 +-
+ web/scripts/whitespace-check.test.mjs |  25 ++
+ 11 files changed, 1018 insertions(+), 28 deletions(-)
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index ab4f4ed..3561669 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -36,18 +36,20 @@ jobs:
+ 
+       - uses: Swatinem/rust-cache@v2
+ 
+       # Credential scan runs before dependency installation; no secrets are used
+       # or requested by any job in this workflow.
+       - name: Secret-pattern scan
+         run: node web/scripts/secret-scan.mjs .
+ 
++      # core is included after Task 10 formatted crates/core/src/comick.rs;
++      # full-workspace fmt still carries older Leptos debt.
+       - name: Rust scoped formatting
+-        run: cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server
++        run: cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server -p core
+ 
+       - name: Rust clippy (workspace, warnings are errors)
+         run: cargo clippy --workspace --all-targets -- -D warnings
+ 
+       - name: Rust workspace tests
+         run: cargo test --workspace
+ 
+       - name: Build Axum content service
+@@ -89,10 +91,12 @@ jobs:
+         run: npm run browser:install
+         working-directory: web
+ 
+       - name: Browser suites
+         run: npm run test:browser
+         working-directory: web
+ 
+       # Inspects tracked checkout content, so it is not vacuous on a clean tree.
+-      - name: Whitespace / conflict-marker check
+-        run: node web/scripts/whitespace-check.mjs .
++      # Baseline covers committed prior-plan SDD .diff artifacts only; new findings fail.
++      - name: Whitespace / conflict-marker check (baselined)
++        run: npm run check:whitespace
++        working-directory: web
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a7c1594..7c87e6c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,10 +1,41 @@
+ # Changelog
+ 
++## Unreleased — multi-source reading UX and final local gate
++
++- Read MangaDex as the primary catalog and fall back to Comick **per chapter**
++  when a chapter is external-only/unreadable; keep the last external link when
++  no match is found or the fallback fails. Chapter IDs are provider-prefixed
++  (`comick:`) and progression/XP bind to the chapter source.
++- Show `MangaDex`/`Comick` source labels after titles on cards, detail, chapter
++  rows and the reader toolbar. Legacy DTOs without `source` still display
++  `MangaDex`.
++- Add per-source image proxy allowlisting for Comick's CDN, plus
++  `COMICK_API_ORIGIN` as a local/test override (default `https://api.comick.dev`).
++- Replace native selects with an accessible custom dropdown (Arrow/Home/End/
++  Enter/Space/Escape/Tab, disabled options, hidden form input) and add
++  shape-matched skeletons with reduced-motion-guarded transitions; failed
++  reader images are released from the skeleton gate.
++- Default reader theme to `auto` (follows the site theme) with manual
++  `light`/`sepia`/`dark` overrides persisted per preference.
++- Gate all new suites (`source-contracts`, `source-fallback`, `source-ui`,
++  `source-progression`, `select`, `skeleton-motion`, `reader-theme`) through
++  `test:source` and `test:aggregate`; pretest hooks build the Axum binary before
++  aggregate/browser tests spawn it. CI uses the same ordering.
++- Baseline pre-existing whitespace findings in committed prior-plan SDD diff
++  artifacts; the gate stays strict for new findings. Run `cargo fmt -p core`
++  for the two known `comick.rs` hunks and add `core` to the scoped fmt check.
++- Document source fallback, labels, theme, dropdown, skeleton/motion, and the
++  release gate in `README.md`, `docs/WEB-STATUS.md` and `infra/axum.md`.
++
++No deployment, provisioning, provider credential use, push or merge was
++performed. Live MangaDex/Comick catalog and ToS verification remains a manual
++release gate; no live verification is claimed here.
++
+ ## Unreleased — Phase 1–2 local release gates
+ 
+ - Add secret-free GitHub Actions release gate: Rust scoped fmt/clippy/tests,
+   Axum build, frozen npm install, typecheck/lint, WASM rebuild before Next build,
+   aggregate Node/PGlite/API tests, Playwright browser suites and diff check.
+ - Add Next/Axum security headers. CSP allows same-origin images and WASM without
+   third-party sources; health/readiness separated; readiness is bounded and
+   returns only missing env names.
+diff --git a/README.md b/README.md
+index 7d02334..9ae0f85 100644
+--- a/README.md
++++ b/README.md
+@@ -13,33 +13,67 @@ crates/domain, contracts, reader-core, reader-wasm   contracts + WASM reader
+ crates/ui       legacy Leptos SPA (giữ lại, fmt baseline chưa sửa)
+ crates/app      Slint prototype (deferred Phase 3/4, outside workspace)
+ ```
+ 
+ MangaDex chỉ được gọi từ Axum. Browser gọi same-origin `/api/content/*`; Next
+ không chuyển Cookie/Authorization tới Axum. Reader WASM được build từ Rust trước
+ mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
+ 
++## Nguồn dữ liệu và fallback
++
++- MangaDex là nguồn chính cho catalog, danh sách chapter và metadata. Comick là
++  fallback **theo từng chapter**: khi chapter MangaDex chỉ có `externalUrl`
++  (hoặc chapter không đọc được), Axum thử tìm chapter Comick cùng tựa theo tựa
++  đã normalize, rồi trả về metadata/page đã proxied. Chapter enum/ngoài tiêu chí
++  hoặc Comick lỗi vẫn giữ nguyên liên kết ngoài; catalog MangaDex không đổi.
++- Source hiển thị sau tiêu đề ở thẻ truyện, trang chi tiết, danh sách chapter và
++  thanh reader: `MangaDex` (mặc định cho DTO cũ/không có `source`) hoặc `Comick`.
++  ID chapter Comick có tiền tố `comick:`; tiến độ/XP gắn với source của chapter.
++- `COMICK_API_ORIGIN` là override local/test cho catalog Comick, mặc định
++  `https://api.comick.dev`; fixture dùng biến này để chạy offline. Không cần
++  API key/secret và không giá trị nào được commit. Việc xác minh live endpoint,
++  nội dung catalog và ToS của hai provider **vẫn là manual release gate** —
++  fixture local không thay thế được kiểm tra đó.
++
++## Giao diện đọc
++
++- Reader theme mặc định `auto`: nền/chế độ đọc đi theo theme site; người dùng
++  có thể chọn thủ công `light`, `sepia`, `dark`, và lựa chọn đó được lưu theo
++  preference. Giá trị `auto` được chuẩn hóa ở cả guest local và validator API.
++- Native `<select>` được thay bằng dropdown dùng `role="combobox"`/`listbox"`:
++  ArrowDown/ArrowUp mở và di chuyển (bỏ qua option disabled), Enter/Space chọn,
++  Escape đóng, Home/End tới đầu/cuối, Tab đóng. Một hidden input giữ nguyên giá
++  trị form GET của tìm kiếm.
++- Skeleton có hình dạng khớp nội dung thay vì khối chung; hiệu ứng chuyển động
++  (chevron, fade ảnh, shimmer) nằm trong `prefers-reduced-motion`. Ảnh reader lỗi
++  được giải phóng khỏi skeleton để hiện nút thử lại.
++
+ ## Chạy local
+ 
+ ```bash
+ # Rust toolchain: stable + wasm32-unknown-unknown + wasm-bindgen-cli 0.2.130
+ cd web
+ npm ci
+ npm run build:wasm        # bắt buộc trước Next build
+ npm run build:web         # next build (không chạy lại prebuild)
+ npm run typecheck         # cần glue WASM + Next route types đã sinh
+ npm run lint
+ cd ..
+ cargo build -p server
+ cd web
+-npm run test:aggregate    # Node/PGlite/API smoke, không cần secret
++npm run test:source       # 7 suite nguồn/fallback/UI/theme/dropdown/skeleton
++npm run test:aggregate    # bao gồm cả 7 suite trên, không cần secret
+ npm run test:browser      # cần Edge local hoặc Playwright Chromium
+ ```
+ 
++`test:source`, `test:aggregate` và `test:browser` có pretest build Axum
++(`cargo build -p server`) trước vì fixture content/fallback spawn binary đó;
++chạy aggregate trước khi build server sẽ cho RED giả.
++
+ Axum local: `cargo run -p server` (`PORT`, `DIST_DIR`, `CACHE_DIR`,
+ `MANGADEX_API_ORIGIN` optional). Next local: `npm run dev` trong `web/`.
+ 
+ Health endpoints:
+ - `/api/v1/health` — liveness, credential-free, trả `{ok,version}` (Next) hoặc
+   `{ok,service}` (Axum).
+ - `/api/v1/ready` — readiness: cấu hình, DB/upstream với timeout 1.5s; chỉ trả
+   tên biến bị thiếu, không trả giá trị. Trên Axum readiness là config-only.
+@@ -55,33 +89,42 @@ Xem `web/.env.example`:
+ NEON_AUTH_BASE_URL
+ NEON_AUTH_COOKIE_SECRET
+ DATABASE_URL
+ READER_TICKET_SECRET
+ OPERATOR_EMAIL_ALLOWLIST (optional)
+ GOOGLE_CLIENT_ID
+ GOOGLE_CLIENT_SECRET
+ RUST_CONTENT_API_ORIGIN
++COMICK_API_ORIGIN (optional, test override only)
+ NEXT_PUBLIC_APP_URL
+ ```
+ 
+ `READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là progression API
+ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+ 
+ ## Release gates
+ 
+ `.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+-secret-pattern scan; `cargo fmt --check` scoped including `reader-wasm`; clippy
+-workspace `-D warnings`; `cargo test --workspace`; `npm ci`; `build:wasm` →
+-`build:web` → typecheck/lint; aggregate tests; Playwright Chromium install +
+-browser suites; tracked-file whitespace/conflict-marker scan (not vacuous on a
+-clean checkout).
++secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
++`reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
++`cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
++`build:wasm` → `build:web` → typecheck/lint; aggregate tests (bao gồm các suite
++nguồn/fallback/UI/theme/dropdown/skeleton, server được build trước qua
++pretest); Playwright Chromium install + browser suites; tracked-file
++whitespace/conflict-marker scan với baseline — không vacuous trên clean
++checkout, nhưng 783 finding đã commit trong
++`docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua
++`web/scripts/whitespace-baseline.txt` thay vì sửa artifact của plan cũ; mọi
++finding mới vẫn fail.
+ 
+ Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+-CI scoped vào `domain`, `contracts`, `reader-core`, `server`. Xem
++CI scoped như trên. Xem
+ `infra/deployment.md` cho runbook, caveat first-deploy-is-production, chặn
+ 402 fair-use trước đây, migration/rollback Neon và các external gate chưa chạy.
++Live Comick/MangaDex provider verification và kiểm tra ToS vẫn là manual gate;
++không có deploy/push/merge nào được thực hiện cho các thay đổi này.
+ 
+ Observability: structured JSON logs có `correlationId`, redaction cho Cookie/
+ Authorization/ticket/password/email/DATABASE_URL/upstream key; metric names
+ `kaslyydex.user_requests` và `kaslyydex.user_request.duration_ms` chỉ với label
+ `operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Vercel
+ chưa được xác minh và paid Observability không được bật tự động.
+diff --git a/crates/core/src/comick.rs b/crates/core/src/comick.rs
+index b2f4bff..a3c055e 100644
+--- a/crates/core/src/comick.rs
++++ b/crates/core/src/comick.rs
+@@ -114,20 +114,17 @@ pub fn is_comick_chapter_id(id: &str) -> bool {
+     id.strip_prefix("comick:").is_some_and(valid_opaque)
+ }
+ 
+ fn upstream_err() -> Err {
+     UPSTREAM_ERR.to_owned()
+ }
+ 
+ fn valid_opaque(value: &str) -> bool {
+-    !value.is_empty()
+-        && value
+-            .chars()
+-            .all(|c| !c.is_whitespace() && !c.is_control())
++    !value.is_empty() && value.chars().all(|c| !c.is_whitespace() && !c.is_control())
+ }
+ 
+ /// Accepts a provider-prefixed ID or a bare HID for internal catalog calls.
+ fn request_opaque(id: &str) -> Option<&str> {
+     let raw = id.strip_prefix("comick:").unwrap_or(id);
+     valid_opaque(raw).then_some(raw)
+ }
+ 
+@@ -154,20 +151,17 @@ fn images_path(chapter_id: &str) -> Result<String, Err> {
+     Ok(format!("/chapter/{}/get_images", encode(hid)))
+ }
+ 
+ fn title_from_value(value: &Value) -> Result<ComickTitle, Err> {
+     let hid = value["hid"]
+         .as_str()
+         .filter(|hid| valid_opaque(hid))
+         .ok_or_else(upstream_err)?;
+-    let title = value["title"]
+-        .as_str()
+-        .ok_or_else(upstream_err)?
+-        .to_owned();
++    let title = value["title"].as_str().ok_or_else(upstream_err)?.to_owned();
+     let aliases = value["md_titles"]
+         .as_array()
+         .map(|titles| {
+             titles
+                 .iter()
+                 .filter_map(|title| {
+                     title["title"]
+                         .as_str()
+diff --git a/crates/domain/src/lib.rs b/crates/domain/src/lib.rs
+index 120d62f..c8907da 100644
+--- a/crates/domain/src/lib.rs
++++ b/crates/domain/src/lib.rs
+@@ -233,17 +233,20 @@ mod tests {
+     fn reader_background_accepts_auto_and_roundtrips_wire_values() {
+         for (background, wire) in [
+             (ReaderBackground::Auto, "auto"),
+             (ReaderBackground::Light, "light"),
+             (ReaderBackground::Sepia, "sepia"),
+             (ReaderBackground::Dark, "dark"),
+         ] {
+             assert_eq!(background.as_str(), wire);
+-            assert_eq!(serde_json::to_string(&background).unwrap(), format!("\"{wire}\""));
++            assert_eq!(
++                serde_json::to_string(&background).unwrap(),
++                format!("\"{wire}\"")
++            );
+             assert_eq!(
+                 serde_json::from_str::<ReaderBackground>(&format!("\"{wire}\"")).unwrap(),
+                 background
+             );
+         }
+         assert_eq!(ReaderSettings::default().bg, ReaderBackground::Auto);
+     }
+ 
+diff --git a/docs/WEB-STATUS.md b/docs/WEB-STATUS.md
+index 1d7c8ea..579c280 100644
+--- a/docs/WEB-STATUS.md
++++ b/docs/WEB-STATUS.md
+@@ -87,8 +87,43 @@ measurements above. Full commands and counts are in
+ - API error paths: missing auth/content/DB/ticket config returns structured 503,
+   malformed IDs return 400, upstream failures are generic 502 without
+   credentials, and cross-origin mutations are rejected before writes.
+ - Auth ownership: real SDK session fixtures show comments, library/progress and
+   completion records scoped to the authenticated user; client role fields and
+   ticket forgery never grant ownership or XP.
+ - External Neon/Google/Vercel verification and live browser-to-Neon SQL remain
+   manual gates; no Preview or Production deployment was verified.
++
++## Multi-source reading UX + final local gate (Task 10)
++
++Exact commands, counts and rulings are in
++`docs/superpowers/sdd/kaslyydex-multi-source-ux/task-10-report.md`.
++
++- Source fallback: MangaDex is the primary catalog; per chapter that is
++  external-only or unreadable, the Axum service searches Comick by normalized
++  title and returns proxied Comick pages when a match exists. When there is no
++  match, Comick fails, or the chapter is out of scope, the original external
++  link is kept unchanged. Source labels (`MangaDex` default, `Comick`) render
++  after titles on home/detail cards, chapter rows and the reader toolbar;
++  legacy DTOs without `source` still work.
++- `COMICK_API_ORIGIN` is a test/local-only override for the Comick catalog
++  origin (default `https://api.comick.dev`); source-fallback fixtures run fully
++  on loopback through it. No credentials are involved and live provider/ToS
++  verification is still a manual release gate — not claimed here.
++- Reader theme defaults to `auto` (follows the site theme, no flash on load);
++  manual `light`/`sepia`/`dark` persist over it. Custom dropdown replaces
++  native selects everywhere with full keyboard support (Arrow/Home/End/Enter/
++  Space/Escape/Tab) and submits unchanged values via a hidden input. Skeletons
++  match content shape and all motion is guarded by `prefers-reduced-motion`;
++  broken reader images show a retry instead of a permanent skeleton.
++- Regression gate: `web/package.json` `test:aggregate` now includes
++  `source-contracts`, `source-fallback`, `source-ui`, `source-progression`,
++  `select`, `skeleton-motion` and `reader-theme`; a dedicated `test:source`
++  runs the same seven. Pretest hooks run `cargo build -p server` before
++  aggregate/browser suites spawn the Axum binary (ordering fix; without it
++  fixture tests false-RED on the missing binary). CI runs the same order.
++- Whitespace gate is baselined: 783 pre-existing findings in committed
++  `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` are listed in
++  `web/scripts/whitespace-baseline.txt`; any new finding still fails. The two
++  pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with
++  `cargo fmt -p core` and `core` joined the scoped `cargo fmt --check` set.
++- No deployment, push, merge, or live provider verification was performed.
+diff --git a/infra/axum.md b/infra/axum.md
+index 20a0514..d9e34da 100644
+--- a/infra/axum.md
++++ b/infra/axum.md
+@@ -44,16 +44,50 @@ cd web && npm run test:task4
+ The content test starts a local MangaDex fixture, the real compiled Axum binary,
+ and a built Next server. It asserts legacy and `/api/content` routes both work,
+ the Next proxy passes through content and malformed-ID errors, and the missing
+ origin case returns 503.
+ 
+ `cargo fmt --check` still reports pre-existing formatting differences in unrelated
+ files; the two Rust files touched by Task 4 were formatted with `rustfmt --edition 2021`.
+ 
++## Multi-source fallback (Tasks 2–4, gated in Task 10)
++
++- MangaDex stays the primary catalog. For each chapter that is external-only or
++  unreadable, `enrich_chapters` searches Comick (`/v1.0/search/` by normalized
++  title), fetches `/v1.0/comic/{hid}/chapters` (page 1, limit 12) and rewrites
++  the chapter to a provider-prefixed `comick:{hid}` ID with proxied page URLs.
++  No match, a Comick error, or an out-of-scope chapter keeps the original
++  external link; the MangaDex response shape is unchanged and legacy `/api/*`
++  aliases behave the same.
++- `COMICK_API_ORIGIN` overrides the Comick catalog origin (default
++  `https://api.comick.dev`) and is used by `web/scripts/source-fallback.test.mjs`
++  to run the real Axum binary against loopback MangaDex/Comick fixtures — no
++  remote call, credential, or deployment. Live catalog/ToS verification of both
++  providers remains a manual release gate and is not claimed as done.
++- The image proxy allowlists the verified Comick CDN host
++  (`meo.comick.pictures`, HTTPS/443, no credentials) with raw and decoded
++  path-traversal rejection; the browser only ever receives same-origin
++  `/api/img` URLs.
++- Source labels (`MangaDex` default for legacy DTOs, `Comick` for
++  provider-prefixed chapters) come from the shared contracts and are rendered by
++  the web UI; reader tickets and progression records bind the chapter source.
++
++## Gate notes (Task 10)
++
++- `cargo fmt -p core` fixed the two known pre-existing rustfmt hunks in
++  `crates/core/src/comick.rs` (lines ~119 and ~159); `core` is now part of the
++  scoped `cargo fmt --check` set in CI. Full-workspace fmt still carries older
++  Leptos debt, so it stays out of scope.
++- The tracked-file whitespace gate runs with
++  `web/scripts/whitespace-baseline.txt` (783 pre-existing findings in committed
++  `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff`); new findings still fail.
++- `npm run test:aggregate`/`test:browser` build the Axum binary via pretest
++  before suites spawn it; CI builds it as its own step first.
++
+ ## Unverified
+ 
+ No Axum service was deployed, exposed publicly, or connected to live Neon/Google
+ configuration in this task. Docker was unavailable, so no PostgreSQL container was
+ created; the migration test used embedded PGlite as a dev/test-only engine and did
+ not touch any pre-existing database.
+ 
+ ## Task 9 hardening
+diff --git a/web/package.json b/web/package.json
+index b030d27..b98d52c 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -7,20 +7,24 @@
+     "build:wasm": "node scripts/build-wasm.mjs",
+     "prebuild": "npm run build:wasm",
+     "build": "next build",
+     "build:web": "next build",
+     "start": "next start",
+     "typecheck": "tsc --noEmit",
+     "browser:install": "node node_modules/playwright-core/cli.js install chromium",
+     "check:secrets": "node scripts/secret-scan.mjs ..",
+-    "check:whitespace": "node scripts/whitespace-check.mjs ..",
++    "check:whitespace": "node scripts/whitespace-check.mjs --baseline scripts/whitespace-baseline.txt ..",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+-    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs",
++    "pretest:aggregate": "cargo build --manifest-path ../Cargo.toml -p server",
++    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs",
++    "pretest:browser": "cargo build --manifest-path ../Cargo.toml -p server",
+     "test:browser": "node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs scripts/reader-playwright.test.mjs",
++    "pretest:source": "cargo build --manifest-path ../Cargo.toml -p server",
++    "test:source": "node --import tsx --conditions=react-server --test scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+     "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs",
+     "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
+     "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs",
+     "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs",
+diff --git a/web/scripts/whitespace-baseline.txt b/web/scripts/whitespace-baseline.txt
+new file mode 100644
+index 0000000..6259954
+--- /dev/null
++++ b/web/scripts/whitespace-baseline.txt
+@@ -0,0 +1,787 @@
++# Baseline for committed pre-existing whitespace findings.
++# All entries are in docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff (prior-plan artifacts).
++# Measured at task-10 BASE 1c4524b38c70d3351d7989628ff5b6f807cff0da; do not add new entries.
++# 783 entries
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1006:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1029:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1040:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1070:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1076:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1094:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1096:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1100:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1148:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1167:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1186:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1220:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1240:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1284:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1306:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1324:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1337:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1351:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1371:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1386:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:15252:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1527:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1556:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1580:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1760:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1768:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1774:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1798:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1813:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1846:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1899:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1963:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1994:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:24012:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:2903:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:2936:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:2939:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:2958:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3130:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3134:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3149:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3158:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3208:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3266:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3270:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3287:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3299:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3311:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3363:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3398:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3409:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3418:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3443:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3469:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3489:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3503:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3507:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3543:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3614:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3725:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3736:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3784:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3786:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3788:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3790:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3793:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3795:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3815:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3829:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3831:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3839:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3841:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3843:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3860:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3863:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3872:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3874:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3876:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3885:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3887:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3890:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3899:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3903:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3919:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3921:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3924:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3935:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3959:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3961:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:3963:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:399:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:405:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:427:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:449:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:463:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:474:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:503:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:516:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:538:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:544:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:553:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:557:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:563:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:577:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:584:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:602:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:617:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:620:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:635:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:645:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:648:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:660:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:666:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:101:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:108:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:156:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:291:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:293:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:295:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:297:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:29:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:360:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:371:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:41:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:43:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:46:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:482:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:487:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:50:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:60:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:62:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:69:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:72:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-review.diff:83:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-fix.diff:117:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-fix.diff:202:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-fix.diff:206:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-fix.diff:211:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-fix.diff:224:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-fix.diff:247:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-fix.diff:56:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1312:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1315:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1333:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1348:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1351:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1396:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1408:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1412:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1429:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1441:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1453:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1466:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1501:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1506:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1511:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1539:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1553:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:1605:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:270:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:288:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:329:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:333:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:352:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:386:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:416:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:453:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:475:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:493:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:506:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:520:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:540:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:555:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:617:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:640:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:644:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:701:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:709:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:715:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:731:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:763:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:818:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-2-review.diff:847:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:102:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:1057:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:123:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:128:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:168:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:170:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:179:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:191:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:204:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:225:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:241:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:253:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:32:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:352:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:355:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:35:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:408:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:410:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:413:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:425:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:50:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:54:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-4-review.diff:80:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1004:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:100:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1047:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1068:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1075:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1082:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1092:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1102:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1121:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:1133:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:134:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:147:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:156:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:182:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:190:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:205:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:238:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:25:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:27:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:297:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:313:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:31:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:339:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:346:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:360:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:367:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:375:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:382:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:385:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:479:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:483:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:493:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:500:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:540:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:56:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:570:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:601:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:60:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:657:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:66:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:677:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:688:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:692:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:697:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:702:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:743:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:747:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:752:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:759:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:767:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:771:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:785:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:791:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:799:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:828:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:831:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:843:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:847:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:851:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:928:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:944:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:954:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:965:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:970:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:984:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:98:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-fix-1.diff:997:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1143:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1149:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1158:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1167:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1208:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1211:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:121:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1223:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1246:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1328:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1370:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1381:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1396:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1437:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1448:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:147:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1517:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1583:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1588:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1607:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1651:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1681:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1690:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:174:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1793:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1839:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1956:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:195:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1965:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1971:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:1999:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2004:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:200:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2096:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2107:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2115:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2121:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2252:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2261:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2271:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2276:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2286:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2337:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2384:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2401:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:2419:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3381:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3529:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3541:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3557:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3568:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3573:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3577:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3584:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3641:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3646:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:3652:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:435:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:438:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:440:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:448:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:4497:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:4501:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:450:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:4512:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:4528:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:459:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:4617:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:4634:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:4642:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:464:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:466:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:490:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:492:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:510:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:512:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:539:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:597:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:763:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:823:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:849:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:87:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:894:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-5-review.diff:957:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:114:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:122:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:144:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:154:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:168:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:171:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:188:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:199:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:238:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:253:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:260:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:272:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:283:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:289:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:300:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:345:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:35:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:363:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:417:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:422:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:430:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:442:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:449:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:460:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:467:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:494:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:534:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:537:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:606:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:627:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:634:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:63:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:647:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:652:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:660:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:668:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:693:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:697:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:70:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:761:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:768:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:778:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:787:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:800:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:810:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:89:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:923:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-fix-1.diff:96:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1085:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1095:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1102:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1105:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1145:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1180:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1195:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1198:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1209:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1225:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1294:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1308:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1317:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:1336:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:2129:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:2183:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:2191:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:2196:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:2200:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:2213:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:282:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:284:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4100:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4103:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4109:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4122:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4129:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4149:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4165:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:4180:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:55:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:58:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:66:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:800:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:809:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:811:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:868:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:946:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:954:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-6-review.diff:956:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:102:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1337:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1348:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1363:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1373:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1377:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1381:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1385:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:139:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1404:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1446:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:152:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1600:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1609:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1670:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1680:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1690:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1708:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1716:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1723:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1728:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1749:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1755:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1771:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1783:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:1796:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:2073:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:2076:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:2083:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:23:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:25:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:69:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:76:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:79:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-1.diff:89:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:114:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:120:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:140:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1741:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1743:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1765:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1774:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1785:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1790:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1796:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1808:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1813:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1851:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1866:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1882:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1894:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1898:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1905:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1911:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1945:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:1953:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2143:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2154:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2164:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2172:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2203:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2209:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:220:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2237:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2259:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2285:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2301:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2306:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2358:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2364:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2380:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2395:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2407:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2410:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:2418:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:25:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:288:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:305:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:31:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:358:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:367:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:380:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:384:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:397:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:455:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:472:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:49:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:527:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:533:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:544:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-2.diff:64:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:116:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:132:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:140:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1451:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1453:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1486:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1514:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1531:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1544:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1548:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1554:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1560:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1568:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1578:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1582:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1609:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1629:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1663:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1930:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1965:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1977:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1988:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:1995:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2039:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2042:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2051:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2079:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2095:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2109:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2123:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2133:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2141:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2161:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2186:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2225:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2251:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:2268:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:23:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:45:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:75:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:85:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-fix-3.diff:98:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:2465:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:2467:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:2538:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:285:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:287:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:306:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:3275:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4333:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4336:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4342:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4372:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4382:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4398:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4412:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:4426:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:593:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:601:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:603:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:614:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:629:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:905:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:934:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:939:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:968:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:978:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-7-review.diff:998:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-fix-1.diff:32:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-fix-1.diff:40:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-fix-1.diff:49:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:124:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:171:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:230:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2488:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2503:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2518:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2538:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2582:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2595:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:265:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2662:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2668:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2672:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2677:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2694:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2698:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2703:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2713:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2722:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2736:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2750:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:2767:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:287:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3375:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3378:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3393:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:339:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3404:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3421:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3447:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3460:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3470:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3501:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3517:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3528:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:353:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3542:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3588:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3595:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:359:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:3605:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:416:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:439:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:441:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:45:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:493:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:508:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:520:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:526:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:536:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:543:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:545:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:66:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:683:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:686:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:717:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:86:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-8-review.diff:96:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:100:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:109:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:122:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:128:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:130:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:141:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:160:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:165:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:182:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:195:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:200:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:202:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:20:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:22:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:261:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:267:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:269:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:27:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:289:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:31:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:334:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:339:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:34:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:372:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:37:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:40:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:43:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:47:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:51:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:64:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:67:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:69:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:79:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:84:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:96:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-fix-1.diff:98:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1000:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1005:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1011:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1019:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1027:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1029:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1037:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1057:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1219:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1241:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1256:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1432:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1440:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1446:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1466:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1479:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1524:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1584:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1588:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1594:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1644:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1654:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1666:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:175:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1790:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1796:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:179:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1803:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1808:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1817:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1836:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1853:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:185:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1860:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1867:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1896:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1921:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1937:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1958:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1966:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1971:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1976:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:1986:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:199:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:206:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:2097:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:2100:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:2110:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:2116:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:224:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:239:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:242:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:257:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:267:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:270:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:280:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:286:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:315:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:317:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:329:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:492:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:496:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:505:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:516:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:524:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:530:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:550:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:648:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:653:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:662:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:670:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:672:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:860:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:862:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:891:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:894:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:901:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:905:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:915:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:917:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:961:trailing-whitespace
++docs/superpowers/sdd/kaslyydex-phase-1-2/task-9-review.diff:973:trailing-whitespace
+diff --git a/web/scripts/whitespace-check.mjs b/web/scripts/whitespace-check.mjs
+index 0ccb948..b25f2d3 100644
+--- a/web/scripts/whitespace-check.mjs
++++ b/web/scripts/whitespace-check.mjs
+@@ -1,11 +1,14 @@
+-// Usage: node scripts/whitespace-check.mjs [repoDir]
++// Usage: node scripts/whitespace-check.mjs [--baseline <file>] [repoDir]
+ // Inspects tracked files from the checkout/index, unlike `git diff --check`
+ // on a clean checkout. Reports file:line without printing file contents.
++// With --baseline, findings listed in the baseline file (`file:line:rule`
++// per line, `#` comments allowed) are pre-existing and do not fail the gate;
++// any new finding still fails.
+ import { execFileSync } from "node:child_process";
+ import { readFile } from "node:fs/promises";
+ import { join, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ 
+ export function scanText(text, file = "<text>") {
+   const findings = [];
+   const lines = text.split(/\r?\n/);
+@@ -15,16 +18,30 @@ export function scanText(text, file = "<text>") {
+     }
+     if (/^(<{7}|>{7})(?:\s|$)/.test(lines[index])) {
+       findings.push({ file, line: index + 1, rule: "conflict-marker" });
+     }
+   }
+   return findings;
+ }
+ 
++export function findingKey(finding) {
++  return `${finding.file}:${finding.line}:${finding.rule}`;
++}
++
++export async function loadBaseline(baselineFile) {
++  const text = await readFile(baselineFile, "utf8");
++  return new Set(
++    text
++      .split(/\r?\n/)
++      .map((line) => line.trim())
++      .filter((line) => line && !line.startsWith("#")),
++  );
++}
++
+ export async function scanRepo(repoDir) {
+   const files = execFileSync("git", ["ls-files", "-z"], { cwd: repoDir, encoding: "utf8" })
+     .split("\0")
+     .filter(Boolean);
+   const findings = [];
+   for (const file of files) {
+     let text;
+     try {
+@@ -33,24 +50,37 @@ export async function scanRepo(repoDir) {
+       continue;
+     }
+     if (text.includes("\0")) continue; // binary
+     findings.push(...scanText(text, file));
+   }
+   return { files: files.length, findings };
+ }
+ 
+-async function main(repoDir) {
++async function main(baselineFile, repoDir) {
+   const { files, findings } = await scanRepo(resolve(repoDir));
+-  if (findings.length > 0) {
+-    for (const finding of findings) {
++  const baseline = baselineFile ? await loadBaseline(baselineFile) : new Set();
++  const fresh = findings.filter((finding) => !baseline.has(findingKey(finding)));
++  const known = findings.length - fresh.length;
++  if (fresh.length > 0) {
++    for (const finding of fresh) {
+       console.error(`${finding.file}:${finding.line}: ${finding.rule}`);
+     }
+-    console.error(`whitespace check failed: ${findings.length} finding(s)`);
++    console.error(`whitespace check failed: ${fresh.length} new finding(s), ${known} baselined`);
+     process.exitCode = 1;
+     return;
+   }
+-  console.log(`whitespace check passed: ${files} tracked files inspected, 0 findings`);
++  console.log(
++    `whitespace check passed: ${files} tracked files inspected, ` +
++      (known > 0 ? `0 new findings (${known} baselined)` : "0 findings"),
++  );
+ }
+ 
+ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+-  await main(process.argv[2] ?? fileURLToPath(new URL("../..", import.meta.url)));
++  const args = process.argv.slice(2);
++  let baselineFile;
++  if (args[0] === "--baseline") {
++    baselineFile = args[1];
++    args.splice(0, 2);
++    if (!baselineFile) throw new Error("--baseline requires a file path");
++  }
++  await main(baselineFile, args[0] ?? fileURLToPath(new URL("../..", import.meta.url)));
+ }
+diff --git a/web/scripts/whitespace-check.test.mjs b/web/scripts/whitespace-check.test.mjs
+index 51b144e..cd15497 100644
+--- a/web/scripts/whitespace-check.test.mjs
++++ b/web/scripts/whitespace-check.test.mjs
+@@ -35,8 +35,33 @@ test("tracked-file whitespace gate RED on seeded file, GREEN after cleanup", ()
+     execFileSync("git", ["add", "trailing.txt"], { cwd: fixture });
+     const green = spawnSync(process.execPath, [script, fixture], { encoding: "utf8" });
+     assert.equal(green.status, 0, green.stderr);
+     assert.match(green.stdout, /0 findings/);
+   } finally {
+     rmSync(fixture, { recursive: true, force: true });
+   }
+ });
++
++test("--baseline tolerates listed findings but still fails on new ones", () => {
++  const fixture = join(webDir, ".test-cache", `whitespace-baseline-${process.pid}`);
++  mkdirSync(fixture, { recursive: true });
++  try {
++    execFileSync("git", ["init", "-q"], { cwd: fixture });
++    writeFileSync(join(fixture, "old.txt"), "known line \n");
++    writeFileSync(join(fixture, "new.txt"), "new line \n");
++    execFileSync("git", ["add", "."], { cwd: fixture });
++    const baseline = join(fixture, "baseline.txt");
++    writeFileSync(baseline, "# comment\nold.txt:1:trailing-whitespace\n");
++
++    const tolerated = spawnSync(process.execPath, [script, "--baseline", baseline, fixture], { encoding: "utf8" });
++    assert.equal(tolerated.status, 1, tolerated.stderr);
++    assert.match(tolerated.stderr, /new\.txt:1: trailing-whitespace/);
++    assert.match(tolerated.stderr, /1 baselined/);
++
++    writeFileSync(baseline, "old.txt:1:trailing-whitespace\nnew.txt:1:trailing-whitespace\n");
++    const passed = spawnSync(process.execPath, [script, "--baseline", baseline, fixture], { encoding: "utf8" });
++    assert.equal(passed.status, 0, passed.stderr);
++    assert.match(passed.stdout, /0 new findings \(2 baselined\)/);
++  } finally {
++    rmSync(fixture, { recursive: true, force: true });
++  }
++});

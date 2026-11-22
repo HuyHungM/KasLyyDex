@@ -1,0 +1,873 @@
+3146a33 feat: replace native selects with accessible dropdown
+ web/app/globals.css                           |  34 ++++-
+ web/app/search/page.tsx                       |  23 +++-
+ web/components/account/SettingsForm.tsx       |  29 ++--
+ web/components/moderation/ModerationQueue.tsx |  11 +-
+ web/components/reader/ReaderToolbar.tsx       |  51 +++----
+ web/components/ui/Select.tsx                  | 143 ++++++++++++++++++++
+ web/scripts/account-playwright.test.mjs       |  17 ++-
+ web/scripts/reader-playwright.test.mjs        |  24 +++-
+ web/scripts/select.test.mjs                   | 185 ++++++++++++++++++++++++++
+ 9 files changed, 461 insertions(+), 56 deletions(-)
+diff --git a/web/app/globals.css b/web/app/globals.css
+index 895204c..dedb4e7 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -222,23 +222,51 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .rank-rating { font-size: .8125rem; font-weight: 700; }
+ .rank-loading { padding-inline: 14px; }
+ .rank-loading .skel-line { height: 56px; margin: 8px 0; }
+ .search-filters { margin-bottom: 22px; }
+ .search-filters summary { min-height: 48px; padding: 11px 16px; font-weight: 600; }
+ .search-filters form { padding: 14px 16px; border-top: 1px solid var(--line); }
+ .filter-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+ .filter-fields label, .reader-settings label { display: grid; min-width: 0; gap: 5px; font-size: .8125rem; font-weight: 600; }
+-.filter-fields select, .chapter-select, .reader-settings select { width: 100%; min-height: 44px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+ .filter-tags { min-width: 0; margin: 14px 0; padding: 8px 0; border: 0; }
+ .filter-tags legend { font-weight: 600; }
+ .filter-tag { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: .8125rem; cursor: pointer; }
+ .filter-tag input { margin: 0; accent-color: var(--accent); }
+ .filter-tag:has(:checked) { background: var(--soft); color: var(--accent); }
+ .filter-tag:has(:disabled) { opacity: .68; cursor: default; }
++
++/* Shared dropdown: the trigger keeps focus while the listbox handles selection. */
++.select { position: relative; display: inline-block; width: 100%; min-width: 0; }
++.select-trigger {
++  display: flex; width: 100%; min-height: 44px; align-items: center; justify-content: space-between;
++  gap: 8px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px;
++  background: var(--surface); color: var(--text); text-align: left; font-size: .875rem; font-weight: 600;
++}
++.select-trigger:hover:not(:disabled) { background: var(--hover); }
++.select[data-open="true"] .select-trigger { border-color: var(--accent); }
++.select-value { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
++.select-chevron { color: var(--muted); transition: transform .12s ease; }
++.select[data-open="true"] .select-chevron { transform: rotate(180deg); }
++.select-list {
++  position: absolute; z-index: 20; inset: calc(100% + 4px) 0 auto; display: block;
++  max-height: min(280px, 50dvh); overflow-y: auto; margin: 0; padding: 4px;
++  border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
++  box-shadow: 0 10px 24px #0003; list-style: none;
++}
++.select-list[hidden] { display: none; }
++.select-option { min-height: 40px; padding: 8px 10px; border-radius: 6px; color: var(--text); font-size: .875rem; cursor: pointer; }
++.select-option:hover { background: var(--hover); }
++.select-option[aria-selected="true"] { background: var(--soft); color: var(--accent); font-weight: 600; }
++.select-option[aria-disabled="true"] { opacity: .5; cursor: default; }
++@media (prefers-reduced-motion: no-preference) {
++  .select[data-open="true"] .select-list:not([hidden]) { animation: select-in .12s ease-out both; }
++  @keyframes select-in { from { opacity: 0; transform: translateY(-3px); } }
++}
++
+ .genre-group { margin-bottom: 13px; padding: 17px 16px; }
+ .genre-group h2 { margin-bottom: 13px; }
+ .result-info { margin-bottom: 14px; color: var(--muted); }
+ .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 26px; }
+ .page-info { color: var(--muted); font-size: .875rem; }
+ .shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(244px, 100%), 1fr)); gap: 14px; }
+ .shelf-card { display: grid; align-content: start; justify-items: start; gap: 9px; padding: 13px; }
+ .shelf-story { display: grid; width: 100%; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 12px; }
+@@ -346,21 +374,21 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ }
+ 
+ /* Account flows: compact, text-first forms that survive the dark/light theme. */
+ .account-grid { display: grid; gap: 18px; max-width: 760px; }
+ .account-card { padding: 22px; width: 100%; }
+ .account-card h2 { font-size: 1.25rem; margin-bottom: 10px; }
+ .account-form { display: grid; gap: 12px; margin: 16px 0; }
+ .account-form label { display: grid; gap: 6px; font-size: .9rem; color: var(--muted); }
+-.account-form input, .account-form select {
++.account-form input {
+   width: 100%; border: 1px solid var(--line); border-radius: 9px;
+   background: var(--bg); color: var(--text); padding: 10px 12px; font: inherit;
+ }
+-.account-form input:focus, .account-form select:focus { outline: 2px solid var(--solid); outline-offset: 1px; }
++.account-form input:focus { outline: 2px solid var(--solid); outline-offset: 1px; }
+ .account-form .account-check { display: flex; align-items: center; gap: 8px; }
+ .account-form .account-check input { width: auto; }
+ .account-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); }
+ .account-tabs button { border: 0; background: transparent; color: var(--muted); padding: 8px 4px; cursor: pointer; }
+ .account-tabs button.active { color: var(--text); border-bottom: 2px solid var(--solid); }
+ .account-hint { color: var(--muted); font-size: .88rem; line-height: 1.5; }
+ .account-error { color: #ff8c7a; font-size: .9rem; }
+ .history-list { display: grid; gap: 10px; }
+diff --git a/web/app/search/page.tsx b/web/app/search/page.tsx
+index b682029..df0e0c7 100644
+--- a/web/app/search/page.tsx
++++ b/web/app/search/page.tsx
+@@ -1,14 +1,15 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import type { TagDto } from "@/lib/contracts";
+ import { filterUrl, statusText, tagLabel } from "@/lib/format";
+ import { GridSkeleton, MangaGrid } from "@/components/manga-card";
++import Select from "@/components/ui/Select";
+ 
+ type Query = {
+   q?: string;
+   tags?: string | string[];
+   status?: string;
+   sort?: string;
+   page?: string;
+ };
+@@ -50,25 +51,33 @@ async function Filters({ current }: { current: ReturnType<typeof parseQuery> })
+ 
+   return (
+     <details className="surface search-filters">
+       <summary>Bộ lọc{count > 0 ? ` (${count})` : ""}</summary>
+       <form action="/search" method="get">
+         <input type="hidden" name="q" value={current.q} />
+         <div className="filter-fields">
+           <label>Trạng thái
+-            <select name="status" defaultValue={current.status}>
+-              <option value="">Tất cả</option>
+-              {STATUSES.map((status) => <option key={status} value={status}>{statusText(status)}</option>)}
+-            </select>
++            <Select
++              name="status"
++              ariaLabel="Trạng thái"
++              defaultValue={current.status}
++              options={[
++                { value: "", label: "Tất cả" },
++                ...STATUSES.map((status) => ({ value: status, label: statusText(status) })),
++              ]}
++            />
+           </label>
+           <label>Sắp xếp
+-            <select name="sort" defaultValue={current.sort}>
+-              {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+-            </select>
++            <Select
++              name="sort"
++              ariaLabel="Sắp xếp"
++              defaultValue={current.sort}
++              options={SORTS.map(([value, label]) => ({ value, label }))}
++            />
+           </label>
+         </div>
+         <fieldset className="filter-tags">
+           <legend>Thể loại ({current.tags.length}/8)</legend>
+           <div className="tag-options">
+             {tags.map((tag) => (
+               <label className="filter-tag" key={tag.id}>
+                 <input type="checkbox" name="tags" value={tag.id} defaultChecked={current.tags.includes(tag.id)} />
+diff --git a/web/components/account/SettingsForm.tsx b/web/components/account/SettingsForm.tsx
+index 93d7af7..fe971f0 100644
+--- a/web/components/account/SettingsForm.tsx
++++ b/web/components/account/SettingsForm.tsx
+@@ -1,11 +1,12 @@
+ "use client";
+ 
+ import { useState } from "react";
++import Select from "@/components/ui/Select";
+ import type { ReaderSettingsDto } from "@/lib/validators";
+ import { getSettings, saveSettings, type ReaderSettings } from "@/lib/guest";
+ import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+ 
+ function SettingsFields({
+   value,
+   onSave,
+ }: {
+@@ -30,27 +31,37 @@ function SettingsFields({
+     } finally {
+       setBusy(false);
+     }
+   }
+ 
+   return (
+     <form className="account-form" onSubmit={(event) => void submit(event)}>
+       <label>Chế độ đọc
+-        <select value={mode} onChange={(event) => setMode(event.target.value as ReaderSettingsDto["mode"])}>
+-          <option value="vertical">Cuộn dọc</option>
+-          <option value="horizontal">Chuyển trang</option>
+-        </select>
++        <Select
++          ariaLabel="Chế độ đọc"
++          value={mode}
++          options={[
++            { value: "vertical", label: "Cuộn dọc" },
++            { value: "horizontal", label: "Chuyển trang" },
++          ]}
++          onChange={(value) => setMode(value as ReaderSettingsDto["mode"])}
++        />
+       </label>
+       <label>Nền
+-        <select value={bg} onChange={(event) => setBg(event.target.value as ReaderSettingsDto["bg"])}>
+-          <option value="light">Sáng</option>
+-          <option value="sepia">Ngà</option>
+-          <option value="dark">Tối</option>
+-        </select>
++        <Select
++          ariaLabel="Nền"
++          value={bg}
++          options={[
++            { value: "light", label: "Sáng" },
++            { value: "sepia", label: "Ngà" },
++            { value: "dark", label: "Tối" },
++          ]}
++          onChange={(value) => setBg(value as ReaderSettingsDto["bg"])}
++        />
+       </label>
+       <label className="account-check"><input type="checkbox" checked={fit} onChange={(event) => setFit(event.target.checked)} /> Vừa khung hình</label>
+       <label>Tốc độ cuộn
+         <input type="number" min={1} max={5} value={speed} onChange={(event) => setSpeed(Number(event.target.value))} />
+       </label>
+       <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu cài đặt"}</button>
+       {message ? <p className="account-hint" role="status">{message}</p> : null}
+     </form>
+diff --git a/web/components/moderation/ModerationQueue.tsx b/web/components/moderation/ModerationQueue.tsx
+index 753e887..9be3b87 100644
+--- a/web/components/moderation/ModerationQueue.tsx
++++ b/web/components/moderation/ModerationQueue.tsx
+@@ -1,11 +1,12 @@
+ "use client";
+ 
+ import { useState } from "react";
++import Select from "@/components/ui/Select";
+ import type { ReportDto, ReportListDto } from "@/lib/contracts";
+ import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+ 
+ export default function ModerationQueue() {
+   const { session } = useAccountSession();
+   const identityKey = session.user?.id ?? "guest";
+   const signedIn = session.status === "authenticated";
+   const queue = useRemoteResource<ReportListDto>(
+@@ -80,20 +81,22 @@ export default function ModerationQueue() {
+         {(queue.data?.items ?? []).length === 0 ? <p className="account-hint">Không có báo cáo mở.</p> : null}
+       </div>
+       <form className="account-form" onSubmit={(event) => {
+         event.preventDefault();
+         void act("/api/v1/moderation/threads", "PUT", { targetType, targetId, locked });
+       }}>
+         <label>
+           Khóa chủ đề
+-          <select value={targetType} onChange={(event) => setTargetType(event.target.value as "manga" | "chapter")}>
+-            <option value="manga">Truyện</option>
+-            <option value="chapter">Chương</option>
+-          </select>
++          <Select
++            ariaLabel="Khóa chủ đề"
++            value={targetType}
++            options={[{ value: "manga", label: "Truyện" }, { value: "chapter", label: "Chương" }]}
++            onChange={(value) => setTargetType(value as "manga" | "chapter")}
++          />
+         </label>
+         <label>Id chủ đề<input value={targetId} maxLength={200} onChange={(event) => setTargetId(event.target.value)} /></label>
+         <label className="account-check">
+           <input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} />
+           Đóng bình luận mới
+         </label>
+         <button type="submit" className="btn btn-primary" disabled={busy || targetId.trim().length === 0}>Áp dụng</button>
+       </form>
+diff --git a/web/components/reader/ReaderToolbar.tsx b/web/components/reader/ReaderToolbar.tsx
+index 7c17dcf..aaa1c1a 100644
+--- a/web/components/reader/ReaderToolbar.tsx
++++ b/web/components/reader/ReaderToolbar.tsx
+@@ -1,11 +1,12 @@
+ "use client";
+ 
+ import Link from "next/link";
++import Select from "@/components/ui/Select";
+ import { sourceLabel, type ChapterDto } from "@/lib/contracts";
+ import { chapterLabel } from "@/lib/format";
+ import type { ReaderSettings } from "@/lib/guest";
+ 
+ type Props = {
+   mangaId: string;
+   mangaTitle: string;
+   chapterId: string;
+@@ -25,62 +26,66 @@ export default function ReaderToolbar({
+   onSettings, onPause, onToggleRun, onFullscreen, onSelectChapter, fullscreenSupported,
+ }: Props) {
+   const current = chapters.find((item) => item.id === chapterId);
+   const sourceSuffix = current?.source && current.source !== "mangadex" ? ` (${sourceLabel(current.source)})` : "";
+   return (
+     <header className="reader-bar">
+       <div className="reader-bar-inner">
+         <Link href={`/manga/${mangaId}`} className="back-link">← {mangaTitle}{sourceSuffix}</Link>
+-        <select
++        <Select
+           className="chapter-select"
+-          aria-label="Chọn chương"
++          ariaLabel="Chọn chương"
+           value={chapterId}
+-          onChange={(event) => onSelectChapter(event.target.value)}
+-        >
+-          {chapters.map((chapter) => (
+-            <option key={chapter.id} value={chapter.id}>{chapterLabel(chapter.chapter)}</option>
+-          ))}
+-        </select>
++          options={chapters.map((chapter) => ({ value: chapter.id, label: chapterLabel(chapter.chapter) }))}
++          onChange={onSelectChapter}
++        />
+         <details className="reader-settings">
+           <summary>Cài đặt</summary>
+           <div className="reader-settings-panel">
+             <label>Chế độ đọc
+-              <select
++              <Select
++                ariaLabel="Chế độ đọc"
+                 value={settings.mode}
+-                onChange={(event) => {
++                options={[{ value: "vertical", label: "Cuộn dọc" }, { value: "horizontal", label: "Lật ngang" }]}
++                onChange={(value) => {
+                   onPause();
+-                  onSettings({ mode: event.target.value === "horizontal" ? "horizontal" : "vertical" });
++                  onSettings({ mode: value === "horizontal" ? "horizontal" : "vertical" });
+                 }}
+-              >
+-                <option value="vertical">Cuộn dọc</option>
+-                <option value="horizontal">Lật ngang</option>
+-              </select>
++              />
+             </label>
+             <label>Nền đọc
+-              <select value={settings.bg} onChange={(event) => onSettings({ bg: event.target.value as ReaderSettings["bg"] })}>
+-                <option value="light">Sáng</option>
+-                <option value="sepia">Giấy ấm</option>
+-                <option value="dark">Tối</option>
+-              </select>
++              <Select
++                ariaLabel="Nền đọc"
++                value={settings.bg}
++                options={[
++                  { value: "light", label: "Sáng" },
++                  { value: "sepia", label: "Giấy ấm" },
++                  { value: "dark", label: "Tối" },
++                ]}
++                onChange={(value) => onSettings({ bg: value as ReaderSettings["bg"] })}
++              />
+             </label>
+             <button
+               type="button"
+               className="btn"
+               aria-pressed={!settings.fit}
+               onClick={() => onSettings({ fit: !settings.fit })}
+             >
+               Chiều rộng: {settings.fit ? "Vừa khung" : "Tràn màn hình"}
+             </button>
+             {settings.mode === "vertical" && (
+               <>
+                 <label>Tốc độ tự cuộn
+-                  <select value={settings.speed} onChange={(event) => onSettings({ speed: Number(event.target.value) })}>
+-                    {[1, 2, 3, 4, 5].map((speed) => <option key={speed} value={speed}>{speed}</option>)}
+-                  </select>
++                  <Select
++                    ariaLabel="Tốc độ tự cuộn"
++                    value={String(settings.speed)}
++                    options={[1, 2, 3, 4, 5].map((speed) => ({ value: String(speed), label: String(speed) }))}
++                    onChange={(value) => onSettings({ speed: Number(value) })}
++                  />
+                 </label>
+                 <button type="button" className="btn btn-primary" aria-pressed={running} onClick={onToggleRun}>
+                   {running ? "Dừng tự cuộn" : "Bật tự cuộn"}
+                 </button>
+               </>
+             )}
+           </div>
+         </details>
+diff --git a/web/components/ui/Select.tsx b/web/components/ui/Select.tsx
+new file mode 100644
+index 0000000..ea88742
+--- /dev/null
++++ b/web/components/ui/Select.tsx
+@@ -0,0 +1,143 @@
++"use client";
++
++import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
++
++export type SelectOption = { value: string; label: string; disabled?: boolean };
++export type SelectProps = {
++  id?: string;
++  name?: string;
++  value?: string;
++  defaultValue?: string;
++  options: SelectOption[];
++  onChange?: (value: string) => void;
++  disabled?: boolean;
++  ariaLabel?: string;
++  className?: string;
++};
++
++export default function Select({
++  id, name, value, defaultValue = "", options, onChange, disabled = false, ariaLabel, className,
++}: SelectProps) {
++  const [open, setOpen] = useState(false);
++  const [internal, setInternal] = useState(defaultValue);
++  const [active, setActive] = useState(0);
++  const root = useRef<HTMLDivElement>(null);
++  const trigger = useRef<HTMLButtonElement>(null);
++  const generatedId = useId();
++  const listId = `${id ?? generatedId}-list`;
++  const current = value !== undefined ? value : internal;
++
++  function initialIndex() {
++    const selected = options.findIndex((option) => option.value === current && !option.disabled);
++    return selected >= 0 ? selected : Math.max(0, options.findIndex((option) => !option.disabled));
++  }
++
++  function move(step: 1 | -1) {
++    setActive((from) => {
++      let next = from;
++      for (let attempt = 0; attempt < options.length; attempt += 1) {
++        next = (next + step + options.length) % options.length;
++        if (!options[next]?.disabled) return next;
++      }
++      return from;
++    });
++  }
++
++  function choose(option: SelectOption) {
++    if (option.disabled) return;
++    if (value === undefined) setInternal(option.value);
++    setOpen(false);
++    onChange?.(option.value);
++    trigger.current?.focus();
++  }
++
++  useEffect(() => {
++    if (!open) return;
++    const onPointerDown = (event: PointerEvent) => {
++      if (!root.current?.contains(event.target as Node)) setOpen(false);
++    };
++    document.addEventListener("pointerdown", onPointerDown);
++    return () => document.removeEventListener("pointerdown", onPointerDown);
++  }, [open]);
++
++  useEffect(() => {
++    if (!open) return;
++    document.getElementById(`${listId}-opt-${active}`)?.scrollIntoView({ block: "nearest" });
++  }, [active, listId, open]);
++
++  function onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
++    if (disabled) return;
++    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
++      event.preventDefault();
++      if (!open) { setActive(initialIndex()); setOpen(true); }
++      else move(event.key === "ArrowDown" ? 1 : -1);
++    } else if (event.key === "Enter" || event.key === " ") {
++      event.preventDefault();
++      if (!open) { setActive(initialIndex()); setOpen(true); }
++      else if (options[active]) choose(options[active]);
++    } else if (event.key === "Escape") {
++      if (open) { event.preventDefault(); setOpen(false); }
++    } else if (event.key === "Home" || event.key === "End") {
++      if (!open) return;
++      event.preventDefault();
++      const target = event.key === "Home" ? 0 : options.length - 1;
++      setActive(options[target]?.disabled ? initialIndex() : target);
++    } else if (event.key === "Tab") {
++      setOpen(false);
++    }
++  }
++
++  const selected = options.find((option) => option.value === current);
++  return (
++    <div ref={root} className={["select", className].filter(Boolean).join(" ")} data-open={open}>
++      {name ? <input type="hidden" name={name} value={current} /> : null}
++      <button
++        ref={trigger}
++        id={id}
++        type="button"
++        className="select-trigger"
++        role="combobox"
++        aria-label={ariaLabel}
++        aria-haspopup="listbox"
++        aria-expanded={open}
++        aria-controls={listId}
++        aria-activedescendant={open ? `${listId}-opt-${active}` : undefined}
++        disabled={disabled}
++        onClick={() => {
++          if (disabled) return;
++          setActive(initialIndex());
++          setOpen((wasOpen) => !wasOpen);
++          trigger.current?.focus();
++        }}
++        onKeyDown={onKeyDown}
++      >
++        <span className="select-value">{selected?.label ?? ""}</span>
++        <svg className="select-chevron" aria-hidden="true" width="10" height="7" viewBox="0 0 10 7" fill="none">
++          <path d="m1 1 4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
++        </svg>
++      </button>
++      <ul className="select-list" id={listId} role="listbox" aria-label={ariaLabel} hidden={!open}>
++        {options.map((option, index) => (
++          <li
++            key={option.value}
++            id={`${listId}-opt-${index}`}
++            role="option"
++            aria-selected={option.value === current}
++            aria-disabled={option.disabled || undefined}
++            data-value={option.value}
++            className="select-option"
++            onPointerDown={(event) => event.preventDefault()}
++            onClick={(event) => {
++              // Wrapping labels would otherwise forward this click back to the trigger.
++              event.preventDefault();
++              event.stopPropagation();
++              choose(option);
++            }}
++          >
++            {option.label}
++          </li>
++        ))}
++      </ul>
++    </div>
++  );
++}
+diff --git a/web/scripts/account-playwright.test.mjs b/web/scripts/account-playwright.test.mjs
+index 5af4310..5bab3fa 100644
+--- a/web/scripts/account-playwright.test.mjs
++++ b/web/scripts/account-playwright.test.mjs
+@@ -67,32 +67,41 @@ after(async () => {
+ 
+ async function open(baseUrl, viewport = { width: 1280, height: 800 }) {
+   const context = await browser.newContext({ viewport, colorScheme: "dark" });
+   const page = await context.newPage();
+   page.on("pageerror", (error) => pageErrors.push(error.message));
+   return { context, page, baseUrl };
+ }
+ 
++async function choose(page, label, option) {
++  await page.getByRole("combobox", { name: label }).click();
++  await page.getByRole("option", { name: option, exact: true }).click();
++}
++
++function chosen(page, label) {
++  return page.getByRole("combobox", { name: label }).locator(".select-value").textContent();
++}
++
+ test("auth-not-configured is explicit and guest account pages stay usable", async () => {
+   const { context, page, baseUrl } = await open(unconfigured.baseUrl);
+   await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
+   await page.getByText("Chưa bật đăng nhập").waitFor();
+   assert.equal(await page.locator('input[type="email"]').count(), 0, "no inert sign-in form when unconfigured");
+   assert.match(await page.locator(".account-card").first().innerText(), /NEON_AUTH_BASE_URL/);
+   await page.screenshot({ path: join(SHOT_DIR, "account-unconfigured.png") });
+ 
+   await page.goto(`${baseUrl}/tai-khoan/cai-dat`, { waitUntil: "networkidle" });
+-  await page.locator("select").first().selectOption("horizontal");
+-  await page.locator("select").nth(1).selectOption("dark");
++  await choose(page, "Chế độ đọc", "Chuyển trang");
++  await choose(page, "Nền", "Tối");
+   await page.getByRole("button", { name: "Lưu cài đặt" }).click();
+   await page.getByText("Đã lưu trên thiết bị này.").waitFor();
+   await page.reload({ waitUntil: "networkidle" });
+-  assert.equal(await page.locator("select").first().inputValue(), "horizontal");
+-  assert.equal(await page.locator("select").nth(1).inputValue(), "dark");
++  assert.equal(await chosen(page, "Chế độ đọc"), "Chuyển trang");
++  assert.equal(await chosen(page, "Nền"), "Tối");
+ 
+   await page.evaluate(() => {
+     localStorage.setItem("truyenviet:history", JSON.stringify([{
+       mangaId: "m-local", mangaTitle: "Truyện địa phương", chapterId: "c-local", chapter: "3",
+       title: "Chương 3", coverFile: null, lang: "vi", ts: Date.now(), page: 3, total: 12,
+     }]));
+     localStorage.setItem("truyenviet:library", JSON.stringify([{
+       mangaId: "m-local", title: "Truyện địa phương", coverFile: null, lang: "vi", followedAt: Date.now(),
+diff --git a/web/scripts/reader-playwright.test.mjs b/web/scripts/reader-playwright.test.mjs
+index 586b3fa..ccd0a83 100644
+--- a/web/scripts/reader-playwright.test.mjs
++++ b/web/scripts/reader-playwright.test.mjs
+@@ -189,16 +189,28 @@ async function scrollToPage(page, index) {
+     window.scrollTo(0, top - window.innerHeight * 0.26);
+   }, index);
+ }
+ 
+ async function readerText(page) {
+   return page.locator(".reader:visible .reader-page-count").textContent();
+ }
+ 
++async function chooseReader(page, label, option) {
++  const reader = page.locator(".reader:visible");
++  await reader.getByRole("combobox", { name: label }).click();
++  await reader.getByRole("option", { name: option, exact: true }).click();
++}
++
++async function chooseChapter(page, number) {
++  const reader = page.locator(".reader:visible");
++  await reader.getByRole("combobox", { name: "Chọn chương" }).click();
++  await reader.getByRole("option", { name: `Chương ${number}`, exact: true }).click();
++}
++
+ async function openPage(viewport) {
+   const context = await browser.newContext({ viewport, colorScheme: "dark" });
+   const page = await context.newPage();
+   page.on("pageerror", (error) => pageErrors.push(error.message));
+   page.on("request", (request) => {
+     const { hostname } = new URL(request.url());
+     if (/(^|\.)mangadex\.(org|network)$/.test(hostname)) pageRequests.push(request.url());
+   });
+@@ -279,34 +291,34 @@ test("real WASM drives pages, progress, mode, background and chapter-local resto
+   assert.equal(imageResponse.hex, PAGE_BYTES[0].toString("hex"));
+ 
+   // Vertical mode tracks the page under the reading line via IntersectionObserver.
+   await scrollToPage(page, 1);
+   await page.waitForFunction(() => document.querySelector(".reader-page-count")?.textContent?.includes("Trang 2/4"));
+   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 2\/4 · 50%/);
+ 
+   await page.locator(".reader-settings summary").click();
+-  await page.locator(".reader-settings select").first().selectOption("horizontal");
++  await chooseReader(page, "Chế độ đọc", "Lật ngang");
+   assert.equal(await page.locator(".reader-paged").count(), 1);
+   assert.equal(await page.locator(".reader-paged img").count(), 1);
+   await assertDecoded(page.locator(".reader-paged img"), "horizontal reader page");
+   await page.getByRole("button", { name: "Trang sau →" }).click();
+   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 3\/4 · 75%/);
+   await page.evaluate(() => {
+     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+   });
+   await page.keyboard.press("ArrowRight");
+   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 4\/4 · 100%/);
+   await page.waitForFunction(() => {
+     const history = JSON.parse(localStorage.getItem("truyenviet:history") ?? "[]");
+     return history[0]?.page === 4 && history[0]?.total === 4;
+   });
+   await page.screenshot({ path: join(SHOT_DIR, "reader-desktop.png") });
+ 
+-  await page.locator(".reader-settings select").nth(1).selectOption("dark");
++  await chooseReader(page, "Nền đọc", "Tối");
+   assert.equal(await page.locator(".reader").getAttribute("data-bg"), "dark");
+   await page.screenshot({ path: join(SHOT_DIR, "reader-horizontal-dark.png") });
+ 
+   // Reload the same chapter: restored page comes from normalized local history only
+   // when chapterId matches, and the Rust state clamps it to the current page count.
+   await page.reload({ waitUntil: "networkidle" });
+   await page.locator(".reader-page").first().waitFor();
+   assert.match(await page.locator(".reader-page-count").textContent(), /Trang 4\/4 · 100%/);
+@@ -370,19 +382,19 @@ test("page 1 progress is saved, equal-page chapters are isolated, and reload res
+     const history = JSON.parse(localStorage.getItem("truyenviet:history") ?? "[]");
+     return history[0]?.chapterId?.startsWith("bbbb") && history[0]?.page === 1 && history[0]?.total === 4;
+   });
+   const first = await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0]);
+   assert.equal(first.chapterId, CHAPTER_IDS[0]);
+   assert.equal(first.page, 1);
+   assert.equal(first.total, 4);
+ 
+-  // Equal page count chapter navigation via the toolbar select: no state leaks.
++  // Equal page count chapter navigation via the toolbar dropdown: no state leaks.
+   // Next may keep a hidden prefetched reader in the DOM, so scope to the visible one.
+-  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[1]);
++  await chooseChapter(page, 2);
+   await page.waitForURL(new RegExp(CHAPTER_IDS[1]));
+   await page.locator(".reader:visible .reader-page").first().waitFor();
+   assert.match(await readerText(page), /Trang 1\/4 · 25%/);
+   const second = await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0]);
+   assert.equal(second.chapterId, CHAPTER_IDS[1]);
+   assert.equal(second.page, 1, "chapter 2 must not inherit chapter 1 position");
+ 
+   // Move within chapter 2, reload: only that chapter's position is restored.
+@@ -390,20 +402,20 @@ test("page 1 progress is saved, equal-page chapters are isolated, and reload res
+   await page.waitForFunction(() => [...document.querySelectorAll(".reader-page-count")]
+     .some((element) => element.getBoundingClientRect().height > 0 && element.textContent?.includes("Trang 3/4")));
+   await page.reload({ waitUntil: "networkidle" });
+   await page.locator(".reader:visible .reader-page").first().waitFor();
+   assert.match(await readerText(page), /Trang 3\/4 · 75%/);
+   assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0])).page, 3);
+ 
+   // Rapid successive chapter changes still settle on the last chapter at page 1.
+-  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[2]);
++  await chooseChapter(page, 3);
+   await page.waitForURL(new RegExp(CHAPTER_IDS[2]));
+   await page.locator(".reader:visible .chapter-select").waitFor({ state: "visible" });
+-  await page.locator(".reader:visible .chapter-select").selectOption(CHAPTER_IDS[3]);
++  await chooseChapter(page, 4);
+   await page.waitForURL(new RegExp(CHAPTER_IDS[3]));
+   await page.locator(".reader:visible .reader-page").first().waitFor();
+   assert.match(await readerText(page), /Trang 1\/4 · 25%/);
+   assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem("truyenviet:history"))[0])).chapterId, CHAPTER_IDS[3]);
+   await page.screenshot({ path: join(SHOT_DIR, "reader-chapter-isolation.png") });
+   await context.close();
+ });
+ 
+diff --git a/web/scripts/select.test.mjs b/web/scripts/select.test.mjs
+new file mode 100644
+index 0000000..4eabe6f
+--- /dev/null
++++ b/web/scripts/select.test.mjs
+@@ -0,0 +1,185 @@
++import assert from "node:assert/strict";
++import { existsSync } from "node:fs";
++import { build } from "esbuild";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
++import { startNext, stop, webDir } from "./test-helpers.mjs";
++
++const EDGE = browserExecutable();
++
++/// Bundle the real component into a throwaway harness so keyboard, ARIA and
++/// form-submission behavior is exercised against Select itself, not a mock.
++const harness = `
++import React, { useState } from "react";
++import { createRoot } from "react-dom/client";
++import Select from "./components/ui/Select.tsx";
++
++function Harness() {
++  const [plain, setPlain] = useState("one");
++  return React.createElement("div", null,
++    React.createElement("button", { id: "outside", type: "button" }, "Outside"),
++    React.createElement(Select, {
++      id: "plain", value: plain, onChange: setPlain, ariaLabel: "Plain",
++      options: [
++        { value: "one", label: "One" },
++        { value: "two", label: "Two" },
++        { value: "three", label: "Three", disabled: true },
++        { value: "four", label: "Four" },
++      ],
++    }),
++    React.createElement(Select, {
++      id: "named", name: "status", defaultValue: "", ariaLabel: "Status",
++      options: [
++        { value: "", label: "All" },
++        { value: "ongoing", label: "Ongoing" },
++        { value: "completed", label: "Completed" },
++      ],
++    }),
++    React.createElement("label", null, "Labelled",
++      React.createElement(Select, {
++        id: "labelled", defaultValue: "a", ariaLabel: "Labelled",
++        options: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
++      }),
++    ),
++    React.createElement(Select, {
++      id: "disabled", disabled: true, defaultValue: "one", ariaLabel: "Disabled",
++      options: [{ value: "one", label: "One" }, { value: "two", label: "Two" }],
++    }),
++    React.createElement("p", { id: "selected" }, plain),
++  );
++}
++createRoot(document.getElementById("root")).render(React.createElement(Harness));
++`;
++
++let bundle;
++let browser;
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
++  const result = await build({
++    stdin: { contents: harness, resolveDir: webDir, sourcefile: "select-harness.tsx", loader: "tsx" },
++    bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic",
++    target: "chrome120", logLevel: "silent",
++  });
++  bundle = result.outputFiles[0].text;
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++});
++
++after(async () => {
++  await browser?.close();
++});
++
++async function openHarness() {
++  const context = await browser.newContext();
++  const page = await context.newPage();
++  await page.setContent('<!doctype html><html><body><div id="root"></div></body></html>');
++  await page.addScriptTag({ content: bundle });
++  await page.getByRole("combobox", { name: "Plain" }).waitFor();
++  return { context, page };
++}
++
++test("click opens the listbox and Escape closes it", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Plain" });
++  assert.equal(await trigger.getAttribute("aria-expanded"), "false");
++  await trigger.click();
++  const list = page.getByRole("listbox");
++  await list.waitFor({ state: "visible" });
++  assert.equal(await trigger.getAttribute("aria-expanded"), "true");
++  assert.ok(await trigger.getAttribute("aria-controls"));
++  assert.equal(await page.getByRole("option").count(), 4);
++  await page.keyboard.press("Escape");
++  await list.waitFor({ state: "hidden" });
++  assert.equal(await trigger.getAttribute("aria-expanded"), "false");
++  await context.close();
++});
++
++test("arrow keys skip disabled options and Enter selects the active one", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Plain" });
++  await trigger.click();
++  await page.getByRole("listbox").waitFor();
++  await page.keyboard.press("ArrowDown");
++  await page.keyboard.press("ArrowDown");
++  await page.keyboard.press("ArrowUp");
++  await page.keyboard.press("Enter");
++  assert.equal(await page.locator("#selected").textContent(), "two");
++  assert.match(await trigger.textContent(), /Two/);
++  await page.getByRole("listbox").waitFor({ state: "hidden" });
++  await context.close();
++});
++
++test("clicking outside closes the listbox", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Plain" });
++  await trigger.click();
++  const list = page.getByRole("listbox");
++  await list.waitFor({ state: "visible" });
++  await page.locator("#outside").click();
++  await list.waitFor({ state: "hidden" });
++  assert.equal(await trigger.getAttribute("aria-expanded"), "false");
++  await context.close();
++});
++
++test("selection updates the hidden input when name is present", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Status" });
++  const hidden = page.locator('input[type="hidden"][name="status"]');
++  assert.equal(await hidden.inputValue(), "");
++  await trigger.click();
++  assert.equal(await page.getByRole("option", { name: "Completed" }).getAttribute("aria-selected"), "false");
++  await page.getByRole("option", { name: "Completed" }).click();
++  assert.equal(await hidden.inputValue(), "completed");
++  assert.equal(await page.getByRole("option", { name: "Completed" }).count(), 0);
++  assert.match(await trigger.textContent(), /Completed/);
++  await context.close();
++});
++
++test("choosing from a select wrapped in a label leaves it closed", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Labelled" });
++  await trigger.click();
++  await page.getByRole("option", { name: "B", exact: true }).click();
++  assert.equal(await trigger.getAttribute("aria-expanded"), "false");
++  assert.equal(await page.getByRole("listbox").count(), 0);
++  assert.match(await trigger.textContent(), /B/);
++  await context.close();
++});
++
++test("a disabled select cannot open", async () => {
++  const { context, page } = await openHarness();
++  const trigger = page.getByRole("combobox", { name: "Disabled" });
++  assert.equal(await trigger.isDisabled(), true);
++  await trigger.click({ force: true });
++  assert.equal(await page.getByRole("listbox").count(), 0);
++  await page.keyboard.press("ArrowDown");
++  assert.equal(await page.getByRole("listbox").count(), 0);
++  await context.close();
++});
++
++test("the search GET form submits the selected status and sort values", async (t) => {
++  const app = await startNext();
++  t.after(() => stop(app.child));
++  const context = await browser.newContext();
++  t.after(() => context.close());
++  const page = await context.newPage();
++  await page.goto(`${app.baseUrl}/search?q=Fixture`, { waitUntil: "networkidle" });
++  await page.locator(".search-filters summary").click();
++
++  const status = page.getByRole("combobox", { name: "Trạng thái" });
++  await status.click();
++  await page.getByRole("option", { name: "Hoàn thành" }).click();
++  const sort = page.getByRole("combobox", { name: "Sắp xếp" });
++  await sort.click();
++  await page.getByRole("option", { name: "Điểm đánh giá" }).click();
++  assert.equal(await page.locator('input[name="status"]').inputValue(), "completed");
++  assert.equal(await page.locator('input[name="sort"]').inputValue(), "rating");
++
++  await page.getByRole("button", { name: "Áp dụng" }).click();
++  await page.waitForURL(/status=completed/);
++  const url = new URL(page.url());
++  assert.equal(url.searchParams.get("q"), "Fixture");
++  assert.equal(url.searchParams.get("status"), "completed");
++  assert.equal(url.searchParams.get("sort"), "rating");
++});

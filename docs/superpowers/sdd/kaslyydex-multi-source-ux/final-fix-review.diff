@@ -1,0 +1,144 @@
+bee48e9 fix: align comick opaque id validation with TS and correct review claims
+ README.md                 |  4 +++-
+ crates/core/src/comick.rs | 16 ++++++++++++++--
+ docs/WEB-STATUS.md        |  4 +++-
+ 3 files changed, 20 insertions(+), 4 deletions(-)
+diff --git a/README.md b/README.md
+index 9ae0f85..68ff244 100644
+--- a/README.md
++++ b/README.md
+@@ -38,21 +38,23 @@ mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
+ 
+ - Reader theme mặc định `auto`: nền/chế độ đọc đi theo theme site; người dùng
+   có thể chọn thủ công `light`, `sepia`, `dark`, và lựa chọn đó được lưu theo
+   preference. Giá trị `auto` được chuẩn hóa ở cả guest local và validator API.
+ - Native `<select>` được thay bằng dropdown dùng `role="combobox"`/`listbox"`:
+   ArrowDown/ArrowUp mở và di chuyển (bỏ qua option disabled), Enter/Space chọn,
+   Escape đóng, Home/End tới đầu/cuối, Tab đóng. Một hidden input giữ nguyên giá
+   trị form GET của tìm kiếm.
+ - Skeleton có hình dạng khớp nội dung thay vì khối chung; hiệu ứng chuyển động
+   (chevron, fade ảnh, shimmer) nằm trong `prefers-reduced-motion`. Ảnh reader lỗi
+-  được giải phóng khỏi skeleton để hiện nút thử lại.
++  được giải phóng khỏi skeleton (ảnh hỏng hiện thay vì skeleton vĩnh viễn); panel
++  thử lại hiện có chỉ xử lý lỗi tải chapter/WASM (`pageError`/`wasmError`), không
++  có nút thử lại riêng cho từng ảnh.
+ 
+ ## Chạy local
+ 
+ ```bash
+ # Rust toolchain: stable + wasm32-unknown-unknown + wasm-bindgen-cli 0.2.130
+ cd web
+ npm ci
+ npm run build:wasm        # bắt buộc trước Next build
+ npm run build:web         # next build (không chạy lại prebuild)
+ npm run typecheck         # cần glue WASM + Next route types đã sinh
+diff --git a/crates/core/src/comick.rs b/crates/core/src/comick.rs
+index a3c055e..15b327d 100644
+--- a/crates/core/src/comick.rs
++++ b/crates/core/src/comick.rs
+@@ -1,19 +1,20 @@
+ // Verified 2026-11-21 from the official Comick catalog OpenAPI document at
+ // https://api.comick.dev/docs/json (rendered by https://api.comick.dev/docs/):
+ // - GET /v1.0/search/?q=...&page=1&limit=15 — bare array; page <= 50 with
+ //   limit <= 50, or page <= 5 with limit <= 300; defaults page=1, limit=15.
+ // - GET /v1.0/comic/{hid}/chapters?lang=...&page=1&limit=12 — returns
+ //   { chapters, total, limit, checkVol2Chap1 }; default page size 12, no max.
+ // - GET /chapter/{hid}/get_images — ordered image metadata array, may be [].
+ // - Origin budget: 200 requests/minute/client IP.
+-// - Verified CDN image host in the official spec: meo.comick.pictures (HTTPS).
++// - CDN image host listed in the official spec: meo.comick.pictures (HTTPS);
++//   live delivery and ToS remain a manual release gate (no live fetch gate here).
+ // OAuth/Library endpoints are deliberately not used.
+ 
+ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+ use serde_json::Value;
+ use std::time::Duration;
+ 
+ const API: &str = "https://api.comick.dev";
+ const CDN: &str = "https://meo.comick.pictures";
+ const CDN_HOST: &str = "meo.comick.pictures";
+ const TIMEOUT: Duration = Duration::from_secs(10);
+@@ -112,21 +113,24 @@ impl Comick {
+ /// Provider-prefixed chapter IDs used by content routes and progress records.
+ pub fn is_comick_chapter_id(id: &str) -> bool {
+     id.strip_prefix("comick:").is_some_and(valid_opaque)
+ }
+ 
+ fn upstream_err() -> Err {
+     UPSTREAM_ERR.to_owned()
+ }
+ 
+ fn valid_opaque(value: &str) -> bool {
+-    !value.is_empty() && value.chars().all(|c| !c.is_whitespace() && !c.is_control())
++    !value.is_empty()
++        && value
++            .chars()
++            .all(|c| !c.is_whitespace() && !c.is_control() && !matches!(c, '/' | '?' | '#'))
+ }
+ 
+ /// Accepts a provider-prefixed ID or a bare HID for internal catalog calls.
+ fn request_opaque(id: &str) -> Option<&str> {
+     let raw = id.strip_prefix("comick:").unwrap_or(id);
+     valid_opaque(raw).then_some(raw)
+ }
+ 
+ fn encode(value: &str) -> String {
+     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+@@ -244,20 +248,28 @@ mod tests {
+     use serde_json::json;
+ 
+     #[test]
+     fn comick_id_requires_prefix_and_nonempty_opaque_id() {
+         assert!(is_comick_chapter_id("comick:abc123"));
+         for invalid in ["abc123", "comick:", "comick:bad id", ""] {
+             assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
+         }
+     }
+ 
++    #[test]
++    fn comick_id_rejects_path_delimiters_like_ts_parse_content_id() {
++        assert!(is_comick_chapter_id("comick:abc123"));
++        for invalid in ["comick:bad/id", "comick:bad?id", "comick:bad#id"] {
++            assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
++        }
++    }
++
+     #[test]
+     fn comick_chapter_normalizes_missing_title_and_language() {
+         let value = json!({
+             "hid": "chap-1",
+             "chapter": "7.5",
+             "lang": "vi",
+             "title": null
+         });
+         let chapter = chapter_from_value(&value, "en").expect("valid chapter");
+         assert_eq!(chapter.id, "comick:chap-1");
+diff --git a/docs/WEB-STATUS.md b/docs/WEB-STATUS.md
+index 579c280..90fcc30 100644
+--- a/docs/WEB-STATUS.md
++++ b/docs/WEB-STATUS.md
+@@ -107,21 +107,23 @@ Exact commands, counts and rulings are in
+   legacy DTOs without `source` still work.
+ - `COMICK_API_ORIGIN` is a test/local-only override for the Comick catalog
+   origin (default `https://api.comick.dev`); source-fallback fixtures run fully
+   on loopback through it. No credentials are involved and live provider/ToS
+   verification is still a manual release gate — not claimed here.
+ - Reader theme defaults to `auto` (follows the site theme, no flash on load);
+   manual `light`/`sepia`/`dark` persist over it. Custom dropdown replaces
+   native selects everywhere with full keyboard support (Arrow/Home/End/Enter/
+   Space/Escape/Tab) and submits unchanged values via a hidden input. Skeletons
+   match content shape and all motion is guarded by `prefers-reduced-motion`;
+-  broken reader images show a retry instead of a permanent skeleton.
++  broken reader images are released from the fade gate instead of staying behind
++  a permanent skeleton. The existing retry panel covers chapter/WASM page-load
++  failures (`pageError`/`wasmError`), not individual images.
+ - Regression gate: `web/package.json` `test:aggregate` now includes
+   `source-contracts`, `source-fallback`, `source-ui`, `source-progression`,
+   `select`, `skeleton-motion` and `reader-theme`; a dedicated `test:source`
+   runs the same seven. Pretest hooks run `cargo build -p server` before
+   aggregate/browser suites spawn the Axum binary (ordering fix; without it
+   fixture tests false-RED on the missing binary). CI runs the same order.
+ - Whitespace gate is baselined: 783 pre-existing findings in committed
+   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` are listed in
+   `web/scripts/whitespace-baseline.txt`; any new finding still fails. The two
+   pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with

@@ -1,0 +1,731 @@
+1a4b46c feat: match skeletons to content and add restrained motion
+ web/app/globals.css                   |  64 +++++++-
+ web/app/manga/[id]/page.tsx           |  24 ++-
+ web/app/page.tsx                      |  60 ++++++-
+ web/app/search/page.tsx               |  14 +-
+ web/components/manga-card.tsx         |  19 ++-
+ web/components/reader/ReaderPages.tsx |   5 +-
+ web/scripts/skeleton-motion.test.mjs  | 292 ++++++++++++++++++++++++++++++++++
+ 7 files changed, 452 insertions(+), 26 deletions(-)
+diff --git a/web/app/globals.css b/web/app/globals.css
+index 3bc5cac..b81f7c8 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -14,16 +14,19 @@
+   --solid-ink: #202a0a;
+   --soft: #262f1b;
+   --hover: #232528;
+   --display: var(--font-bricolage), "Be Vietnam Pro", sans-serif;
+   --gutter: clamp(16px, 3vw, 36px);
+   --rail-width: 208px;
+   --safe: env(safe-area-inset-bottom, 0px);
+   --tabs-height: calc(65px + var(--safe));
++  --dur-fast: 120ms;
++  --dur-base: 220ms;
++  --ease-out: cubic-bezier(.2, .7, .2, 1);
+ }
+ 
+ :root[data-theme="light"] {
+   color-scheme: light;
+   --bg: #f4f4ee;
+   --surface: #fffefa;
+   --rail: #f8f8f2;
+   --text: #1e221b;
+@@ -253,18 +256,18 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+   box-shadow: 0 10px 24px #0003; list-style: none;
+ }
+ .select-list[hidden] { display: none; }
+ .select-option { min-height: 40px; padding: 8px 10px; border-radius: 6px; color: var(--text); font-size: .875rem; cursor: pointer; }
+ .select-option:hover { background: var(--hover); }
+ .select-option[aria-selected="true"] { background: var(--soft); color: var(--accent); font-weight: 600; }
+ .select-option[aria-disabled="true"] { opacity: .5; cursor: default; }
+ @media (prefers-reduced-motion: no-preference) {
+-  .select-chevron { transition: transform .12s ease; }
+-  .select[data-open="true"] .select-list:not([hidden]) { animation: select-in .12s ease-out both; }
++  .select-chevron { transition: transform var(--dur-fast) var(--ease-out); }
++  .select[data-open="true"] .select-list:not([hidden]) { animation: select-in var(--dur-fast) var(--ease-out) both; }
+   @keyframes select-in { from { opacity: 0; transform: translateY(-3px); } }
+ }
+ 
+ .genre-group { margin-bottom: 13px; padding: 17px 16px; }
+ .genre-group h2 { margin-bottom: 13px; }
+ .result-info { margin-bottom: 14px; color: var(--muted); }
+ .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 26px; }
+ .page-info { color: var(--muted); font-size: .875rem; }
+@@ -359,24 +362,71 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .skel-cover.big { width: min(150px, 40%); }
+ .skel-line { height: 14px; width: 80%; margin-top: 8px; border-radius: 5px; background: var(--hover); }
+ .skel-pill { width: min(150px, 80%); height: 36px; margin-top: 10px; border-radius: 8px; background: var(--hover); }
+ .skel-line.w60 { width: 60%; height: 28px; }
+ .skel-line.w30 { width: 30%; }
+ .skel-line.w90 { width: 90%; height: 70px; }
+ .skel-head { display: flex; gap: 16px; }
+ .skel-info { flex: 1; }
++.skel-bar { display: block; min-width: 0; border-radius: 5px; background: var(--hover); }
++.skel-hero .feature-copy { display: grid; align-content: center; gap: 12px; }
++.skel-hero .skel-label { width: 11ch; height: 14px; }
++.skel-hero .skel-title { width: min(80%, 460px); height: clamp(2.5rem, 5vw, 4.5rem); border-radius: 10px; }
++.skel-hero .skel-meta { width: 40%; height: 14px; }
++.skel-hero .skel-desc { width: min(60%, 420px); height: 14px; }
++.skel-hero .skel-action { width: 132px; height: 44px; border-radius: 9px; }
++.skel-card { min-width: 0; }
++.skel-card .card-title { height: 2.5em; }
++.skel-card .card-year { width: 60%; height: 12px; }
++.skel-card .rank-num { border-color: transparent; background: var(--hover); color: transparent; }
++.skel-feed .skel-line { margin-top: 0; }
++.skel-feed .skel-line.title { height: 19px; width: 85%; }
++.skel-feed .skel-line.short { height: 12px; width: 50%; margin-top: 8px; }
++.skel-feed .chapter-pills { margin-top: 8px; }
++.skel-feed .skel-pill { height: 44px; margin: 0; }
++.skel-rank .rank-row { min-height: 56px; }
++.skel-rank .skel-rank-no { width: 2ch; height: 18px; }
++.skel-rank .rank-title .skel-bar { height: 12px; margin: 0; }
++.skel-rank .rank-title .skel-bar + .skel-bar { width: 60%; margin-top: 6px; }
++.skel-rank .skel-rank-score { width: 42px; height: 14px; }
++.skel-chapter { min-height: 52px; }
++.skel-chapter .skel-bar { margin: 0; }
++.skel-chapter .skel-num { width: 72px; height: 18px; }
++.skel-chapter .skel-title { height: 14px; width: 90%; }
++.skel-chapter .skel-date { grid-column: 2; width: 45%; height: 11px; margin-top: 6px; }
++.reader-page[data-loaded="false"] { background: var(--hover); }
++.img-fade { opacity: 0; }
++.img-fade[data-loaded="true"] { opacity: 1; }
++@media (max-width: 639px) {
++  .skel-hero .skel-title { width: 76%; height: 2.5rem; }
++  .skel-hero .skel-desc { display: none; }
++}
++@media (min-width: 640px) {
++  .skel-chapter .skel-date { grid-column: auto; }
++}
+ @media (prefers-reduced-motion: no-preference) {
+-  @keyframes breathe { 50% { opacity: .57; } }
+-  .skel, .reader-skel { animation: breathe 1.6s ease-in-out infinite; }
+-  .feature-copy { animation: feature-in .32s ease-out both; }
++  @keyframes shimmer { 50% { opacity: .57; } }
+   @keyframes feature-in { from { opacity: 0; transform: translateY(6px); } }
+-  :is(.btn, .icon-btn, .nav-btn):active:not(:disabled) { transform: translateY(1px); }
+-  .card-cover img { transition: transform .2s ease; }
++  @keyframes img-in { from { opacity: 0; transform: translateY(4px); } }
++  .skel, .reader-skel { animation: shimmer 1.6s ease-in-out infinite; }
++  .feature-copy { animation: feature-in var(--dur-base) var(--ease-out) both; }
++  :is(.btn, .icon-btn, .nav-btn):active:not(:disabled) {
++    transform: translateY(1px);
++    transition: transform var(--dur-fast) var(--ease-out);
++  }
++  .card-cover img { transition: transform var(--dur-base) var(--ease-out); }
+   .card:hover img { transform: scale(1.045); }
++  .reader-page, .reader-paged img {
++    transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
++  }
++  .reader-page.img-fade[data-loaded="true"] { animation: img-in var(--dur-base) var(--ease-out) both; }
++  progress { transition: filter var(--dur-fast) var(--ease-out); }
++  progress::-webkit-progress-value { transition: width var(--dur-base) var(--ease-out); }
++  progress::-moz-progress-bar { transition: width var(--dur-base) var(--ease-out); }
+ }
+ 
+ /* Account flows: compact, text-first forms that survive the dark/light theme. */
+ .account-grid { display: grid; gap: 18px; max-width: 760px; }
+ .account-card { padding: 22px; width: 100%; }
+ .account-card h2 { font-size: 1.25rem; margin-bottom: 10px; }
+ .account-form { display: grid; gap: 12px; margin: 16px 0; }
+ .account-form label { display: grid; gap: 6px; font-size: .9rem; color: var(--muted); }
+diff --git a/web/app/manga/[id]/page.tsx b/web/app/manga/[id]/page.tsx
+index 0f82af5..f392961 100644
+--- a/web/app/manga/[id]/page.tsx
++++ b/web/app/manga/[id]/page.tsx
+@@ -86,19 +86,35 @@ async function MangaContent({ params }: Props) {
+   );
+ }
+ 
+ export default function MangaPage({ params }: Props) {
+   return (
+     <Suspense
+       fallback={
+         <main className="wrap">
+-          <div className="surface manga-head skel">
+-            <div className="skel-cover big" />
+-            <div className="skel-info"><div className="skel-line w60" /><div className="skel-line w30" /><div className="skel-line w90" /></div>
+-          </div>
++          <section className="surface manga-head skel" role="status" aria-label="Đang tải truyện">
++            <div className="skel-cover big" aria-hidden="true" />
++            <div className="skel-info" aria-hidden="true">
++              <div className="skel-line w60" /><div className="skel-line w30" /><div className="skel-line w90" />
++            </div>
++          </section>
++          <section className="surface chapters-panel" role="status" aria-label="Đang tải danh sách chapter">
++            <div className="section-title"><h2>Danh sách chapter</h2></div>
++            <ul className="chapter-list">
++              {Array.from({ length: 4 }, (_, index) => (
++                <li key={index}>
++                  <div className="chapter-row skel-chapter skel" aria-hidden="true">
++                    <span className="skel-bar skel-num" />
++                    <span className="skel-bar skel-title" />
++                    <span className="skel-bar skel-date" />
++                  </div>
++                </li>
++              ))}
++            </ul>
++          </section>
+         </main>
+       }
+     >
+       <MangaContent params={params} />
+     </Suspense>
+   );
+ }
+diff --git a/web/app/page.tsx b/web/app/page.tsx
+index 6870ab8..16d466e 100644
+--- a/web/app/page.tsx
++++ b/web/app/page.tsx
+@@ -1,24 +1,74 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+ import { chapterName, relDate, statusText, titleWithSource } from "@/lib/format";
+-import { MangaCard } from "@/components/manga-card";
++import { CardSkeleton, MangaCard } from "@/components/manga-card";
+ import ContinueReading from "@/components/continue-reading";
+ 
+ async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
+   try {
+     return await load(await serverContent());
+   } catch {
+     return fallback;
+   }
+ }
+ 
++function HeroSkeleton() {
++  return (
++    <div className="feature skel-hero skel" role="status" aria-label="Đang tải truyện nổi bật">
++      <div className="feature-copy" aria-hidden="true">
++        <span className="skel-bar skel-label" />
++        <span className="skel-bar skel-title" />
++        <span className="skel-bar skel-meta" />
++        <span className="skel-bar skel-desc" />
++        <span className="skel-bar skel-action" />
++      </div>
++    </div>
++  );
++}
++
++function FeedSkeleton() {
++  return (
++    <div className="chapter-feed" role="status" aria-label="Đang tải chương mới">
++      {Array.from({ length: 3 }, (_, index) => (
++        <article className="feed-row skel-feed skel" key={index} aria-hidden="true">
++          <span className="feed-cover" />
++          <div className="feed-details">
++            <span className="skel-line title" />
++            <span className="skel-line short" />
++            <div className="chapter-pills"><span className="skel-pill" /><span className="skel-pill" /></div>
++          </div>
++        </article>
++      ))}
++    </div>
++  );
++}
++
++function RankSkeleton() {
++  return (
++    <ol className="rank-list" role="status" aria-label="Đang tải xếp hạng">
++      {Array.from({ length: 5 }, (_, index) => (
++        <li key={index}>
++          <div className="skel-rank skel" aria-hidden="true">
++            <span className="rank-row">
++              <span className="skel-bar skel-rank-no" />
++              <span className="rank-cover" />
++              <span className="rank-title"><span className="skel-bar" /><span className="skel-bar" /></span>
++              <span className="skel-bar skel-rank-score" />
++            </span>
++          </div>
++        </li>
++      ))}
++    </ol>
++  );
++}
++
+ function FeatureFallback() {
+   return (
+     <section className="feature feature-fallback">
+       <div className="feature-copy">
+         <h1>Khám phá truyện</h1>
+         <p>Tìm manga theo tên, thể loại hoặc xem các chương vừa cập nhật.</p>
+         <Link href="/search" className="btn btn-primary">Tìm truyện →</Link>
+       </div>
+@@ -126,45 +176,45 @@ async function RankPanel() {
+       ))}
+     </ol>
+   );
+ }
+ 
+ export default function Home() {
+   return (
+     <main className="wrap home">
+-      <Suspense fallback={<div className="feature skel" role="status" aria-label="Đang tải truyện nổi bật" />}>
++      <Suspense fallback={<HeroSkeleton />}>
+         <Featured />
+       </Suspense>
+       <ContinueReading />
+       <section className="popular-section" aria-labelledby="popular-title">
+         <div className="panel-heading">
+           <h2 id="popular-title">Được theo dõi nhiều</h2>
+           <Link href="/bxh" className="text-link">Xem xếp hạng →</Link>
+         </div>
+-        <Suspense fallback={<div className="popular-rail" role="status" aria-label="Đang tải truyện">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="skel skel-cover" />)}</div>}>
++        <Suspense fallback={<div className="popular-rail" role="status" aria-label="Đang tải truyện">{Array.from({ length: 6 }, (_, index) => <CardSkeleton key={index} rank />)}</div>}>
+           <Popular />
+         </Suspense>
+       </section>
+       <div className="home-columns">
+         <div className="home-main">
+           <section className="surface feed-panel" aria-label="Mới cập nhật">
+             <div className="panel-heading">
+               <h2><span className="live-mark" aria-hidden="true" />Mới cập nhật</h2>
+               <Link href="/bxh?kind=new" className="text-link">Xem danh sách →</Link>
+             </div>
+-            <Suspense fallback={<div className="skel" role="status" aria-label="Đang tải chương mới" />}>
++            <Suspense fallback={<FeedSkeleton />}>
+               <LatestFeed />
+             </Suspense>
+           </section>
+         </div>
+         <aside className="home-side">
+           <section className="surface">
+             <div className="panel-heading"><h2>Bảng xếp hạng</h2><Link href="/bxh" className="text-link">Xem tất cả →</Link></div>
+-            <Suspense fallback={<div className="skel" role="status" aria-label="Đang tải xếp hạng" />}>
++            <Suspense fallback={<RankSkeleton />}>
+               <RankPanel />
+             </Suspense>
+           </section>
+           <section className="surface shelf-preview">
+             <h2>Tủ truyện của bạn</h2>
+             <p>Lưu truyện đang theo dõi và đọc tiếp mọi lúc trên thiết bị này.</p>
+             <Link href="/tu-truyen" className="btn">Mở tủ truyện →</Link>
+           </section>
+diff --git a/web/app/search/page.tsx b/web/app/search/page.tsx
+index df0e0c7..62e565f 100644
+--- a/web/app/search/page.tsx
++++ b/web/app/search/page.tsx
+@@ -141,25 +141,35 @@ async function Results({ searchParams }: Props) {
+ 
+ async function SearchContent({ searchParams }: Props) {
+   const current = parseQuery(await searchParams);
+   return (
+     <main className="wrap catalog-page">
+       <div className="page-intro">
+         <div><h1>Khám phá truyện</h1><p>Lọc theo thể loại, trạng thái hoặc cách sắp xếp.</p></div>
+       </div>
+-      <Suspense fallback={<div className="surface skel" role="status" aria-label="Đang tải bộ lọc" />}>
++      <Suspense fallback={
++        <div className="surface search-filters skel" role="status" aria-label="Đang tải bộ lọc">
++          <div className="skel-line w60" aria-hidden="true" />
++          <div className="skel-pill" aria-hidden="true" />
++        </div>
++      }>
+         <Filters current={current} />
+       </Suspense>
+       <Suspense fallback={<GridSkeleton />}>
+         <Results searchParams={searchParams} />
+       </Suspense>
+     </main>
+   );
+ }
+ 
+ export default function SearchPage(props: Props) {
+   return (
+-    <Suspense fallback={<main className="wrap catalog-page" role="status" aria-label="Đang tải kết quả" />}>
++    <Suspense fallback={
++      <main className="wrap catalog-page">
++        <div className="page-intro"><h1>Khám phá truyện</h1></div>
++        <GridSkeleton />
++      </main>
++    }>
+       <SearchContent {...props} />
+     </Suspense>
+   );
+ }
+diff --git a/web/components/manga-card.tsx b/web/components/manga-card.tsx
+index 40554df..9b0cb62 100644
+--- a/web/components/manga-card.tsx
++++ b/web/components/manga-card.tsx
+@@ -31,25 +31,32 @@ export function MangaGrid({ list }: { list: MangaSummaryDto[] }) {
+   if (list.length === 0) return <p className="empty">Không có truyện nào.</p>;
+   return (
+     <div className="manga-grid">
+       {list.map((manga) => <MangaCard key={manga.id} manga={manga} />)}
+     </div>
+   );
+ }
+ 
++export function CardSkeleton({ rank }: { rank?: boolean }) {
++  return (
++    <div className="card skel-card skel" aria-hidden="true">
++      <div className="card-cover">
++        {rank ? <span className="rank-num" /> : null}
++      </div>
++      <span className="card-title skel-bar" />
++      <span className="card-year skel-bar" />
++    </div>
++  );
++}
++
+ export function GridSkeleton() {
+   return (
+     <div className="manga-grid" role="status" aria-label="Đang tải truyện">
+-      {Array.from({ length: 6 }).map((_, index) => (
+-        <div key={index} className="skel">
+-          <div className="skel-cover" />
+-          <div className="skel-line" />
+-        </div>
+-      ))}
++      {Array.from({ length: 6 }, (_, index) => <CardSkeleton key={index} />)}
+     </div>
+   );
+ }
+ 
+ export function SectionTitle({ children }: { children: React.ReactNode }) {
+   return (
+     <div className="section-title">
+       <h2>{children}</h2>
+diff --git a/web/components/reader/ReaderPages.tsx b/web/components/reader/ReaderPages.tsx
+index ea05934..08ceb82 100644
+--- a/web/components/reader/ReaderPages.tsx
++++ b/web/components/reader/ReaderPages.tsx
+@@ -50,17 +50,18 @@ export default function ReaderPages({
+       observer.disconnect();
+     };
+   }, [settings.mode, pages, onPage, containerRef]);
+ 
+   if (settings.mode === "horizontal") {
+     return (
+       <div className="reader-paged" ref={containerRef} onPointerDown={onPause}>
+         <img
+-          className="reader-page"
++          key={`${page}-${pages[page] ?? ""}`}
++          className="reader-page img-fade"
+           src={pages[page] ?? ""}
+           data-index={page}
+           data-loaded="false"
+           alt={`Trang ${page + 1}`}
+           draggable={false}
+           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+           onPointerDown={(event) => {
+             if (!event.isPrimary) {
+@@ -96,17 +97,17 @@ export default function ReaderPages({
+     );
+   }
+ 
+   return (
+     <div className="reader-pages" ref={containerRef} onPointerDown={onPause}>
+       {pages.map((src, index) => (
+         <img
+           key={`${src}-${index}`}
+-          className="reader-page"
++          className="reader-page img-fade"
+           src={src}
+           data-index={index}
+           data-loaded="false"
+           alt={`Trang ${index + 1}`}
+           loading={index < 2 || index === page ? "eager" : "lazy"}
+           decoding="async"
+           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+         />
+diff --git a/web/scripts/skeleton-motion.test.mjs b/web/scripts/skeleton-motion.test.mjs
+new file mode 100644
+index 0000000..8ee335c
+--- /dev/null
++++ b/web/scripts/skeleton-motion.test.mjs
+@@ -0,0 +1,292 @@
++import assert from "node:assert/strict";
++import { existsSync, readFileSync } from "node:fs";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
++import { pagePng } from "./image-fixtures.mjs";
++import { startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
++
++const EDGE = browserExecutable();
++const CSS = readFileSync(join(webDir, "app/globals.css"), "utf8").replace(/^@import[^;]+;\s*/, "");
++const TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
++const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
++const CHAPTER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
++const IMAGE_URL = `https://uploads.mangadex.org/data/hash/page-1.png`;
++const PAGE_IMAGE = pagePng(0);
++
++const manga = {
++  id: MANGA_ID,
++  title: "Fixture Manga",
++  cover_file: "cover.jpg",
++  status: "ongoing",
++  year: 2026,
++  description: "Truyện dùng để kiểm tra skeleton.",
++  tags: ["Action"],
++  tag_ids: [TAG_ID],
++  author: "Fixture Author",
++  artist: "Fixture Author",
++  rating: 8.5,
++  follows: 12,
++  latest_chapter: "1",
++  source: "mangadex",
++  source_label: "MangaDex",
++};
++const chapter = {
++  id: CHAPTER_ID,
++  chapter: "1",
++  volume: null,
++  title: "Chương 1",
++  lang: "vi",
++  pages: 2,
++  external_url: null,
++  publish_at: "2026-11-21T00:00:00Z",
++  group: "Fixture",
++  source: "mangadex",
++  source_label: "MangaDex",
++};
++const chapters = { vi: [chapter], en: [] };
++
++let fixture;
++let app;
++let browser;
++let contentDelay = 1200;
++
++function json(res, payload) {
++  res.writeHead(200, { "content-type": "application/json" });
++  res.end(JSON.stringify(payload));
++}
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
++  fixture = await startHttpServer(async (req, res) => {
++    const { pathname } = new URL(req.url ?? "/", "http://content.local");
++    await new Promise((resolve) => setTimeout(resolve, contentDelay));
++    if (pathname === "/api/content/rank") return json(res, [manga]);
++    if (pathname === "/api/content/latest") return json(res, [{ ...manga, chapters: [{ ...chapter, publish_at: chapter.publish_at }] }]);
++    if (pathname === "/api/content/tags") return json(res, [{ id: TAG_ID, name: "Action", group: "genre" }]);
++    if (pathname === "/api/content/search") return json(res, { results: [manga], total: 1 });
++    if (pathname === `/api/content/manga/${MANGA_ID}`) return json(res, manga);
++    if (pathname === `/api/content/manga/${MANGA_ID}/chapters`) return json(res, chapters);
++    if (pathname === `/api/content/chapter/${CHAPTER_ID}/pages`) {
++      return json(res, { pages: [`/api/content/img?u=${encodeURIComponent(IMAGE_URL)}`] });
++    }
++    if (pathname === `/api/content/chapter/${CHAPTER_ID}`) return json(res, { ...chapter, manga_id: MANGA_ID });
++    return json(res, { results: [], total: 0 });
++  });
++  app = await startNext({ RUST_CONTENT_API_ORIGIN: `${fixture.baseUrl}/api/content` });
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(app?.child);
++  await fixture?.close();
++});
++
++async function openPage(options = {}) {
++  const context = await browser.newContext({ viewport: { width: 375, height: 812 }, ...options });
++  return { context, page: await context.newPage() };
++}
++
++async function assertNoOverflow(page, label) {
++  const sizes = await page.evaluate(() => ({
++    scrollWidth: document.documentElement.scrollWidth,
++    bodyWidth: document.body.scrollWidth,
++    viewport: document.documentElement.clientWidth,
++  }));
++  assert.ok(
++    sizes.scrollWidth <= sizes.viewport + 1 && sizes.bodyWidth <= sizes.viewport + 1,
++    `${label} overflowed horizontally: ${JSON.stringify(sizes)}`,
++  );
++}
++
++async function assertStatus(container) {
++  assert.ok(await container.count(), `missing skeleton container`);
++  const status = await container.evaluate((element) => ({
++    role: element.getAttribute("role"),
++    label: element.getAttribute("aria-label"),
++    text: element.textContent?.trim() ?? "",
++  }));
++  assert.equal(status.role, "status");
++  assert.ok(status.label || status.text, "skeleton status needs an accessible name");
++}
++
++test("home, search and manga fallbacks use shape-matched skeletons with accessible status", async () => {
++  const { context, page } = await openPage();
++  await page.goto(app.baseUrl, { waitUntil: "commit" });
++  await page.locator(".skel-hero:visible").waitFor();
++
++  await assertStatus(page.locator(".skel-hero:visible"));
++  await assertStatus(page.locator(".popular-rail:has(.skel-card):visible"));
++  await assertStatus(page.locator(".chapter-feed:has(.skel-feed):visible"));
++  await assertStatus(page.locator(".rank-list:has(.skel-rank):visible"));
++  assert.ok(await page.locator(".skel-card:visible").count() >= 4, "popular rail needs card skeletons");
++  assert.ok(await page.locator(".skel-feed:visible").count() >= 2, "feed needs row skeletons");
++  assert.ok(await page.locator(".skel-rank:visible").count() >= 3, "rank needs row skeletons");
++
++  const skeletonBoxes = {
++    hero: await page.locator(".skel-hero:visible").boundingBox(),
++    card: await page.locator(".skel-card:visible .card-cover").first().boundingBox(),
++    feed: await page.locator(".skel-feed:visible .feed-cover").first().boundingBox(),
++    rank: await page.locator(".skel-rank:visible .rank-row").first().boundingBox(),
++  };
++  assert.ok(skeletonBoxes.hero.height >= 300, "hero skeleton must reserve hero height");
++  for (const [name, box] of Object.entries(skeletonBoxes)) assert.ok(box && box.width > 0, `${name} skeleton has no box`);
++
++  await assertNoOverflow(page, "375px home skeleton");
++
++  contentDelay = 0;
++  await page.locator(".feature h1:visible").waitFor();
++  await page.locator(".popular-rail .card:visible").first().waitFor();
++  await page.locator(".feed-row:visible").first().waitFor();
++  await page.locator(".rank-list .rank-row:visible").first().waitFor();
++  await assertNoOverflow(page, "375px home loaded");
++
++  const loadedBoxes = {
++    card: await page.locator(".popular-rail .card-cover:visible").first().boundingBox(),
++    feed: await page.locator(".feed-row:visible .feed-cover").first().boundingBox(),
++    rank: await page.locator(".rank-list .rank-row:visible").first().boundingBox(),
++  };
++  for (const key of Object.keys(loadedBoxes)) {
++    assert.ok(Math.abs(loadedBoxes[key].width - skeletonBoxes[key].width) <= 2, `${key} skeleton width shifted`);
++  }
++  assert.match(await page.locator(".card-title:visible").first().textContent(), /MangaDex/, "source label must stay visible");
++
++  contentDelay = 1200;
++  await page.goto(`${app.baseUrl}/search?q=Fixture`, { waitUntil: "commit" });
++  await page.locator(".skel-card:visible").first().waitFor();
++  await assertStatus(page.locator(".manga-grid:has(.skel-card):visible"));
++  assert.ok(await page.locator(".skel-card:visible").count() >= 4, "search needs card skeletons");
++  await assertNoOverflow(page, "375px search skeleton");
++  contentDelay = 0;
++  await page.locator(".manga-grid .card-title:visible").first().waitFor();
++  await assertNoOverflow(page, "375px search loaded");
++
++  contentDelay = 1200;
++  await page.goto(`${app.baseUrl}/manga/${MANGA_ID}`, { waitUntil: "commit" });
++  await page.locator(".skel-chapter:visible").first().waitFor();
++  await assertStatus(page.locator(".manga-head:has(.skel-cover):visible"));
++  await assertStatus(page.locator(".chapters-panel:has(.skel-chapter):visible"));
++  assert.ok(await page.locator(".skel-chapter:visible").count() >= 3, "chapter list needs row skeletons");
++  await assertNoOverflow(page, "375px manga skeleton");
++  contentDelay = 0;
++  await page.locator(".chapter-row:visible").first().waitFor();
++  await assertNoOverflow(page, "375px manga loaded");
++  assert.match(await page.locator(".manga-title:visible").textContent(), /MangaDex/, "source label must stay visible");
++  await context.close();
++});
++
++test("motion tokens exist and every transition is guarded by reduced motion", async () => {
++  const cssTokens = await (async () => {
++    const { context, page } = await openPage();
++    await page.setContent("<!doctype html><html><body></body></html>");
++    await page.addStyleTag({ content: CSS });
++    const tokens = await page.evaluate(() => {
++      const style = getComputedStyle(document.documentElement);
++      return {
++        fast: style.getPropertyValue("--dur-fast").trim(),
++        base: style.getPropertyValue("--dur-base").trim(),
++        ease: style.getPropertyValue("--ease-out").trim(),
++      };
++    });
++    await context.close();
++    return tokens;
++  })();
++  assert.ok(cssTokens.fast && cssTokens.base && cssTokens.ease, `missing motion tokens: ${JSON.stringify(cssTokens)}`);
++  assert.match(CSS, /progress::(-moz-progress-bar|-webkit-progress-value)[^{]+\{[^}]*var\(--dur-base\)/, "progress bar needs a tokenized transition");
++
++  const markup = `
++    <div class="skel" id="skel"><div class="skel-line"></div></div>
++    <div class="card" id="card"><div class="card-cover"><img id="cover" /></div></div>
++    <div class="reader-page" id="page" data-loaded="false"></div>
++    <div class="reader-paged"><img class="reader-page img-fade" id="paged" data-loaded="true" /></div>
++    <progress id="progress" max="100" value="50"></progress>
++    <span class="select-chevron" id="chevron"></span>`;
++
++  async function motionContext(reducedMotion) {
++    const { context, page } = await openPage({ reducedMotion });
++    await page.setContent(`<!doctype html><html><body>${markup}</body></html>`);
++    await page.addStyleTag({ content: CSS });
++    return { context, page };
++  }
++
++  const normal = await motionContext("no-preference");
++  const normalStyles = await normal.page.evaluate(() => ({
++    skeleton: getComputedStyle(document.querySelector("#skel")).animationName,
++    chevron: getComputedStyle(document.querySelector("#chevron")).transitionDuration,
++    progress: getComputedStyle(document.querySelector("#progress")).transitionDuration,
++    reader: getComputedStyle(document.querySelector("#page")).transitionDuration,
++    paged: getComputedStyle(document.querySelector("#paged")).transitionDuration,
++  }));
++  assert.match(normalStyles.skeleton, /breathe|shimmer/);
++  assert.notEqual(normalStyles.chevron, "0s");
++  assert.notEqual(normalStyles.progress, "0s");
++  assert.notEqual(normalStyles.reader, "0s");
++  assert.notEqual(normalStyles.paged, "0s");
++  await normal.context.close();
++
++  const reduced = await motionContext("reduce");
++  const reducedStyles = await reduced.page.evaluate(() => ({
++    skeleton: getComputedStyle(document.querySelector("#skel")).animationName,
++    chevron: getComputedStyle(document.querySelector("#chevron")).transitionDuration,
++    progress: getComputedStyle(document.querySelector("#progress")).transitionDuration,
++    reader: getComputedStyle(document.querySelector("#page")).transitionDuration,
++    paged: getComputedStyle(document.querySelector("#paged")).transitionDuration,
++  }));
++  assert.equal(reducedStyles.skeleton, "none");
++  for (const [name, duration] of Object.entries(reducedStyles)) {
++    if (name !== "skeleton") assert.equal(duration, "0s", `${name} must not animate under reduced motion`);
++  }
++  await reduced.context.close();
++});
++
++test("reader page images keep a page-shaped skeleton, then fade in after load/decode", async () => {
++  contentDelay = 0;
++  for (const reducedMotion of ["no-preference", "reduce"]) {
++    let releaseImages;
++    const imageGate = new Promise((resolve) => { releaseImages = resolve; });
++    const { context, page } = await openPage({ reducedMotion });
++    await page.route("**/api/content/img*", async (route) => {
++      await imageGate;
++      await route.fulfill({ status: 200, contentType: "image/png", body: PAGE_IMAGE });
++    });
++    await page.goto(`${app.baseUrl}/read/${CHAPTER_ID}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "domcontentloaded" });
++    const image = page.locator('.reader-page[data-index="0"]');
++    await image.waitFor();
++
++    const before = await image.evaluate((element) => ({
++      loaded: element.getAttribute("data-loaded"),
++      fade: element.classList.contains("img-fade"),
++      opacity: getComputedStyle(element).opacity,
++      background: getComputedStyle(element).backgroundColor,
++      animation: getComputedStyle(element).animationName,
++      width: element.getBoundingClientRect().width,
++    }));
++    assert.equal(before.loaded, "false", "page image must start unloaded");
++    assert.equal(before.fade, true, "page image needs the fade-in class");
++    assert.equal(before.opacity, "0", "page image must not appear before load");
++    assert.notEqual(before.background, "rgba(0, 0, 0, 0)", "unloaded page needs a skeleton frame");
++    assert.equal(before.animation, "none", "fade must wait for decode");
++    assert.ok(before.width > 0);
++    await assertNoOverflow(page, `375px reader skeleton (${reducedMotion})`);
++
++    releaseImages();
++    await page.waitForFunction(() => document.querySelector('.reader-page[data-index="0"]')?.getAttribute("data-loaded") === "true");
++    await page.waitForTimeout(300);
++    const after = await image.evaluate(async (element) => {
++      await element.decode();
++      return {
++        opacity: getComputedStyle(element).opacity,
++        animation: getComputedStyle(element).animationName,
++        width: element.naturalWidth,
++      };
++    });
++    assert.ok(after.width > 0, "decoded image has no pixels");
++    assert.equal(after.opacity, "1", "loaded image must be visible");
++    assert.equal(after.animation, reducedMotion === "reduce" ? "none" : "img-in");
++    await assertNoOverflow(page, `375px reader loaded (${reducedMotion})`);
++    await page.unroute("**/api/content/img*");
++    await context.close();
++  }
++});
