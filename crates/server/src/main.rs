@@ -360,8 +360,16 @@ async fn chapters(
         let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
         let (vi, en) = tokio::join!(comick.chapters(&id, "vi"), comick.chapters(&id, "en"));
         let response = contracts::ChaptersResponse {
-            vi: vi.map_err(bad)?.into_iter().map(comick_chapter_dto).collect(),
-            en: en.map_err(bad)?.into_iter().map(comick_chapter_dto).collect(),
+            vi: vi
+                .map_err(bad)?
+                .into_iter()
+                .map(comick_chapter_dto)
+                .collect(),
+            en: en
+                .map_err(bad)?
+                .into_iter()
+                .map(comick_chapter_dto)
+                .collect(),
         };
         return Ok(json_cached(response, 60));
     }

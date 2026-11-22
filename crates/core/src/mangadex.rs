@@ -158,8 +158,9 @@ impl Md {
         tags: &[String],
         status: Option<&str>,
         sort: &str,
+        lang: &str,
     ) -> Result<Arc<SearchResponse>, Err> {
-        let path = search_path(q, page, tags, status, sort).ok_or("Bộ lọc không hợp lệ.")?;
+        let path = search_path(q, page, tags, status, sort, lang).ok_or("Bộ lọc không hợp lệ.")?;
         let md = self.clone();
         self.search
             .try_get_with(path.clone(), async move {
@@ -676,7 +677,11 @@ fn search_path(
     tags: &[String],
     status: Option<&str>,
     sort: &str,
+    lang: &str,
 ) -> Option<String> {
+    if !matches!(lang, "all" | "vi" | "en") {
+        return None;
+    }
     let offset = page.saturating_sub(1).checked_mul(24)?;
     let mut path = format!("/manga?limit=24&offset={offset}");
     if !q.is_empty() {
@@ -696,6 +701,10 @@ fn search_path(
             "&includedTags[]={}",
             utf8_percent_encode(tag, NON_ALPHANUMERIC)
         ));
+    }
+    // Official MangaDex /manga filter; omitted for `all` to keep legacy paths.
+    if lang != "all" {
+        path.push_str(&format!("&availableTranslatedLanguage[]={lang}"));
     }
     Some(path)
 }
@@ -831,10 +840,27 @@ mod tests {
             &["test-a".into(), "test-b".into()],
             Some("completed"),
             "title",
+            "all",
         )
         .unwrap();
         assert!(path.contains("offset=24&title=a%26b"));
         assert!(path.contains("status[]=completed&includedTags[]=test%2Da&includedTags[]=test%2Db"));
+    }
+
+    #[test]
+    fn search_path_applies_official_language_filter_only_when_requested() {
+        for lang in ["vi", "en"] {
+            let path = search_path("", 1, &[], None, "follows", lang).unwrap();
+            assert!(
+                path.contains(&format!("availableTranslatedLanguage[]={lang}")),
+                "missing language filter for {lang}: {path}"
+            );
+            assert!(!path.contains("translatedLanguage[]"), "{path}");
+        }
+        let legacy = search_path("", 1, &[], None, "follows", "all").unwrap();
+        assert!(!legacy.contains("availableTranslatedLanguage"));
+        assert!(!legacy.contains("translatedLanguage"));
+        assert!(search_path("", 1, &[], None, "follows", "fr").is_none());
     }
 
     #[test]

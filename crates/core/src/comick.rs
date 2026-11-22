@@ -426,7 +426,10 @@ mod tests {
         assert_eq!(dto.status, "completed");
         assert_eq!(dto.tags, ["action"]);
         assert_eq!(dto.source_label, "Comick");
-        assert_eq!(comic_path(dto.id.as_str()).unwrap(), "/v1.0/comic/comic%2D1/");
+        assert_eq!(
+            comic_path(dto.id.as_str()).unwrap(),
+            "/v1.0/comic/comic%2D1/"
+        );
         assert!(normalize_detail(&json!({})).is_err());
     }
 

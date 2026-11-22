@@ -83,7 +83,7 @@ before(async () => {
     mdRequests.push(url.pathname + url.search);
     if (url.pathname === "/manga") {
       const title = url.searchParams.get("title") ?? "";
-      if (title === "md-only" || title === "shared" || title === "boom" || title === "cache") {
+      if (["md-only", "shared", "boom", "cache", "lang-vi"].includes(title)) {
         return json(res, { total: 1, data: [mdSearchItem(UUID, title)] });
       }
       return json(res, { total: 0, data: [] });
@@ -214,6 +214,29 @@ test("source=all returns both sources with exact labels", async () => {
   assert.equal(body.partial, false);
   assert.deepEqual(body.results.map((item) => item.source_label).sort(), ["Comick", "MangaDex"]);
   assert.equal(body.total, 2);
+});
+
+test("lang=vi filters MangaDex upstream while Comick stays partial", async () => {
+  const mdBefore = mdSearchCount();
+  const comickBefore = comickSearchCount();
+  const { response, body } = await search({ q: "lang-vi", source: "all", lang: "vi" });
+  assert.equal(response.status, 200);
+  assert.equal(body.partial, true);
+  assert.deepEqual(body.results.map((item) => item.source_label).sort(), ["Comick", "MangaDex"]);
+
+  const mdQuery = mdRequests.filter((url) => url.startsWith("/manga?"));
+  assert.equal(mdQuery.length, mdBefore + 1);
+  assert.ok(
+    mdQuery.at(-1).includes("availableTranslatedLanguage[]=vi"),
+    `MangaDex fixture did not receive the language filter: ${mdQuery.at(-1)}`,
+  );
+
+  const comickQuery = comickRequests.filter((url) => url.startsWith("/v1.0/search/"));
+  assert.equal(comickQuery.length, comickBefore + 1);
+  assert.ok(
+    !comickQuery.at(-1).includes("lang="),
+    `Comick must not receive an invented lang param: ${comickQuery.at(-1)}`,
+  );
 });
 
 test("Comick fixture 500 keeps MangaDex results and marks partial", async () => {
