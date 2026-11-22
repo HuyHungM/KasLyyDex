@@ -1,0 +1,208 @@
+4f1da19 docs: correct Task 7 gate counts and baseline header
+ CHANGELOG.md                        | 10 +++++-----
+ README.md                           | 13 +++++++------
+ docs/WEB-STATUS.md                  | 12 +++++-------
+ infra/axum.md                       |  7 ++++---
+ web/scripts/whitespace-baseline.txt |  5 +++--
+ 5 files changed, 24 insertions(+), 23 deletions(-)
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a2d5d21..ff5ee71 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,27 +13,27 @@
+   Comick adapter returns a structured 503.
+ - Move genre groups into the `/search` ("Khám phá") advanced panel with a
+   four-group skeleton and write selected chips into `tags`. Remove the Next
+   `/the-loai` page and its navigation link.
+ - Render source as a cover badge (`MangaDex`/`Comick`, accessible
+   `Nguồn: <label>`) on cards, feed, ranking and detail covers; drop the
+   `(MangaDex)`/`(Comick)` title suffixes.
+ - Add a shape-matched `/bxh` loading shell (12 rows) and `rank-top rank-1/2/3`
+   frames for the top three rows, stable across tab changes and mobile widths.
+ - Register `search-contracts`, `search-source`, `advanced-search`,
+-  `source-badge` and `ranking-skeleton` in `test:aggregate` (12 suites total).
+-  CI installs Playwright Chromium before aggregate because three of the added
+-  suites are browser tests; the Axum prebuild hooks are unchanged.
++  `source-badge` and `ranking-skeleton` in `test:aggregate`: 28 aggregate test
++  files (7 source + 5 new among them). CI installs Playwright Chromium before
++  aggregate because two of the added suites are browser tests; the Axum prebuild
++  hooks are unchanged.
+ - Run the full deterministic local gate: aggregate 203/203, browser 23/23,
+   Rust workspace tests 90 passed/0 failed, build/clippy/scoped fmt/typecheck/
+-  lint/whitespace/secrets/diff clean. Exact commands and counts are in
+-  `docs/superpowers/sdd/kaslyydex-advanced-search-ux/task-7-report.md`.
++  lint/whitespace/secrets/diff clean.
+ 
+ No deployment, push, merge, provisioning or live provider verification was
+ performed. Live MangaDex/Comick catalog and ToS checks remain manual gates.
+ 
+ ## Unreleased — multi-source reading UX and final local gate
+ 
+ - Read MangaDex as the primary catalog and fall back to Comick **per chapter**
+   when a chapter is external-only/unreadable; keep the last external link when
+   no match is found or the fallback fails. Chapter IDs are provider-prefixed
+   (`comick:`) and progression/XP bind to the chapter source.
+diff --git a/README.md b/README.md
+index 1dec2dc..e188d90 100644
+--- a/README.md
++++ b/README.md
+@@ -76,22 +76,23 @@ mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
+ cd web
+ npm ci
+ npm run build:wasm        # bắt buộc trước Next build
+ npm run build:web         # next build (không chạy lại prebuild)
+ npm run typecheck         # cần glue WASM + Next route types đã sinh
+ npm run lint
+ cd ..
+ cargo build -p server
+ cd web
+ npm run test:source       # 7 suite nguồn/fallback/UI/theme/dropdown/skeleton
+-npm run test:aggregate    # 12 suite: 7 ở trên + search-contracts, search-source,
+-                          # advanced-search, source-badge, ranking-skeleton
++npm run test:aggregate    # 28 aggregate test files (7 source + 5 new among them):
++                          # search-contracts, search-source, advanced-search,
++                          # source-badge, ranking-skeleton
+ npm run test:browser      # cần Edge local hoặc Playwright Chromium
+ ```
+ 
+ `test:source`, `test:aggregate` và `test:browser` có pretest build Axum
+ (`cargo build -p server`) trước vì fixture content/fallback spawn binary đó;
+ chạy aggregate trước khi build server sẽ cho RED giả.
+ 
+ Axum local: `cargo run -p server` (`PORT`, `DIST_DIR`, `CACHE_DIR`,
+ `MANGADEX_API_ORIGIN` optional). Next local: `npm run dev` trong `web/`.
+ 
+@@ -124,24 +125,24 @@ NEXT_PUBLIC_APP_URL
+ `READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là progression API
+ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+ 
+ ## Release gates
+ 
+ `.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+ secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
+ `reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
+ `cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
+ `build:wasm` → `build:web` → typecheck/lint; cài Playwright Chromium trước rồi
+-aggregate tests (12 suite: nguồn/fallback/UI/theme/dropdown/skeleton +
+-search-contracts/search-source/advanced-search/source-badge/ranking-skeleton —
+-3 suite sau dùng browser nên cần Chromium; server được build trước qua pretest);
+-browser suites; tracked-file
++aggregate tests — 28 aggregate test files (7 source + 5 new among them), gồm
++nguồn/fallback/UI/theme/dropdown/skeleton + search-contracts/search-source/
++advanced-search/source-badge/ranking-skeleton; 2 suite mới dùng browser nên cần
++Chromium; server được build trước qua pretest; rồi browser suites; tracked-file
+ whitespace/conflict-marker scan với baseline — không vacuous trên clean
+ checkout, nhưng 783 finding đã commit trong
+ `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua
+ `web/scripts/whitespace-baseline.txt` thay vì sửa artifact của plan cũ; mọi
+ finding mới vẫn fail.
+ 
+ Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+ CI scoped như trên. Xem
+ `infra/deployment.md` cho runbook, caveat first-deploy-is-production, chặn
+ 402 fair-use trước đây, migration/rollback Neon và các external gate chưa chạy.
+diff --git a/docs/WEB-STATUS.md b/docs/WEB-STATUS.md
+index e4c5fe0..ac530f6 100644
+--- a/docs/WEB-STATUS.md
++++ b/docs/WEB-STATUS.md
+@@ -125,41 +125,39 @@ Exact commands, counts and rulings are in
+   fixture tests false-RED on the missing binary). CI runs the same order.
+ - Whitespace gate is baselined: 783 pre-existing findings in committed
+   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` are listed in
+   `web/scripts/whitespace-baseline.txt`; any new finding still fails. The two
+   pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with
+   `cargo fmt -p core` and `core` joined the scoped `cargo fmt --check` set.
+ - No deployment, push, merge, or live provider verification was performed.
+ 
+ ## Advanced search UX + final local gate (Task 7)
+ 
+-Exact commands, counts and concerns are in
+-`docs/superpowers/sdd/kaslyydex-advanced-search-ux/task-7-report.md`.
+-
+ - Advanced search: `/search` ("Khám phá") now keeps `source`
+   (`all`/`mangadex`/`comick`), `lang` (`all`/`vi`/`en`) and `year`
+   (1900…current+1) in the same GET form as `q`/tags/status/sort/page. Axum
+   dispatches to MangaDex and/or Comick, keeps provider duplicates separate,
+   sorts deterministically and returns at most 24 results per page. When a
+   filter can only be applied locally or a provider fails, `partial=true` makes
+   the UI show a short warning instead of implying a complete result.
+ - Genre browsing moved into the same page: four grouped tag sections with a
+   four-group skeleton; the standalone Next `/the-loai` route and nav link are
+   gone.
+ - Cover badges replace title suffixes: `MangaDex`/`Comick` with accessible name
+   `Nguồn: <label>` on cards, feed, ranking and detail covers.
+ - `/bxh` has a route-level loading shell with 12 shape-matched rows and
+   `rank-top rank-1/2/3` frames for the top three rows; tab changes re-show the
+   skeleton and skeleton/loaded row boxes stay within 2px, with shimmer disabled
+   under `prefers-reduced-motion`.
+-- `test:aggregate` now runs 12 suites (the previous seven plus
+-  `search-contracts`, `search-source`, `advanced-search`, `source-badge`,
+-  `ranking-skeleton`). CI installs Chromium before aggregate since three of
+-  the new suites are Playwright tests; the Axum prebuild hooks are unchanged.
++- `test:aggregate` now runs 28 aggregate test files (7 source + 5 new among
++  them): the previous suites plus `search-contracts`, `search-source`,
++  `advanced-search`, `source-badge`, `ranking-skeleton`. CI installs Chromium
++  before aggregate since two of the new suites are Playwright tests; the Axum
++  prebuild hooks are unchanged.
+ - Local gate results: `build:wasm`/`build` pass; aggregate 203 pass / 0 fail;
+   browser 23 pass / 0 fail; `cargo build -p server` pass; workspace tests
+   90 pass / 0 fail; clippy `-D warnings`, scoped fmt (including `core`),
+   typecheck, lint (0 errors, 7 pre-existing `@next/next/no-img-element`
+   warnings), whitespace (0 new findings), secrets (0 candidates) and
+   `git diff --check` all pass.
+ - No deployment, push, merge or live provider verification was done. Live
+   MangaDex/Comick catalog and ToS checks remain manual release gates.
+diff --git a/infra/axum.md b/infra/axum.md
+index 9f1115c..d66fbcc 100644
+--- a/infra/axum.md
++++ b/infra/axum.md
+@@ -102,23 +102,24 @@ files; the two Rust files touched by Task 4 were formatted with `rustfmt --editi
+   Leptos debt, so it stays out of scope.
+ - The tracked-file whitespace gate runs with
+   `web/scripts/whitespace-baseline.txt` (783 pre-existing findings in committed
+   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff`); new findings still fail.
+ - `npm run test:aggregate`/`test:browser` build the Axum binary via pretest
+   before suites spawn it; CI builds it as its own step first.
+ 
+ ## Gate notes (Task 7)
+ 
+ - `test:aggregate` now includes `search-contracts`, `search-source`,
+-  `advanced-search`, `source-badge` and `ranking-skeleton` (12 suites). The
+-  three browser-based suites need Playwright Chromium, so CI installs it before
+-  the aggregate step; the Axum prebuild ordering is untouched.
++  `advanced-search`, `source-badge` and `ranking-skeleton`: 28 aggregate test
++  files (7 source + 5 new among them). Two of the added suites are browser
++  based and need Playwright Chromium, so CI installs it before the aggregate
++  step; the Axum prebuild ordering is untouched.
+ - The full local gate passed: aggregate 203/203, browser 23/23, workspace Rust
+   tests 90/0, `cargo build -p server`, clippy `-D warnings`, scoped
+   `cargo fmt --check` including `core`, typecheck/lint, whitespace/secrets and
+   `git diff --check`. No deploy, push or merge was performed.
+ 
+ ## Unverified
+ 
+ No Axum service was deployed, exposed publicly, or connected to live Neon/Google
+ configuration in this task. Docker was unavailable, so no PostgreSQL container was
+ created; the migration test used embedded PGlite as a dev/test-only engine and did
+diff --git a/web/scripts/whitespace-baseline.txt b/web/scripts/whitespace-baseline.txt
+index 06d8bd0..0f69315 100644
+--- a/web/scripts/whitespace-baseline.txt
++++ b/web/scripts/whitespace-baseline.txt
+@@ -1,14 +1,15 @@
+ # Baseline for committed pre-existing whitespace findings.
+-# All entries are in docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff (prior-plan artifacts).
++# Entries come from committed SDD diff artifacts in prior kaslyydex-phase-1-2/*.diff
++# and current kaslyydex-multi-source-ux/*.diff.
+ # Measured at task-10 BASE 1c4524b38c70d3351d7989628ff5b6f807cff0da; do not add new entries.
+-# 783 entries
++# 1130 entries (prior + current baselines)
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1006:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1029:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1040:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1070:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1076:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1094:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1096:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1100:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1148:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1167:trailing-whitespace

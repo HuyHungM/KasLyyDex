@@ -1,0 +1,1348 @@
+e163f1f feat: aggregate search across content sources
+ crates/core/src/comick.rs          |  80 ++++-
+ crates/core/src/lib.rs             |   1 +
+ crates/core/src/mangadex.rs        |  14 +
+ crates/core/src/search.rs          | 604 +++++++++++++++++++++++++++++++++++++
+ crates/server/src/main.rs          |  88 +++++-
+ web/scripts/search-source.test.mjs | 311 +++++++++++++++++++
+ 6 files changed, 1087 insertions(+), 11 deletions(-)
+diff --git a/crates/core/src/comick.rs b/crates/core/src/comick.rs
+index b1a1326..64d6dc1 100644
+--- a/crates/core/src/comick.rs
++++ b/crates/core/src/comick.rs
+@@ -13,17 +13,17 @@
+ // - GET /chapter/{hid}/get_images — ordered image metadata array, may be [].
+ // - Origin budget: 200 requests/minute/client IP.
+ // - CDN image host listed in the official spec: meo.comick.pictures (HTTPS);
+ //   live delivery and ToS remain a manual release gate (no live fetch gate here).
+ // OAuth/Library endpoints are deliberately not used.
+ 
+ use contracts::MangaSummaryDto;
+ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+-use serde_json::Value;
++use serde_json::{json, Value};
+ use std::time::Duration;
+ 
+ const API: &str = "https://api.comick.dev";
+ const CDN: &str = "https://meo.comick.pictures";
+ const CDN_HOST: &str = "meo.comick.pictures";
+ const TIMEOUT: Duration = Duration::from_secs(10);
+ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+ const UPSTREAM_ERR: &str = "Comick catalog unavailable";
+@@ -97,16 +97,22 @@ impl Comick {
+         year: Option<i32>,
+         page: u32,
+     ) -> Result<Vec<MangaSummaryDto>, Err> {
+         let body = self.get_json(&search_path(q, lang, year, page)?).await?;
+         let results = body.as_array().ok_or_else(upstream_err)?;
+         results.iter().map(normalize_search_hit).collect()
+     }
+ 
++    /// Comic detail by prefixed ID; the official route accepts a slug or HID.
++    pub async fn detail(&self, id: &str) -> Result<MangaSummaryDto, Err> {
++        let body = self.get_json(&comic_path(id)?).await?;
++        normalize_detail(&body)
++    }
++
+     pub async fn chapters(&self, hid: &str, lang: &str) -> Result<Vec<ComickChapter>, Err> {
+         let body = self.get_json(&chapters_path(hid, lang)?).await?;
+         let chapters = body["chapters"].as_array().ok_or_else(upstream_err)?;
+         chapters
+             .iter()
+             .map(|value| chapter_from_value(value, lang).ok_or_else(upstream_err))
+             .collect()
+     }
+@@ -131,16 +137,21 @@ impl Comick {
+     }
+ }
+ 
+ /// Provider-prefixed chapter IDs used by content routes and progress records.
+ pub fn is_comick_chapter_id(id: &str) -> bool {
+     id.strip_prefix("comick:").is_some_and(valid_opaque)
+ }
+ 
++/// Provider-prefixed comic IDs accepted by detail and chapter routes.
++pub fn is_comick_manga_id(id: &str) -> bool {
++    id.strip_prefix("comick:").is_some_and(valid_opaque)
++}
++
+ fn upstream_err() -> Err {
+     UPSTREAM_ERR.to_owned()
+ }
+ 
+ fn valid_opaque(value: &str) -> bool {
+     !value.is_empty()
+         && value
+             .chars()
+@@ -224,16 +235,46 @@ pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
+             .and_then(|rating| rating.parse().ok()),
+         follows: hit["user_follow_count"].as_u64(),
+         latest_chapter: string_or_number(&hit["last_chapter"]),
+         source: "comick".to_owned(),
+         source_label: "Comick".to_owned(),
+     })
+ }
+ 
++fn comic_path(id: &str) -> Result<String, Err> {
++    let hid = request_opaque(id).ok_or_else(upstream_err)?;
++    Ok(format!("/v1.0/comic/{}/", encode(hid)))
++}
++
++/// Detail responses nest the comic under `comic` and expose genres as
++/// `md_comic_md_genres`; the shared hit normalizer expects `genres`.
++fn normalize_detail(body: &Value) -> Result<MangaSummaryDto, Err> {
++    let mut comic = body
++        .get("comic")
++        .and_then(Value::as_object)
++        .ok_or_else(upstream_err)?
++        .clone();
++    if comic.get("genres").is_none() {
++        let genres: Vec<String> = comic["md_comic_md_genres"]
++            .as_array()
++            .map(|entries| {
++                entries
++                    .iter()
++                    .filter_map(|entry| entry["md_genres"]["slug"].as_str().map(str::to_owned))
++                    .collect()
++            })
++            .unwrap_or_default();
++        if !genres.is_empty() {
++            comic.insert("genres".into(), json!(genres));
++        }
++    }
++    normalize_search_hit(&Value::Object(comic))
++}
++
+ fn chapters_path(hid: &str, lang: &str) -> Result<String, Err> {
+     let hid = request_opaque(hid).ok_or_else(upstream_err)?;
+     let lang = request_opaque(lang).ok_or_else(upstream_err)?;
+     Ok(format!(
+         "/v1.0/comic/{}/chapters?lang={}&page=1&limit=12",
+         encode(hid),
+         encode(lang)
+     ))
+@@ -347,16 +388,53 @@ mod tests {
+     #[test]
+     fn comick_id_rejects_path_delimiters_like_ts_parse_content_id() {
+         assert!(is_comick_chapter_id("comick:abc123"));
+         for invalid in ["comick:bad/id", "comick:bad?id", "comick:bad#id"] {
+             assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
+         }
+     }
+ 
++    #[test]
++    fn comick_manga_id_requires_prefix_and_nonempty_opaque_id() {
++        assert!(is_comick_manga_id("comick:comic-1"));
++        for invalid in ["comic-1", "comick:", "comick:bad/id", ""] {
++            assert!(!is_comick_manga_id(invalid), "accepted {invalid:?}");
++        }
++    }
++
++    #[test]
++    fn comick_detail_normalizes_official_comic_envelope() {
++        let body = json!({
++            "comic": {
++                "hid": "comic-1",
++                "title": "Comick Detail",
++                "desc": "detail description",
++                "status": 2,
++                "year": 2024,
++                "md_covers": [{ "b2key": "cover.jpg" }],
++                "md_comic_md_genres": [
++                    { "md_genres": { "slug": "action", "name": "Action" } }
++                ],
++                "bayesian_rating": "8.5",
++                "user_follow_count": 99,
++                "last_chapter": 3
++            }
++        });
++        let dto = normalize_detail(&body).expect("valid comic detail");
++        assert_eq!(dto.id.as_str(), "comick:comic-1");
++        assert_eq!(dto.title, "Comick Detail");
++        assert_eq!(dto.description, "detail description");
++        assert_eq!(dto.status, "completed");
++        assert_eq!(dto.tags, ["action"]);
++        assert_eq!(dto.source_label, "Comick");
++        assert_eq!(comic_path(dto.id.as_str()).unwrap(), "/v1.0/comic/comic%2D1/");
++        assert!(normalize_detail(&json!({})).is_err());
++    }
++
+     #[test]
+     fn comick_chapter_normalizes_missing_title_and_language() {
+         let value = json!({
+             "hid": "chap-1",
+             "chapter": "7.5",
+             "lang": "vi",
+             "title": null
+         });
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index 3d1bf1b..e3a37d7 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -1,8 +1,9 @@
+ pub mod comick;
+ pub mod dns;
+ pub mod fallback;
+ pub mod imgcache;
+ pub mod mangadex;
++pub mod search;
+ 
+ pub use comick::Comick;
+ pub use mangadex::Md;
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 6dd4b99..446a5b2 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -37,16 +37,21 @@ impl Md {
+     pub fn new(http: reqwest::Client) -> Self {
+         // Local fixture override for the Next -> Axum topology tests. Production
+         // keeps the upstream MangaDex origin unless this is explicitly set.
+         let api = std::env::var("MANGADEX_API_ORIGIN")
+             .ok()
+             .map(|value| value.trim().trim_end_matches('/').to_owned())
+             .filter(|value| !value.is_empty())
+             .unwrap_or_else(|| API.to_owned());
++        Self::with_origin(http, api)
++    }
++
++    /// Explicit origin for local upstream fixtures; production uses `new()`.
++    pub fn with_origin(http: reqwest::Client, api: String) -> Self {
+         Self {
+             http,
+             api,
+             popular: Cache::builder()
+                 .time_to_live(Duration::from_secs(60))
+                 .max_capacity(1)
+                 .build(),
+             latest: Cache::builder()
+@@ -180,16 +185,25 @@ impl Md {
+                     total: j["total"].as_u64().unwrap_or(0),
+                     partial: Some(false),
+                 }))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
++    /// Existing content cache, keyed by the full multi-source query in core::search.
++    pub async fn cached_search(&self, key: &str) -> Option<Arc<SearchResponse>> {
++        self.search.get(key).await
++    }
++
++    pub async fn cache_search(&self, key: String, response: Arc<SearchResponse>) {
++        self.search.insert(key, response).await;
++    }
++
+     async fn search_chapters(&self, manga: &Value) -> Value {
+         let ids = items(manga)
+             .iter()
+             .filter_map(|m| m["attributes"]["latestUploadedChapter"].as_str())
+             .map(|id| format!("ids[]={}", utf8_percent_encode(id, NON_ALPHANUMERIC)))
+             .collect::<Vec<_>>()
+             .join("&");
+         if ids.is_empty() {
+diff --git a/crates/core/src/search.rs b/crates/core/src/search.rs
+new file mode 100644
+index 0000000..ae265e2
+--- /dev/null
++++ b/crates/core/src/search.rs
+@@ -0,0 +1,604 @@
++use contracts::{MangaSummaryDto, SearchQuery, SearchResponse};
++use std::cmp::Ordering;
++use std::sync::Arc;
++
++use crate::{Comick, Md};
++
++type Err = String;
++
++/// Sentinel for a query that requires an unconfigured provider. Kept distinct
++/// from upstream error text so a failed request is a 502, not a 503.
++pub const CONTENT_UNAVAILABLE: &str = "Comick provider is not configured";
++
++/// Comick's official search declares page <= 50 (limit <= 50). A page past that
++/// cannot be fetched, so it is reported partial instead of silently truncated.
++const COMICK_MAX_PAGE: u32 = 50;
++const PAGE_SIZE: usize = 24;
++
++struct ProviderPage {
++    results: Vec<MangaSummaryDto>,
++    total: u64,
++    partial: bool,
++    error: Option<Err>,
++}
++
++impl ProviderPage {
++    fn failed(error: Err) -> Self {
++        Self {
++            results: Vec::new(),
++            total: 0,
++            partial: true,
++            error: Some(error),
++        }
++    }
++}
++
++/// Merges one page of results from the selected catalog providers.
++pub async fn search_all(
++    md: &Md,
++    comick: Option<&Comick>,
++    query: &SearchQuery,
++) -> Result<SearchResponse, Err> {
++    let use_md = matches!(query.source.as_str(), "all" | "mangadex");
++    let use_comick = matches!(query.source.as_str(), "all" | "comick");
++    let comick = if use_comick {
++        Some(comick.ok_or_else(|| CONTENT_UNAVAILABLE.to_owned())?)
++    } else {
++        None
++    };
++
++    let key = cache_key(query);
++    if let Some(cached) = md.cached_search(&key).await {
++        if !cached.partial.unwrap_or(false) {
++            return Ok((*cached).clone());
++        }
++    }
++
++    // Independent failures: one healthy provider still answers, marked partial.
++    let (md_page, comick_page) = match (use_md, comick) {
++        (true, Some(comick)) => {
++            let (md_page, comick_page) = tokio::join!(
++                mangadex_page(md, query),
++                comick_page_for(comick, query)
++            );
++            (Some(md_page), Some(comick_page))
++        }
++        (true, None) => (Some(mangadex_page(md, query).await), None),
++        (false, Some(comick)) => (None, Some(comick_page_for(comick, query).await)),
++        (false, None) => unreachable!("source=all|mangadex|comick is validated upstream"),
++    };
++
++    let mut providers = Vec::with_capacity(2);
++    let mut partial = false;
++    let mut first_error = None;
++    for page in [md_page, comick_page].into_iter().flatten() {
++        partial |= page.partial || page.error.is_some();
++        match page.error {
++            Some(error) => {
++                first_error.get_or_insert(error);
++            }
++            None => providers.push(page),
++        }
++    }
++    if providers.is_empty() {
++        return Err(first_error.unwrap_or_else(|| "No content provider could answer the search.".into()));
++    }
++
++    let total = providers.iter().map(|page| page.total).sum();
++    let mut results: Vec<_> = providers
++        .into_iter()
++        .flat_map(|page| page.results)
++        .collect();
++    results.sort_by(|a, b| compare(a, b, &query.sort));
++    let start = query.page.saturating_sub(1) as usize * PAGE_SIZE;
++    let results = results.into_iter().skip(start).take(PAGE_SIZE).collect();
++    let response = SearchResponse {
++        results,
++        total,
++        partial: Some(partial),
++    };
++    if !partial {
++        md.cache_search(key, Arc::new(response.clone())).await;
++    }
++    Ok(response)
++}
++
++fn cache_key(query: &SearchQuery) -> String {
++    // JSON-quoted keyword keeps the delimited key unambiguous for any text.
++    let q = serde_json::to_string(&query.q).unwrap_or_default();
++    format!(
++        "aggregate|q{}:p{}:t{}:s{}:sort{}:src{}:lang{}:y{}",
++        q,
++        query.page,
++        query.tags.join(","),
++        query.status.as_deref().unwrap_or(""),
++        query.sort,
++        query.source,
++        query.lang,
++        query.year.map(|year| year.to_string()).unwrap_or_default(),
++    )
++}
++
++async fn mangadex_page(md: &Md, query: &SearchQuery) -> ProviderPage {
++    let response = match md
++        .search_filtered(
++            &query.q,
++            query.page,
++            &query.tags,
++            query.status.as_deref(),
++            &query.sort,
++        )
++        .await
++    {
++        Ok(response) => response,
++        Err(error) => return ProviderPage::failed(error),
++    };
++    // MangaDex has no language filter on /manga and no publication-year filter
++    // in this adapter. Year is applied to the returned page only; both are
++    // marked partial because the full result set cannot be guaranteed.
++    let mut results = (*response).clone().results;
++    if let Some(year) = query.year {
++        results.retain(|item| item.year == Some(year));
++    }
++    ProviderPage {
++        results,
++        total: response.total,
++        partial: response.partial.unwrap_or(false)
++            || query.lang != "all"
++            || query.year.is_some(),
++        error: None,
++    }
++}
++
++async fn comick_page_for(comick: &Comick, query: &SearchQuery) -> ProviderPage {
++    if query.page > COMICK_MAX_PAGE {
++        return ProviderPage {
++            results: Vec::new(),
++            total: 0,
++            partial: true,
++            error: None,
++        };
++    }
++    let results = match comick
++        .search(&query.q, &query.lang, query.year, query.page)
++        .await
++    {
++        Ok(results) => results,
++        Err(error) => return ProviderPage::failed(error),
++    };
++    // Verified official /genre/ slugs exist, but no official endpoint maps a
++    // MangaDex tag UUID to a Comick genre slug. Never guess one: report partial.
++    // `lang` and `status` are not search filters on /v1.0/search/, so local
++    // filtering cannot guarantee full coverage either.
++    let mut results = results;
++    if let Some(status) = query.status.as_deref() {
++        results.retain(|item| item.status == status);
++    }
++    ProviderPage {
++        total: results.len() as u64,
++        partial: query.lang != "all" || !query.tags.is_empty() || query.status.is_some(),
++        results,
++        error: None,
++    }
++}
++
++fn compare(a: &MangaSummaryDto, b: &MangaSummaryDto, sort: &str) -> Ordering {
++    let primary = match sort {
++        "follows" => b.follows.unwrap_or(0).cmp(&a.follows.unwrap_or(0)),
++        "rating" => b
++            .rating
++            .unwrap_or(0.0)
++            .partial_cmp(&a.rating.unwrap_or(0.0))
++            .unwrap_or(Ordering::Equal),
++        // shortcut: no publish timestamp on the summary DTO; year is the closest
++        // available proxy for "new". Revisit when upstream exposes publishAt.
++        "new" | "year" => b.year.unwrap_or(0).cmp(&a.year.unwrap_or(0)),
++        "title" => a.title.cmp(&b.title),
++        _ => Ordering::Equal,
++    };
++    primary
++        .then_with(|| a.source_label.cmp(&b.source_label))
++        .then_with(|| a.title.cmp(&b.title))
++        .then_with(|| a.id.as_str().cmp(b.id.as_str()))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::{json, Value};
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    use std::sync::Arc;
++    use tokio::io::{AsyncReadExt, AsyncWriteExt};
++    use tokio::net::TcpListener;
++    use tokio::task::JoinHandle;
++
++    const TAG: &str = "391b0423-d847-456f-aff0-8b0cfc03066b";
++
++    #[derive(Clone)]
++    enum Mode {
++        Md { items: Vec<Value>, fail: bool },
++        Comick { hits: Vec<Value>, fail: bool },
++    }
++
++    struct Fixture {
++        base: String,
++        hits: Arc<AtomicUsize>,
++        task: JoinHandle<()>,
++    }
++
++    impl Drop for Fixture {
++        fn drop(&mut self) {
++            self.task.abort();
++        }
++    }
++
++    impl Fixture {
++        fn count(&self) -> usize {
++            self.hits.load(Ordering::Relaxed)
++        }
++    }
++
++    async fn fixture(mode: Mode) -> Fixture {
++        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind fixture");
++        let base = format!("http://{}", listener.local_addr().expect("fixture addr"));
++        let hits = Arc::new(AtomicUsize::new(0));
++        let counter = Arc::clone(&hits);
++        let task = tokio::spawn(async move {
++            loop {
++                let Ok((mut socket, _)) = listener.accept().await else {
++                    break;
++                };
++                let counter = Arc::clone(&counter);
++                let mode = mode.clone();
++                tokio::spawn(async move {
++                    let mut data = Vec::new();
++                    let mut buf = [0u8; 4096];
++                    while data.windows(4).all(|w| w != b"\r\n\r\n") {
++                        let Ok(n) = socket.read(&mut buf).await else { break };
++                        if n == 0 {
++                            break;
++                        }
++                        data.extend_from_slice(&buf[..n]);
++                    }
++                    counter.fetch_add(1, Ordering::Relaxed);
++                    let request = String::from_utf8_lossy(&data);
++                    let path = request.split_whitespace().nth(1).unwrap_or("");
++                    let (body, failed) = respond(&mode, path);
++                    let status = if failed {
++                        "500 Internal Server Error"
++                    } else {
++                        "200 OK"
++                    };
++                    let response = format!(
++                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
++                        body.len()
++                    );
++                    let _ = socket.write_all(response.as_bytes()).await;
++                });
++            }
++        });
++        Fixture { base, hits, task }
++    }
++
++    fn respond(mode: &Mode, path: &str) -> (String, bool) {
++        match mode {
++            Mode::Md { items, fail } => {
++                if path.starts_with("/manga?") {
++                    let total = items.len();
++                    return (json!({ "total": total, "data": items }).to_string(), *fail);
++                }
++                if path.starts_with("/statistics/manga") {
++                    let stats: serde_json::Map<String, Value> = items
++                        .iter()
++                        .filter_map(|item| {
++                            let id = item["id"].as_str()?;
++                            Some((id.to_owned(), item["statistics"].clone()))
++                        })
++                        .collect();
++                    return (json!({ "statistics": stats }).to_string(), false);
++                }
++                (json!({ "total": 0, "data": [] }).to_string(), false)
++            }
++            Mode::Comick { hits, fail } => {
++                if path.starts_with("/v1.0/search/") {
++                    return (json!(hits).to_string(), *fail);
++                }
++                ("[]".into(), false)
++            }
++        }
++    }
++
++    fn md_item(id: &str, title: &str, follows: u64) -> Value {
++        json!({
++            "id": id,
++            "attributes": {
++                "title": { "en": title },
++                "status": "ongoing",
++                "year": 2024,
++                "description": { "en": "fixture" },
++                "tags": []
++            },
++            "relationships": [],
++            "statistics": { "follows": follows }
++        })
++    }
++
++    fn comick_hit(hid: &str, title: &str, follows: u64, rating: &str) -> Value {
++        json!({
++            "hid": hid,
++            "title": title,
++            "desc": "modern Comick hit",
++            "status": 1,
++            "year": 2024,
++            "genres": [30, 244],
++            "md_covers": [{ "b2key": "cover.jpg" }],
++            "bayesian_rating": rating,
++            "user_follow_count": follows,
++            "last_chapter": 10
++        })
++    }
++
++    fn query(source: &str, lang: &str, sort: &str) -> SearchQuery {
++        SearchQuery {
++            q: String::new(),
++            page: 1,
++            tags: vec![],
++            status: None,
++            sort: sort.into(),
++            source: source.into(),
++            lang: lang.into(),
++            year: None,
++        }
++    }
++
++    #[test]
++    fn cache_key_covers_every_query_field() {
++        let base = query("all", "all", "follows");
++        let mut other = base.clone();
++        other.q = "ab".into();
++        let mut third = base.clone();
++        third.q = "cd".into();
++        assert_ne!(cache_key(&other), cache_key(&third));
++        for (mut changed, label) in [
++            (base.clone(), "page"),
++            (base.clone(), "tags"),
++            (base.clone(), "status"),
++            (base.clone(), "sort"),
++            (base.clone(), "source"),
++            (base.clone(), "lang"),
++            (base.clone(), "year"),
++        ] {
++            match label {
++                "page" => changed.page = 2,
++                "tags" => changed.tags = vec![TAG.into()],
++                "status" => changed.status = Some("ongoing".into()),
++                "sort" => changed.sort = "title".into(),
++                "source" => changed.source = "comick".into(),
++                "lang" => changed.lang = "vi".into(),
++                "year" => changed.year = Some(2024),
++                _ => unreachable!(),
++            }
++            assert_ne!(cache_key(&base), cache_key(&changed), "{label} missing from key");
++        }
++    }
++
++    #[tokio::test]
++    async fn search_mangadex_only_preserves_existing_behavior() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Only MD", 1)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "Only Comick", 9, "9.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("mangadex", "all", "follows"))
++            .await
++            .expect("mangadex search succeeds");
++
++        assert_eq!(response.results.len(), 1);
++        assert_eq!(response.results[0].id.as_str(), "md-1");
++        assert_eq!(response.results[0].source_label, "MangaDex");
++        assert_eq!(response.total, 1);
++        assert_eq!(response.partial, Some(false));
++        assert_eq!(ck_fx.count(), 0, "MangaDex-only search called Comick");
++    }
++
++    #[tokio::test]
++    async fn search_comick_only_uses_adapter() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Only MD", 1)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "Only Comick", 9, "9.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("comick", "all", "follows"))
++            .await
++            .expect("comick search succeeds");
++
++        assert_eq!(response.results.len(), 1);
++        assert_eq!(response.results[0].id.as_str(), "comick:ck-1");
++        assert_eq!(response.results[0].source_label, "Comick");
++        assert_eq!(response.results[0].description, "modern Comick hit");
++        assert_eq!(response.results[0].tags, ["30", "244"]);
++        assert_eq!(
++            response.results[0].cover_file.as_deref(),
++            Some("https://meo.comick.pictures/cover.jpg")
++        );
++        assert_eq!(response.total, 1);
++        assert_eq!(response.partial, Some(false));
++        assert_eq!(md_fx.count(), 0, "Comick-only search called MangaDex");
++    }
++
++    #[tokio::test]
++    async fn search_all_keeps_provider_duplicates_separate() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Same Title", 3)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "same title", 3, "7.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("all", "all", "follows"))
++            .await
++            .expect("multi-source search succeeds");
++
++        assert_eq!(response.results.len(), 2);
++        assert_eq!(response.total, 2);
++        let sources: Vec<_> = response.results.iter().map(|r| r.source.as_str()).collect();
++        assert!(sources.contains(&"mangadex"));
++        assert!(sources.contains(&"comick"));
++        assert!(
++            response
++                .results
++                .iter()
++                .all(|r| r.title.eq_ignore_ascii_case("Same Title")),
++            "provider duplicates must not be collapsed"
++        );
++        assert_eq!(response.partial, Some(false));
++    }
++
++    #[tokio::test]
++    async fn search_all_merges_and_sorts_deterministically() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![
++                md_item("md-b", "Beta", 5),
++                md_item("md-a", "Alpha", 9),
++            ],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![
++                comick_hit("ck-1", "Alpha", 9, "8.0"),
++                comick_hit("ck-2", "Zeta", 1, "6.0"),
++            ],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("all", "all", "follows"))
++            .await
++            .expect("multi-source search succeeds");
++
++        let ids: Vec<_> = response
++            .results
++            .iter()
++            .map(|r| r.id.as_str())
++            .collect();
++        assert_eq!(ids, ["comick:ck-1", "md-a", "md-b", "comick:ck-2"]);
++        assert_eq!(response.total, 4);
++    }
++
++    #[tokio::test]
++    async fn search_all_partial_when_one_provider_fails() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Still Here", 1)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![],
++            fail: true,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("all", "all", "follows"))
++            .await
++            .expect("one healthy provider is enough");
++
++        assert_eq!(response.results.len(), 1);
++        assert_eq!(response.results[0].source, "mangadex");
++        assert_eq!(response.partial, Some(true));
++    }
++
++    #[tokio::test]
++    async fn search_all_pages_to_24_and_sums_totals_before_slicing() {
++        let items = (0..25)
++            .map(|i| md_item(&format!("md-{i}"), &format!("Title {i}"), i))
++            .collect();
++        let md_fx = fixture(Mode::Md { items, fail: false }).await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++
++        let response = search_all(&md, None, &query("mangadex", "all", "title"))
++            .await
++            .expect("mangadex search succeeds");
++
++        assert_eq!(response.results.len(), 24);
++        assert_eq!(response.total, 25);
++        assert_eq!(response.partial, Some(false));
++    }
++
++    #[tokio::test]
++    async fn comick_filters_that_cannot_be_guaranteed_are_partial() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "Hit", 1, "5.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let mut cfg = query("comick", "vi", "follows");
++        cfg.tags = vec![TAG.into()];
++        cfg.page = 51;
++        let response = search_all(&md, Some(&comick), &cfg)
++            .await
++            .expect("partial comick search is still a response");
++        assert_eq!(response.results.len(), 0);
++        assert_eq!(response.partial, Some(true));
++        assert_eq!(ck_fx.count(), 0, "page 51 is outside the official Comick cap");
++
++        let mut cfg = query("comick", "all", "follows");
++        cfg.tags = vec![TAG.into()];
++        let response = search_all(&md, Some(&comick), &cfg)
++            .await
++            .expect("tag-filtered comick search succeeds");
++        assert_eq!(response.partial, Some(true));
++        assert_eq!(response.results.len(), 1);
++    }
++
++    #[tokio::test]
++    async fn comick_requires_a_configured_adapter() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++
++        for source in ["comick", "all"] {
++            let error = search_all(&md, None, &query(source, "all", "follows"))
++                .await
++                .expect_err("missing Comick adapter must be reported");
++            assert_eq!(error, CONTENT_UNAVAILABLE);
++        }
++    }
++}
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index 753fb0d..ba87c54 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -1,16 +1,16 @@
+ use axum::body::Body;
+ use axum::extract::{Path, Query, State};
+ use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::get;
+ use axum::{Json, Router};
+-use contracts::{parse_search_query, ApiError, ApiErrorEnvelope};
+-use manga_core::comick::is_comick_chapter_id;
++use contracts::{parse_search_query, ApiError, ApiErrorEnvelope, ChapterDto};
++use manga_core::comick::{is_comick_chapter_id, is_comick_manga_id, ComickChapter};
+ use manga_core::fallback::{
+     chapter_metadata as fallback_metadata, chapter_pages, enrich_chapters, ContentState,
+ };
+ use manga_core::mangadex::is_uuid;
+ use manga_core::{Comick, Md};
+ use serde::Serialize;
+ use serde_json::json;
+ use std::collections::HashMap;
+@@ -214,29 +214,41 @@ async fn ready() -> Response {
+ async fn popular(State(state): State<ContentState>) -> Result<Response, Err> {
+     Ok(json_cached(state.md.popular().await.map_err(bad)?, 60))
+ }
+ 
+ async fn latest(State(state): State<ContentState>) -> Result<Response, Err> {
+     Ok(json_cached(state.md.latest().await.map_err(bad)?, 60))
+ }
+ 
++fn content_unavailable() -> Err {
++    api_error(
++        StatusCode::SERVICE_UNAVAILABLE,
++        "CONTENT_UNAVAILABLE",
++        "Comick catalog unavailable.",
++    )
++}
++
++fn search_error(error: String) -> Err {
++    if error == manga_core::search::CONTENT_UNAVAILABLE {
++        content_unavailable()
++    } else {
++        bad(error)
++    }
++}
++
+ async fn search(
+     State(state): State<ContentState>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+     let q = parse_search_query(q).map_err(validation_error)?;
+-    Ok(json_cached(
+-        state
+-            .md
+-            .search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort)
+-            .await
+-            .map_err(bad)?,
+-        60,
+-    ))
++    let response = manga_core::search::search_all(&state.md, state.comick.as_ref(), &q)
++        .await
++        .map_err(search_error)?;
++    Ok(json_cached(response, 60))
+ }
+ 
+ #[derive(Debug)]
+ struct NotificationFeedQuery {
+     lang: String,
+     since: Option<String>,
+     offset: u32,
+     limit: u32,
+@@ -302,31 +314,62 @@ async fn rank(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Kiểu xếp hạng không hợp lệ.",
+         ));
+     }
+     Ok(json_cached(state.md.rank(kind).await.map_err(bad)?, 300))
+ }
+ 
++fn comick_chapter_dto(chapter: ComickChapter) -> ChapterDto {
++    ChapterDto {
++        id: chapter.id.into(),
++        chapter: chapter.chapter,
++        volume: None,
++        title: chapter.title,
++        lang: chapter.lang,
++        // Page count is only known through the chapter pages endpoint.
++        pages: 0,
++        external_url: None,
++        publish_at: chapter.publish_at,
++        group: chapter.group,
++        source: "comick".into(),
++        source_label: "Comick".into(),
++        readable: false,
++    }
++}
++
+ async fn manga(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
++    if is_comick_manga_id(&id) {
++        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
++        return Ok(json_cached(comick.detail(&id).await.map_err(bad)?, 3600));
++    }
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+     Ok(json_cached(state.md.manga(&id).await.map_err(bad)?, 3600))
+ }
+ 
+ async fn chapters(
+     State(state): State<ContentState>,
+     Path(id): Path<String>,
+ ) -> Result<Response, Err> {
++    if is_comick_manga_id(&id) {
++        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
++        let (vi, en) = tokio::join!(comick.chapters(&id, "vi"), comick.chapters(&id, "en"));
++        let response = contracts::ChaptersResponse {
++            vi: vi.map_err(bad)?.into_iter().map(comick_chapter_dto).collect(),
++            en: en.map_err(bad)?.into_iter().map(comick_chapter_dto).collect(),
++        };
++        return Ok(json_cached(response, 60));
++    }
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+     let primary = state.md.chapters(&id).await.map_err(bad)?;
+@@ -560,16 +603,41 @@ mod tests {
+             ("sort".into(), "rating".into()),
+         ]))
+         .unwrap();
+         assert_eq!(query.tags, [id]);
+         assert_eq!(query.sort, "rating");
+         assert!(query.q.is_empty());
+     }
+ 
++    #[test]
++    fn missing_comick_adapter_maps_to_structured_503() {
++        let (status, Json(body)) = search_error(manga_core::search::CONTENT_UNAVAILABLE.to_owned());
++        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
++        assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
++        let (status, _) = search_error("Comick catalog unavailable".into());
++        assert_eq!(status, StatusCode::BAD_GATEWAY);
++    }
++
++    #[tokio::test]
++    async fn comick_manga_ids_dispatch_before_validation_and_report_unavailable() {
++        let state = ContentState {
++            md: Md::new(manga_core::dns::PublicDns::client()),
++            comick: None,
++        };
++        for result in [
++            manga(State(state.clone()), Path("comick:comic-1".into())).await,
++            chapters(State(state.clone()), Path("comick:comic-1".into())).await,
++        ] {
++            let (status, Json(body)) = result.unwrap_err();
++            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
++            assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
++        }
++    }
++
+     #[test]
+     fn notification_feed_query_bounds_language_limit_offset_and_since() {
+         let parsed = parse_notification_feed_query(HashMap::from([
+             ("lang".into(), "vi".into()),
+             ("limit".into(), "100".into()),
+             ("offset".into(), "300".into()),
+             ("since".into(), "2026-07-01T00:00:00Z".into()),
+         ]))
+diff --git a/web/scripts/search-source.test.mjs b/web/scripts/search-source.test.mjs
+new file mode 100644
+index 0000000..521e675
+--- /dev/null
++++ b/web/scripts/search-source.test.mjs
+@@ -0,0 +1,311 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { existsSync, mkdirSync } from "node:fs";
++import { connect } from "node:net";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { freePort, repoDir, startHttpServer, webDir } from "./test-helpers.mjs";
++
++// Real Axum process + loopback MangaDex/Comick fixtures; no auth, database,
++// remote catalog, deployment or cloud configuration.
++const UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
++const TAG = "391b0423-d847-456f-aff0-8b0cfc03066b";
++
++let mangadexFixture;
++let comickFixture;
++let axum;
++let axumUrl;
++let mdRequests = [];
++let comickRequests = [];
++
++function json(res, body, status = 200) {
++  res.writeHead(status, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++function mdSearchItem(id, title) {
++  return {
++    id,
++    attributes: {
++      title: { en: title },
++      status: "ongoing",
++      year: 2024,
++      description: { en: `${title} description` },
++      tags: [],
++    },
++    relationships: [],
++  };
++}
++
++function comickHit(hid, title) {
++  return {
++    hid,
++    title,
++    desc: "modern Comick description",
++    status: 1,
++    year: 2024,
++    genres: [30, 244],
++    md_covers: [{ b2key: `${hid}-cover.jpg` }],
++    bayesian_rating: "8.25",
++    user_follow_count: 4242,
++    last_chapter: 12,
++  };
++}
++
++function waitForTcp(port, deadlineMs = 20_000) {
++  return new Promise((resolve, reject) => {
++    const deadline = Date.now() + deadlineMs;
++    const attempt = () => {
++      const socket = connect({ host: "127.0.0.1", port });
++      socket.once("connect", () => { socket.destroy(); resolve(); });
++      socket.once("error", (error) => {
++        socket.destroy();
++        if (Date.now() > deadline) reject(error);
++        else setTimeout(attempt, 100);
++      });
++    };
++    attempt();
++  });
++}
++
++async function get(path) {
++  const response = await fetch(`${axumUrl}${path}`);
++  return { response, body: await response.json() };
++}
++
++async function search(params) {
++  return get(`/api/content/search?${new URLSearchParams(params)}`);
++}
++
++before(async () => {
++  mangadexFixture = await startHttpServer((req, res) => {
++    const url = new URL(req.url ?? "", "http://fixture.local");
++    mdRequests.push(url.pathname + url.search);
++    if (url.pathname === "/manga") {
++      const title = url.searchParams.get("title") ?? "";
++      if (title === "md-only" || title === "shared" || title === "boom" || title === "cache") {
++        return json(res, { total: 1, data: [mdSearchItem(UUID, title)] });
++      }
++      return json(res, { total: 0, data: [] });
++    }
++    if (url.pathname.startsWith("/statistics/manga")) return json(res, { statistics: {} });
++    if (url.pathname.startsWith("/chapter?")) return json(res, { total: 0, data: [] });
++    if (url.pathname.startsWith("/manga/") && url.pathname.endsWith("/feed")) {
++      return json(res, { total: 0, data: [] });
++    }
++    if (url.pathname.startsWith("/manga/")) {
++      const id = url.pathname.split("/")[2];
++      return json(res, { data: {
++        id,
++        attributes: { title: { en: "Bare UUID Manga" }, status: "ongoing", description: { en: "" } },
++        relationships: [],
++      } });
++    }
++    return json(res, { total: 0, data: [] });
++  });
++
++  comickFixture = await startHttpServer((req, res) => {
++    const url = new URL(req.url ?? "", "http://fixture.local");
++    comickRequests.push(url.pathname + url.search);
++    const path = decodeURIComponent(url.pathname);
++    if (url.pathname === "/v1.0/search/") {
++      const title = url.searchParams.get("q") ?? "";
++      if (title === "boom") return json(res, "upstream failure", 500);
++      if (title === "md-only") return json(res, []);
++      return json(res, [comickHit("comic-1", title || "Comick Browse")]);
++    }
++    if (path === "/v1.0/comic/comic-1/") {
++      return json(res, {
++        comic: {
++          hid: "comic-1",
++          title: "Comick Detail",
++          desc: "detail description",
++          status: 1,
++          year: 2024,
++          md_covers: [{ b2key: "detail-cover.jpg" }],
++          md_comic_md_genres: [{ md_genres: { name: "Action", slug: "action" } }],
++          bayesian_rating: "8.5",
++          user_follow_count: 99,
++          last_chapter: 3,
++        },
++      });
++    }
++    if (path === "/v1.0/comic/comic-1/chapters") {
++      const lang = url.searchParams.get("lang") ?? "vi";
++      return json(res, {
++        chapters: [{
++          hid: `chap-1-${lang}`,
++          chapter: "1",
++          lang,
++          title: "Comick Chapter",
++          published_at: "2026-11-22T00:00:00Z",
++          group: "Comick Group",
++        }],
++        total: 1,
++        limit: 12,
++      });
++    }
++    return json(res, [], 404);
++  });
++
++  const port = await freePort();
++  axumUrl = `http://127.0.0.1:${port}`;
++  const binary = join(repoDir, "target", "debug", process.platform === "win32" ? "server.exe" : "server");
++  assert.ok(existsSync(binary), `build Axum first: cargo build -p server (missing ${binary})`);
++  const cacheDir = join(webDir, ".test-cache", `search-source-${process.pid}`);
++  mkdirSync(cacheDir, { recursive: true });
++  axum = spawn(binary, [], {
++    cwd: repoDir,
++    env: {
++      ...process.env,
++      PORT: String(port),
++      MANGADEX_API_ORIGIN: mangadexFixture.baseUrl,
++      COMICK_API_ORIGIN: comickFixture.baseUrl,
++      CACHE_DIR: cacheDir,
++      DIST_DIR: join(webDir, "public"),
++    },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  await waitForTcp(port);
++});
++
++after(async () => {
++  if (axum && axum.exitCode === null) axum.kill("SIGKILL");
++  await mangadexFixture?.close();
++  await comickFixture?.close();
++});
++
++function mdSearchCount() {
++  return mdRequests.filter((url) => url.startsWith("/manga?")).length;
++}
++
++function comickSearchCount() {
++  return comickRequests.filter((url) => url.startsWith("/v1.0/search/")).length;
++}
++
++test("source=mangadex only hits MangaDex and is not partial", async () => {
++  const mdBefore = mdSearchCount();
++  const comickBefore = comickSearchCount();
++  const { response, body } = await search({ q: "md-only", source: "mangadex" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, false);
++  assert.deepEqual(body.results.map((item) => item.source_label), ["MangaDex"]);
++  assert.equal(mdSearchCount(), mdBefore + 1);
++  assert.equal(comickSearchCount(), comickBefore);
++});
++
++test("source=comick only hits Comick and keeps modern hit fields", async () => {
++  const mdBefore = mdSearchCount();
++  const { response, body } = await search({ q: "comick-only", source: "comick" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, false);
++  assert.deepEqual(body.results.map((item) => item.source_label), ["Comick"]);
++  assert.equal(body.results[0].id, "comick:comic-1");
++  assert.equal(body.results[0].description, "modern Comick description");
++  assert.equal(body.results[0].status, "ongoing");
++  assert.deepEqual(body.results[0].tags, ["30", "244"]);
++  assert.equal(body.results[0].cover_file, "https://meo.comick.pictures/comic-1-cover.jpg");
++  assert.equal(mdSearchCount(), mdBefore);
++});
++
++test("source=all returns both sources with exact labels", async () => {
++  const { response, body } = await search({ q: "shared", source: "all" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, false);
++  assert.deepEqual(body.results.map((item) => item.source_label).sort(), ["Comick", "MangaDex"]);
++  assert.equal(body.total, 2);
++});
++
++test("Comick fixture 500 keeps MangaDex results and marks partial", async () => {
++  const { response, body } = await search({ q: "boom", source: "all" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, true);
++  assert.deepEqual(body.results.map((item) => item.source_label), ["MangaDex"]);
++});
++
++test("invalid source/lang/year/page returns structured 400", async () => {
++  for (const params of [
++    { source: "bad" },
++    { lang: "fr" },
++    { year: "1899" },
++    { page: "0" },
++  ]) {
++    const { response, body } = await search(params);
++    assert.equal(response.status, 400, JSON.stringify(params));
++    assert.equal(body.error.code, "VALIDATION_ERROR");
++  }
++});
++
++test("cache key includes source, lang and year", async () => {
++  const before = comickSearchCount();
++  await search({ q: "cache", source: "comick" });
++  const first = comickSearchCount();
++  assert.equal(first, before + 1);
++  await search({ q: "cache", source: "comick" });
++  assert.equal(comickSearchCount(), first, "identical full query must be cached");
++  await search({ q: "cache", source: "comick", lang: "vi" });
++  assert.equal(comickSearchCount(), first + 1, "lang must change the cache key");
++  await search({ q: "cache", source: "comick", year: "2024" });
++  assert.equal(comickSearchCount(), first + 2, "year must change the cache key");
++  await search({ q: "cache", source: "all" });
++  assert.equal(comickSearchCount(), first + 3, "source must change the cache key");
++});
++
++test("Comick lang, page and tag limits are reported as partial", async () => {
++  const lang = await search({ q: "limits", source: "comick", lang: "vi" });
++  assert.equal(lang.body.partial, true);
++
++  const before = comickSearchCount();
++  const page = await search({ q: "limits", source: "comick", page: "51" });
++  assert.equal(page.body.partial, true);
++  assert.equal(page.body.results.length, 0);
++  assert.equal(comickSearchCount(), before, "page 51 is outside the official Comick cap");
++
++  const tags = await search({ q: "limits", source: "comick", tags: TAG });
++  assert.equal(tags.body.partial, true);
++  assert.ok(
++    !comickRequests.slice(before).some((url) => url.includes("genres=")),
++    "MangaDex tag UUIDs must not be guessed as Comick genre slugs",
++  );
++});
++
++test("prefixed comic IDs dispatch to Comick detail and chapter routes", async () => {
++  const comicId = encodeURIComponent("comick:comic-1");
++  const detail = await get(`/api/content/manga/${comicId}`);
++  assert.equal(detail.response.status, 200, JSON.stringify(comickRequests));
++  assert.equal(detail.body.id, "comick:comic-1");
++  assert.equal(detail.body.title, "Comick Detail");
++  assert.equal(detail.body.source_label, "Comick");
++  assert.ok(
++    comickRequests.some((url) => decodeURIComponent(url.split("?")[0]) === "/v1.0/comic/comic-1/"),
++    JSON.stringify(comickRequests),
++  );
++
++  const chapters = await get(`/api/content/manga/${comicId}/chapters`);
++  assert.equal(chapters.response.status, 200);
++  assert.deepEqual(chapters.body.vi.map((chapter) => chapter.id), ["comick:chap-1-vi"]);
++  assert.deepEqual(chapters.body.en.map((chapter) => chapter.id), ["comick:chap-1-en"]);
++  assert.ok(chapters.body.vi.every((chapter) => chapter.source_label === "Comick"));
++});
++
++test("bare UUID detail and chapter routes stay on MangaDex", async () => {
++  const mdBefore = mdRequests.length;
++  const detail = await get(`/api/content/manga/${UUID}`);
++  assert.equal(detail.response.status, 200);
++  assert.equal(detail.body.id, UUID);
++  assert.equal(detail.body.title, "Bare UUID Manga");
++  assert.equal(detail.body.source_label, "MangaDex");
++
++  const chapters = await get(`/api/content/manga/${UUID}/chapters`);
++  assert.equal(chapters.response.status, 200);
++  assert.deepEqual(chapters.body, { vi: [], en: [] });
++  assert.ok(mdRequests.length > mdBefore);
++});
++
++test("malformed prefixed manga ID is a structured 400 before any upstream call", async () => {
++  const before = comickRequests.length;
++  const { response, body } = await get(`/api/content/manga/${encodeURIComponent("comick:")}`);
++  assert.equal(response.status, 400);
++  assert.equal(body.error.code, "VALIDATION_ERROR");
++  assert.equal(comickRequests.length, before);
++});

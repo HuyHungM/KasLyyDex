@@ -1,0 +1,137 @@
+f8de0d0 fix: match genre skeleton shape in advanced search
+ web/app/search/page.tsx                       |  7 ++++--
+ web/components/search/GenreGroupsSkeleton.tsx |  3 +--
+ web/scripts/advanced-search.test.mjs          | 33 +++++++++++++++++++++++++--
+ 3 files changed, 37 insertions(+), 6 deletions(-)
+diff --git a/web/app/search/page.tsx b/web/app/search/page.tsx
+index b35681c..740cec3 100644
+--- a/web/app/search/page.tsx
++++ b/web/app/search/page.tsx
+@@ -181,23 +181,26 @@ async function Results({ searchParams }: Props) {
+ }
+ 
+ async function SearchContent({ searchParams }: Props) {
+   const current = parseQuery(await searchParams);
+   return (
+     <main className="wrap catalog-page">
+       <div className="page-intro">
+         <div><h1>Khám phá truyện</h1><p>Lọc theo thể loại, trạng thái hoặc cách sắp xếp.</p></div>
+       </div>
+       <Suspense fallback={
+-        <div className="surface search-filters skel" role="status" aria-label="Đang tải bộ lọc">
++        <div className="surface search-filters" role="status" aria-label="Đang tải bộ lọc">
+           <div className="skel-line w60" aria-hidden="true" />
+-          <div className="skel-pill" aria-hidden="true" />
++          <fieldset className="filter-tags">
++            <legend>Thể loại</legend>
++            <GenreGroupsSkeleton />
++          </fieldset>
+         </div>
+       }>
+         <Filters current={current} />
+       </Suspense>
+       <Suspense fallback={<GridSkeleton />}>
+         <Results searchParams={searchParams} />
+       </Suspense>
+     </main>
+   );
+ }
+diff --git a/web/components/search/GenreGroupsSkeleton.tsx b/web/components/search/GenreGroupsSkeleton.tsx
+index 09bf6cf..a08decd 100644
+--- a/web/components/search/GenreGroupsSkeleton.tsx
++++ b/web/components/search/GenreGroupsSkeleton.tsx
+@@ -1,15 +1,14 @@
+ export default function GenreGroupsSkeleton() {
+   return (
+     <div role="status" aria-label="Đang tải thể loại">
+       {[0, 1, 2, 3].map((index) => (
+         <section className="surface genre-group skel" key={index} aria-hidden="true">
+           <div className="skel-line w30" />
+           <div className="tag-options">
+-            <div className="skel-pill" />
+-            <div className="skel-pill" />
++            {Array.from({ length: 9 }, (_, pill) => <div className="skel-pill" key={pill} />)}
+           </div>
+         </section>
+       ))}
+     </div>
+   );
+ }
+diff --git a/web/scripts/advanced-search.test.mjs b/web/scripts/advanced-search.test.mjs
+index fffbb08..1187bef 100644
+--- a/web/scripts/advanced-search.test.mjs
++++ b/web/scripts/advanced-search.test.mjs
+@@ -27,31 +27,35 @@ const MANGA = {
+   rating: 8.5,
+   follows: 12,
+   latest_chapter: "1",
+   source: "mangadex",
+   source_label: "MangaDex",
+ };
+ 
+ let fixture;
+ let app;
+ let browser;
++let tagsDelay = 0;
+ 
+ function json(res, body) {
+   res.writeHead(200, { "content-type": "application/json" });
+   res.end(JSON.stringify(body));
+ }
+ 
+ before(async () => {
+   assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
+-  fixture = await startHttpServer((req, res) => {
++  fixture = await startHttpServer(async (req, res) => {
+     const { pathname, searchParams } = new URL(req.url ?? "/", "http://content.local");
+-    if (pathname === "/api/content/tags") return json(res, TAGS);
++    if (pathname === "/api/content/tags") {
++      if (tagsDelay) await new Promise((resolve) => setTimeout(resolve, tagsDelay));
++      return json(res, TAGS);
++    }
+     if (pathname === "/api/content/search") {
+       return json(res, { results: [MANGA], total: 1, partial: searchParams.get("q") === "partial" });
+     }
+     return json(res, { results: [], total: 0 });
+   });
+   app = await startNext({ RUST_CONTENT_API_ORIGIN: `${fixture.baseUrl}/api/content` });
+   browser = await chromium.launch({ executablePath: EDGE, headless: true });
+ });
+ 
+ after(async () => {
+@@ -145,10 +149,35 @@ test("advanced search has no horizontal overflow at 375px", async () => {
+     scrollWidth: document.documentElement.scrollWidth,
+     bodyWidth: document.body.scrollWidth,
+     viewport: document.documentElement.clientWidth,
+   }));
+   assert.ok(
+     sizes.scrollWidth <= sizes.viewport + 1 && sizes.bodyWidth <= sizes.viewport + 1,
+     `375px advanced search overflowed horizontally: ${JSON.stringify(sizes)}`,
+   );
+   await context.close();
+ });
++
++test("genre fallback reserves four groups with at least eight pills each on first render", async () => {
++  tagsDelay = 2_000;
++  const { context, page } = await openPage();
++  try {
++    await page.goto(`${app.baseUrl}/search`, { waitUntil: "commit" });
++    const groups = page.locator(".search-filters .genre-group.skel");
++    await groups.first().waitFor({ state: "attached" });
++    assert.equal(await groups.count(), 4, "genre fallback needs four groups");
++    const pillCounts = await groups.evaluateAll((sections) => sections.map(
++      (section) => section.querySelectorAll(".skel-pill").length,
++    ));
++    assert.ok(
++      pillCounts.every((count) => count >= 8),
++      `each genre fallback group needs >=8 pills: ${JSON.stringify(pillCounts)}`,
++    );
++    assert.ok(
++      await page.locator('.search-filters [role="status"][aria-label="Đang tải thể loại"]').count() >= 1,
++      "genre fallback needs an accessible status",
++    );
++  } finally {
++    tagsDelay = 0;
++    await context.close();
++  }
++});

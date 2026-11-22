@@ -1,0 +1,486 @@
+f24593b feat: extend search contracts with source filters
+ crates/contracts/src/lib.rs           | 151 +++++++++++++++++++++++++++++++++-
+ crates/core/src/mangadex.rs           |   1 +
+ crates/server/src/main.rs             |  77 ++++-------------
+ web/lib/contracts.ts                  |  12 ++-
+ web/scripts/search-contracts.test.mjs |  29 +++++++
+ 5 files changed, 206 insertions(+), 64 deletions(-)
+diff --git a/crates/contracts/src/lib.rs b/crates/contracts/src/lib.rs
+index b673854..ac8940f 100644
+--- a/crates/contracts/src/lib.rs
++++ b/crates/contracts/src/lib.rs
+@@ -1,11 +1,12 @@
+ use domain::{ChapterId, MangaId};
+ use serde::{Deserialize, Serialize};
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, HashMap};
++use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ pub use domain::{
+     Chapter, CultivationLevel, CultivationRealm, Manga, ReaderBackground, ReaderMode,
+     ReaderSettings, ReadingProgress, SystemRole,
+ };
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct ApiError {
+@@ -135,16 +136,118 @@ pub struct ChapterFeedPage {
+     pub next_offset: Option<u32>,
+     pub partial: bool,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct SearchResponse {
+     pub results: Vec<MangaSummaryDto>,
+     pub total: u64,
++    #[serde(default)]
++    pub partial: Option<bool>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SearchQuery {
++    pub q: String,
++    pub page: u32,
++    pub tags: Vec<String>,
++    pub status: Option<String>,
++    pub sort: String,
++    pub source: String,
++    pub lang: String,
++    pub year: Option<i32>,
++}
++
++// shortcut: mirrors manga_core's filter allowlists to keep contracts dependency acyclic;
++// consolidate if those helpers move out of core.
++fn sort_allowed(sort: &str) -> bool {
++    matches!(sort, "follows" | "rating" | "new" | "year" | "title")
++}
++
++fn status_allowed(status: &str) -> bool {
++    matches!(status, "ongoing" | "completed" | "hiatus" | "cancelled")
++}
++
++fn is_uuid(id: &str) -> bool {
++    id.len() == 36
++        && id.bytes().enumerate().all(|(i, b)| match i {
++            8 | 13 | 18 | 23 => b == b'-',
++            _ => b.is_ascii_hexdigit(),
++        })
++}
++
++fn current_year() -> i32 {
++    let secs = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map(|elapsed| elapsed.as_secs() as i64)
++        .unwrap_or(0);
++    (1970 + secs / 31_556_952) as i32
++}
++
++/// Validates public `/api/content/search` query parameters once for every caller.
++pub fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, ApiError> {
++    let value = |key| q.get(key).map(|s| s.trim()).filter(|s| !s.is_empty());
++    let invalid = |name| ApiError::new("VALIDATION_ERROR", format!("{name} không hợp lệ."));
++    let page = match value("page") {
++        Some(raw) => raw
++            .parse::<u32>()
++            .ok()
++            .filter(|p| (1..=416).contains(p))
++            .ok_or_else(|| invalid("Số trang"))?,
++        None => 1,
++    };
++    let query = value("q").unwrap_or("");
++    if query.chars().count() > 200 {
++        return Err(invalid("Tên truyện"));
++    }
++    let sort = value("sort").unwrap_or("follows");
++    if !sort_allowed(sort) {
++        return Err(invalid("Cách sắp xếp"));
++    }
++    let status = value("status");
++    if status.is_some_and(|s| !status_allowed(s)) {
++        return Err(invalid("Trạng thái"));
++    }
++    let source = value("source").unwrap_or("all");
++    if !matches!(source, "all" | "mangadex" | "comick") {
++        return Err(invalid("Nguồn"));
++    }
++    let lang = value("lang").unwrap_or("all");
++    if !matches!(lang, "all" | "vi" | "en") {
++        return Err(invalid("Ngôn ngữ"));
++    }
++    let year = match value("year") {
++        Some(raw) => Some(
++            raw.parse::<i32>()
++                .ok()
++                .filter(|year| (1900..=current_year() + 1).contains(year))
++                .ok_or_else(|| invalid("Năm"))?,
++        ),
++        None => None,
++    };
++    let mut tags: Vec<_> = value("tags")
++        .into_iter()
++        .flat_map(|s| s.split(','))
++        .collect();
++    if tags.len() > 8 || !tags.iter().all(|id| is_uuid(id)) {
++        return Err(invalid("Thể loại"));
++    }
++    tags.sort_unstable();
++    tags.dedup();
++    Ok(SearchQuery {
++        q: query.to_owned(),
++        page,
++        tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
++        status: status.map(str::to_owned),
++        sort: sort.to_owned(),
++        source: source.to_owned(),
++        lang: lang.to_owned(),
++        year,
++    })
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct LatestChapterDto {
+     pub id: ChapterId,
+     #[serde(default)]
+     pub chapter: Option<String>,
+     pub lang: String,
+@@ -194,16 +297,62 @@ impl From<ReaderSettingsDto> for ReaderSettings {
+         }
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use serde_json::{json, Value};
++    use std::collections::HashMap;
++
++    #[test]
++    fn search_query_defaults_source_all_lang_all() {
++        let query = parse_search_query(HashMap::new()).unwrap();
++        assert_eq!(query.source, "all");
++        assert_eq!(query.lang, "all");
++        assert_eq!(query.year, None);
++
++        let response: SearchResponse =
++            serde_json::from_value(json!({ "results": [], "total": 0 })).unwrap();
++        assert!(!response.partial.unwrap_or(false));
++    }
++
++    #[test]
++    fn search_query_accepts_valid_source_lang_year() {
++        for (source, lang) in [("all", "all"), ("mangadex", "en"), ("comick", "vi")] {
++            let query = parse_search_query(HashMap::from([
++                ("source".into(), source.into()),
++                ("lang".into(), lang.into()),
++                ("year".into(), "2024".into()),
++            ]))
++            .unwrap();
++            assert_eq!(query.source, source);
++            assert_eq!(query.lang, lang);
++            assert_eq!(query.year, Some(2024));
++        }
++    }
++
++    #[test]
++    fn search_query_rejects_invalid_source_lang_year() {
++        for (name, value) in [
++            ("source", "bad"),
++            ("lang", "fr"),
++            ("year", "0"),
++            ("year", "abc"),
++            ("year", "-2024"),
++            ("year", "1899"),
++            ("page", "0"),
++        ] {
++            assert!(
++                parse_search_query(HashMap::from([(name.into(), value.into())])).is_err(),
++                "{name}={value} should be rejected"
++            );
++        }
++    }
+ 
+     #[test]
+     fn manga_summary_contract_keeps_existing_fields_and_accepts_legacy_omissions() {
+         let legacy = json!({
+             "id": "manga-id",
+             "title": "Title",
+             "cover_file": null,
+             "status": "ongoing",
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 1101a11..6dd4b99 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -173,16 +173,17 @@ impl Md {
+                             result.latest_chapter =
+                                 chapter["attributes"]["chapter"].as_str().map(str::to_owned);
+                         }
+                     }
+                 }
+                 Ok(Arc::new(SearchResponse {
+                     results,
+                     total: j["total"].as_u64().unwrap_or(0),
++                    partial: Some(false),
+                 }))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
+     async fn search_chapters(&self, manga: &Value) -> Value {
+         let ids = items(manga)
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index 88e32a4..753fb0d 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -1,15 +1,15 @@
+ use axum::body::Body;
+ use axum::extract::{Path, Query, State};
+ use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::get;
+ use axum::{Json, Router};
+-use contracts::{ApiError, ApiErrorEnvelope};
++use contracts::{parse_search_query, ApiError, ApiErrorEnvelope};
+ use manga_core::comick::is_comick_chapter_id;
+ use manga_core::fallback::{
+     chapter_metadata as fallback_metadata, chapter_pages, enrich_chapters, ContentState,
+ };
+ use manga_core::mangadex::is_uuid;
+ use manga_core::{Comick, Md};
+ use serde::Serialize;
+ use serde_json::json;
+@@ -25,16 +25,20 @@ fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Err
+     (
+         status,
+         Json(ApiErrorEnvelope {
+             error: ApiError::new(code, message),
+         }),
+     )
+ }
+ 
++fn validation_error(error: ApiError) -> Err {
++    (StatusCode::BAD_REQUEST, Json(ApiErrorEnvelope { error }))
++}
++
+ fn json_cached<T: Serialize>(v: T, secs: u32) -> Response {
+     let mut res = Json(v).into_response();
+     res.headers_mut().insert(
+         header::CACHE_CONTROL,
+         HeaderValue::from_str(&format!("public, max-age={secs}")).unwrap(),
+     );
+     res
+ }
+@@ -214,81 +218,27 @@ async fn popular(State(state): State<ContentState>) -> Result<Response, Err> {
+ async fn latest(State(state): State<ContentState>) -> Result<Response, Err> {
+     Ok(json_cached(state.md.latest().await.map_err(bad)?, 60))
+ }
+ 
+ async fn search(
+     State(state): State<ContentState>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+-    let q = parse_search_query(q)?;
++    let q = parse_search_query(q).map_err(validation_error)?;
+     Ok(json_cached(
+         state
+             .md
+             .search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort)
+             .await
+             .map_err(bad)?,
+         60,
+     ))
+ }
+ 
+-#[derive(Debug)]
+-struct SearchQuery {
+-    q: String,
+-    page: u32,
+-    tags: Vec<String>,
+-    status: Option<String>,
+-    sort: String,
+-}
+-
+-fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
+-    let value = |key| q.get(key).map(|s| s.trim()).filter(|s| !s.is_empty());
+-    let invalid = |name| {
+-        api_error(
+-            StatusCode::BAD_REQUEST,
+-            "VALIDATION_ERROR",
+-            format!("{name} không hợp lệ."),
+-        )
+-    };
+-    let page = match value("page") {
+-        Some(raw) => raw
+-            .parse::<u32>()
+-            .ok()
+-            .filter(|p| (1..=416).contains(p))
+-            .ok_or_else(|| invalid("Số trang"))?,
+-        None => 1,
+-    };
+-    let query = value("q").unwrap_or("");
+-    if query.chars().count() > 200 {
+-        return Err(invalid("Tên truyện"));
+-    }
+-    let sort = value("sort").unwrap_or("follows");
+-    manga_core::mangadex::sort_param(sort).ok_or_else(|| invalid("Cách sắp xếp"))?;
+-    let status = value("status");
+-    if status.is_some_and(|s| manga_core::mangadex::status_param(s).is_none()) {
+-        return Err(invalid("Trạng thái"));
+-    }
+-    let mut tags: Vec<_> = value("tags")
+-        .into_iter()
+-        .flat_map(|s| s.split(','))
+-        .collect();
+-    if tags.len() > 8 || !tags.iter().all(|id| is_uuid(id)) {
+-        return Err(invalid("Thể loại"));
+-    }
+-    tags.sort_unstable();
+-    tags.dedup();
+-    Ok(SearchQuery {
+-        q: query.to_owned(),
+-        page,
+-        tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
+-        status: status.map(str::to_owned),
+-        sort: sort.to_owned(),
+-    })
+-}
+-
+ #[derive(Debug)]
+ struct NotificationFeedQuery {
+     lang: String,
+     since: Option<String>,
+     offset: u32,
+     limit: u32,
+ }
+ 
+@@ -584,27 +534,30 @@ mod tests {
+     fn search_rejects_invalid_filters_and_bounds_pagination() {
+         for (name, value) in [
+             ("sort", "bad"),
+             ("status", "bad"),
+             ("tags", "bad"),
+             ("page", "4294967295"),
+         ] {
+             assert_eq!(
+-                parse_search_query(HashMap::from([(name.into(), value.into())]))
+-                    .unwrap_err()
+-                    .0,
++                validation_error(
++                    parse_search_query(HashMap::from([(name.into(), value.into())])).unwrap_err()
++                )
++                .0,
+                 StatusCode::BAD_REQUEST
+             );
+         }
+         let id = "391b0423-d847-456f-aff0-8b0cfc03066b";
+         assert_eq!(
+-            parse_search_query(HashMap::from([("tags".into(), [id; 9].join(","))]))
+-                .unwrap_err()
+-                .0,
++            validation_error(
++                parse_search_query(HashMap::from([("tags".into(), [id; 9].join(","))]))
++                    .unwrap_err(),
++            )
++            .0,
+             StatusCode::BAD_REQUEST
+         );
+         let query = parse_search_query(HashMap::from([
+             ("tags".into(), id.into()),
+             ("sort".into(), "rating".into()),
+         ]))
+         .unwrap();
+         assert_eq!(query.tags, [id]);
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index 657a414..b3d8455 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -103,17 +103,21 @@ export type LatestChapterSummaryDto = {
+ };
+ 
+ export type LatestMangaDto = MangaSummaryDto & {
+   chapters: LatestChapterSummaryDto[];
+ };
+ 
+ export type TagDto = { id: string; name: string; group: string };
+ 
+-export type SearchResponse = { results: MangaSummaryDto[]; total: number };
++export type SearchResponse = {
++  results: MangaSummaryDto[];
++  total: number;
++  partial?: boolean;
++};
+ 
+ export type ChaptersResponse = { vi: ChapterDto[]; en: ChapterDto[] };
+ 
+ export type ChapterDto = {
+   id: string;
+   chapter: string | null;
+   volume: string | null;
+   title: string;
+@@ -271,26 +275,32 @@ export function normalizePageUrls(pages: string[]): string[] {
+ }
+ 
+ export type SearchParams = {
+   q?: string;
+   tags?: string[];
+   status?: string;
+   sort?: string;
+   page?: number;
++  source?: string;
++  lang?: string;
++  year?: number;
+ };
+ 
+ export function searchQuery(params: SearchParams): string {
+   const query = new URLSearchParams();
+   if (params.q?.trim()) query.set("q", params.q.trim());
+   const tags = (params.tags ?? []).filter(Boolean);
+   if (tags.length > 0) query.set("tags", tags.join(","));
+   if (params.status) query.set("status", params.status);
+   if (params.sort && params.sort !== "follows") query.set("sort", params.sort);
+   if (params.page && params.page > 1) query.set("page", String(params.page));
++  if (params.source && params.source !== "all") query.set("source", params.source);
++  if (params.lang && params.lang !== "all") query.set("lang", params.lang);
++  if (params.year !== undefined) query.set("year", String(params.year));
+   const encoded = query.toString();
+   return encoded ? `?${encoded}` : "";
+ }
+ 
+ export type ContentClient = {
+   latest(signal?: AbortSignal): Promise<LatestMangaDto[]>;
+   popular(signal?: AbortSignal): Promise<MangaSummaryDto[]>;
+   tags(signal?: AbortSignal): Promise<TagDto[]>;
+diff --git a/web/scripts/search-contracts.test.mjs b/web/scripts/search-contracts.test.mjs
+new file mode 100644
+index 0000000..7eba98b
+--- /dev/null
++++ b/web/scripts/search-contracts.test.mjs
+@@ -0,0 +1,29 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { searchQuery } from "../lib/contracts.ts";
++
++test("searchQuery omits defaults so legacy URLs stay unchanged", () => {
++  assert.equal(searchQuery({}), "");
++  assert.equal(searchQuery({ source: "all", lang: "all" }), "");
++});
++
++test("searchQuery serializes source, lang and year", () => {
++  const query = searchQuery({ source: "comick", lang: "vi", year: 2024 });
++  const params = new URLSearchParams(query);
++  assert.equal(params.get("source"), "comick");
++  assert.equal(params.get("lang"), "vi");
++  assert.equal(params.get("year"), "2024");
++});
++
++test("searchQuery preserves existing serialization", () => {
++  assert.equal(
++    searchQuery({
++      q: "slime",
++      tags: ["a", "b"],
++      status: "ongoing",
++      sort: "rating",
++      page: 2,
++    }),
++    "?q=slime&tags=a%2Cb&status=ongoing&sort=rating&page=2",
++  );
++});

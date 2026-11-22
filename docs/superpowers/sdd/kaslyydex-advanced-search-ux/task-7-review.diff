@@ -1,0 +1,308 @@
+5b62739 chore: gate and document advanced search UX
+ .github/workflows/ci.yml |  9 +++++----
+ CHANGELOG.md             | 31 +++++++++++++++++++++++++++++++
+ README.md                | 31 +++++++++++++++++++++++++++----
+ docs/WEB-STATUS.md       | 34 ++++++++++++++++++++++++++++++++++
+ infra/axum.md            | 34 ++++++++++++++++++++++++++++++++++
+ web/package.json         |  2 +-
+ 6 files changed, 132 insertions(+), 9 deletions(-)
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 3561669..24ba985 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -78,24 +78,25 @@ jobs:
+       - name: TypeScript check
+         run: npm run typecheck
+         working-directory: web
+ 
+       - name: Next lint
+         run: npm run lint
+         working-directory: web
+ 
+-      - name: Aggregate Node / PGlite / API tests
+-        run: npm run test:aggregate
+-        working-directory: web
+-
++      # Aggregate now includes Playwright suites, so Chromium must exist first.
+       - name: Install Playwright Chromium
+         run: npm run browser:install
+         working-directory: web
+ 
++      - name: Aggregate Node / PGlite / API tests
++        run: npm run test:aggregate
++        working-directory: web
++
+       - name: Browser suites
+         run: npm run test:browser
+         working-directory: web
+ 
+       # Inspects tracked checkout content, so it is not vacuous on a clean tree.
+       # Baseline covers committed prior-plan SDD .diff artifacts only; new findings fail.
+       - name: Whitespace / conflict-marker check (baselined)
+         run: npm run check:whitespace
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 7c87e6c..a2d5d21 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,10 +1,41 @@
+ # Changelog
+ 
++## Unreleased — advanced search UX and final local gate
++
++- Extend `SearchParams`/`searchQuery` with `source`, `lang` and `year`; add
++  `partial: bool` to `SearchResponse` and move query parsing into `contracts` so
++  Axum and the web share the same allowlists and page clamp.
++- Add a Comick catalog search adapter and Axum `search_all` orchestration.
++  `source=all` queries both providers, keeps same-title hits from different
++  providers distinct, sorts deterministically (`sort`, source, title, id) and
++  slices to 24 per page. A locally-applied `lang`/`year` filter or a failing
++  provider sets `partial`, surfaced as a short warning in the UI; a missing
++  Comick adapter returns a structured 503.
++- Move genre groups into the `/search` ("Khám phá") advanced panel with a
++  four-group skeleton and write selected chips into `tags`. Remove the Next
++  `/the-loai` page and its navigation link.
++- Render source as a cover badge (`MangaDex`/`Comick`, accessible
++  `Nguồn: <label>`) on cards, feed, ranking and detail covers; drop the
++  `(MangaDex)`/`(Comick)` title suffixes.
++- Add a shape-matched `/bxh` loading shell (12 rows) and `rank-top rank-1/2/3`
++  frames for the top three rows, stable across tab changes and mobile widths.
++- Register `search-contracts`, `search-source`, `advanced-search`,
++  `source-badge` and `ranking-skeleton` in `test:aggregate` (12 suites total).
++  CI installs Playwright Chromium before aggregate because three of the added
++  suites are browser tests; the Axum prebuild hooks are unchanged.
++- Run the full deterministic local gate: aggregate 203/203, browser 23/23,
++  Rust workspace tests 90 passed/0 failed, build/clippy/scoped fmt/typecheck/
++  lint/whitespace/secrets/diff clean. Exact commands and counts are in
++  `docs/superpowers/sdd/kaslyydex-advanced-search-ux/task-7-report.md`.
++
++No deployment, push, merge, provisioning or live provider verification was
++performed. Live MangaDex/Comick catalog and ToS checks remain manual gates.
++
+ ## Unreleased — multi-source reading UX and final local gate
+ 
+ - Read MangaDex as the primary catalog and fall back to Comick **per chapter**
+   when a chapter is external-only/unreadable; keep the last external link when
+   no match is found or the fallback fails. Chapter IDs are provider-prefixed
+   (`comick:`) and progression/XP bind to the chapter source.
+ - Show `MangaDex`/`Comick` source labels after titles on cards, detail, chapter
+   rows and the reader toolbar. Legacy DTOs without `source` still display
+diff --git a/README.md b/README.md
+index 68ff244..1dec2dc 100644
+--- a/README.md
++++ b/README.md
+@@ -44,31 +44,52 @@ mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
+   Escape đóng, Home/End tới đầu/cuối, Tab đóng. Một hidden input giữ nguyên giá
+   trị form GET của tìm kiếm.
+ - Skeleton có hình dạng khớp nội dung thay vì khối chung; hiệu ứng chuyển động
+   (chevron, fade ảnh, shimmer) nằm trong `prefers-reduced-motion`. Ảnh reader lỗi
+   được giải phóng khỏi skeleton (ảnh hỏng hiện thay vì skeleton vĩnh viễn); panel
+   thử lại hiện có chỉ xử lý lỗi tải chapter/WASM (`pageError`/`wasmError`), không
+   có nút thử lại riêng cho từng ảnh.
+ 
++## Tìm kiếm nâng cao và xếp hạng
++
++- `/search` ("Khám phá") dùng chung dropdown cho `source` (`all`/`mangadex`/
++  `comick`), `lang` (`all`/`vi`/`en`) và `year` (1900…năm hiện tại + 1); các
++  giá trị này nằm trong form GET và giữ nguyên `q`, `tags`, `status`, `sort`,
++  `page`. Axum gọi MangaDex và/hoặc Comick theo `source`, gộp ổn định theo
++  `sort` → source → title → id rồi cắt tối đa 24 kết quả/trang. Khi bộ lọc
++  `lang`/`year` chỉ áp được ở local hoặc một provider lỗi, response có
++  `partial: true` và UI hiện cảnh báo ngắn — không ngầm hiểu là kết quả đầy đủ.
++- Bốn nhóm thể loại (Thể loại chính / Chủ đề / Định dạng / Nội dung) nằm trong
++  panel nâng cao của `/search`; chip ghi thẳng vào `tags` và có skeleton 4 nhóm
++  lúc tải. Trang `/the-loai` cùng link điều hướng đã bị xóa ở bản Next; dùng
++  `/search` thay thế.
++- Nguồn hiển thị thành badge trên góc ảnh bìa (`MangaDex`/`Comick`, nhãn truy
++  cập `Nguồn: <label>`) ở card, feed, top rank và trang chi tiết; tiêu đề không
++  còn hậu tố `(MangaDex)`/`(Comick)`.
++- `/bxh` có route `loading.tsx` với 12 hàng skeleton khớp bảng xếp hạng và khung
++  top 3 (`rank-top rank-1/2/3`) giữ kích thước khi đổi tab; shimmer vẫn nằm
++  trong `prefers-reduced-motion`.
++
+ ## Chạy local
+ 
+ ```bash
+ # Rust toolchain: stable + wasm32-unknown-unknown + wasm-bindgen-cli 0.2.130
+ cd web
+ npm ci
+ npm run build:wasm        # bắt buộc trước Next build
+ npm run build:web         # next build (không chạy lại prebuild)
+ npm run typecheck         # cần glue WASM + Next route types đã sinh
+ npm run lint
+ cd ..
+ cargo build -p server
+ cd web
+ npm run test:source       # 7 suite nguồn/fallback/UI/theme/dropdown/skeleton
+-npm run test:aggregate    # bao gồm cả 7 suite trên, không cần secret
++npm run test:aggregate    # 12 suite: 7 ở trên + search-contracts, search-source,
++                          # advanced-search, source-badge, ranking-skeleton
+ npm run test:browser      # cần Edge local hoặc Playwright Chromium
+ ```
+ 
+ `test:source`, `test:aggregate` và `test:browser` có pretest build Axum
+ (`cargo build -p server`) trước vì fixture content/fallback spawn binary đó;
+ chạy aggregate trước khi build server sẽ cho RED giả.
+ 
+ Axum local: `cargo run -p server` (`PORT`, `DIST_DIR`, `CACHE_DIR`,
+@@ -104,19 +125,21 @@ NEXT_PUBLIC_APP_URL
+ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+ 
+ ## Release gates
+ 
+ `.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+ secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
+ `reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
+ `cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
+-`build:wasm` → `build:web` → typecheck/lint; aggregate tests (bao gồm các suite
+-nguồn/fallback/UI/theme/dropdown/skeleton, server được build trước qua
+-pretest); Playwright Chromium install + browser suites; tracked-file
++`build:wasm` → `build:web` → typecheck/lint; cài Playwright Chromium trước rồi
++aggregate tests (12 suite: nguồn/fallback/UI/theme/dropdown/skeleton +
++search-contracts/search-source/advanced-search/source-badge/ranking-skeleton —
++3 suite sau dùng browser nên cần Chromium; server được build trước qua pretest);
++browser suites; tracked-file
+ whitespace/conflict-marker scan với baseline — không vacuous trên clean
+ checkout, nhưng 783 finding đã commit trong
+ `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua
+ `web/scripts/whitespace-baseline.txt` thay vì sửa artifact của plan cũ; mọi
+ finding mới vẫn fail.
+ 
+ Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+ CI scoped như trên. Xem
+diff --git a/docs/WEB-STATUS.md b/docs/WEB-STATUS.md
+index 90fcc30..e4c5fe0 100644
+--- a/docs/WEB-STATUS.md
++++ b/docs/WEB-STATUS.md
+@@ -124,8 +124,42 @@ Exact commands, counts and rulings are in
+   aggregate/browser suites spawn the Axum binary (ordering fix; without it
+   fixture tests false-RED on the missing binary). CI runs the same order.
+ - Whitespace gate is baselined: 783 pre-existing findings in committed
+   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` are listed in
+   `web/scripts/whitespace-baseline.txt`; any new finding still fails. The two
+   pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with
+   `cargo fmt -p core` and `core` joined the scoped `cargo fmt --check` set.
+ - No deployment, push, merge, or live provider verification was performed.
++
++## Advanced search UX + final local gate (Task 7)
++
++Exact commands, counts and concerns are in
++`docs/superpowers/sdd/kaslyydex-advanced-search-ux/task-7-report.md`.
++
++- Advanced search: `/search` ("Khám phá") now keeps `source`
++  (`all`/`mangadex`/`comick`), `lang` (`all`/`vi`/`en`) and `year`
++  (1900…current+1) in the same GET form as `q`/tags/status/sort/page. Axum
++  dispatches to MangaDex and/or Comick, keeps provider duplicates separate,
++  sorts deterministically and returns at most 24 results per page. When a
++  filter can only be applied locally or a provider fails, `partial=true` makes
++  the UI show a short warning instead of implying a complete result.
++- Genre browsing moved into the same page: four grouped tag sections with a
++  four-group skeleton; the standalone Next `/the-loai` route and nav link are
++  gone.
++- Cover badges replace title suffixes: `MangaDex`/`Comick` with accessible name
++  `Nguồn: <label>` on cards, feed, ranking and detail covers.
++- `/bxh` has a route-level loading shell with 12 shape-matched rows and
++  `rank-top rank-1/2/3` frames for the top three rows; tab changes re-show the
++  skeleton and skeleton/loaded row boxes stay within 2px, with shimmer disabled
++  under `prefers-reduced-motion`.
++- `test:aggregate` now runs 12 suites (the previous seven plus
++  `search-contracts`, `search-source`, `advanced-search`, `source-badge`,
++  `ranking-skeleton`). CI installs Chromium before aggregate since three of
++  the new suites are Playwright tests; the Axum prebuild hooks are unchanged.
++- Local gate results: `build:wasm`/`build` pass; aggregate 203 pass / 0 fail;
++  browser 23 pass / 0 fail; `cargo build -p server` pass; workspace tests
++  90 pass / 0 fail; clippy `-D warnings`, scoped fmt (including `core`),
++  typecheck, lint (0 errors, 7 pre-existing `@next/next/no-img-element`
++  warnings), whitespace (0 new findings), secrets (0 candidates) and
++  `git diff --check` all pass.
++- No deployment, push, merge or live provider verification was done. Live
++  MangaDex/Comick catalog and ToS checks remain manual release gates.
+diff --git a/infra/axum.md b/infra/axum.md
+index d9e34da..9f1115c 100644
+--- a/infra/axum.md
++++ b/infra/axum.md
+@@ -66,28 +66,62 @@ files; the two Rust files touched by Task 4 were formatted with `rustfmt --editi
+ - The image proxy allowlists the verified Comick CDN host
+   (`meo.comick.pictures`, HTTPS/443, no credentials) with raw and decoded
+   path-traversal rejection; the browser only ever receives same-origin
+   `/api/img` URLs.
+ - Source labels (`MangaDex` default for legacy DTOs, `Comick` for
+   provider-prefixed chapters) come from the shared contracts and are rendered by
+   the web UI; reader tickets and progression records bind the chapter source.
+ 
++## Advanced search (Tasks 1–3, gated in Task 7)
++
++- `contracts::SearchQuery` is the single parser for `/api/content/search` and
++  its legacy `/api/search` alias. It accepts `source` (`all`/`mangadex`/
++  `comick`, default `all`), `lang` (`all`/`vi`/`en`, default `all`), `year`
++  (1900…current year + 1), and keeps the existing `q`/`tags`/`status`/`sort`/
++  `page` validation. `SearchResponse.partial` defaults to `false` for older DTOs.
++- The handler calls `core::search_all`. `source=mangadex` and `source=comick`
++  dispatch to one provider; `source=all` calls both concurrently, keeps
++  same-title hits from different providers as separate results, sorts by
++  `sort` → source label → title → id and slices to at most 24 items per page.
++  A filter the provider cannot apply (`lang`, `year`) is applied locally and
++  marks the response `partial: true`, as does a failing provider; successful
++  full responses are cached under a key containing every query field.
++  `comick`-only queries with no configured `Comick` adapter return a structured
++  `503 CONTENT_UNAVAILABLE` instead of panicking.
++- `COMICK_API_ORIGIN` keeps `web/scripts/search-source.test.mjs` on loopback
++  MangaDex/Comick fixtures. It asserts provider dispatch, merged `source_label`
++  values, `partial=true` on a Comick 500, structured 400s for bad filters and
++  cache-key changes per `source`/`lang`/`year`. No remote call or credential is
++  involved; live catalog/ToS verification of both providers is still a manual
++  release gate and is not claimed.
++
+ ## Gate notes (Task 10)
+ 
+ - `cargo fmt -p core` fixed the two known pre-existing rustfmt hunks in
+   `crates/core/src/comick.rs` (lines ~119 and ~159); `core` is now part of the
+   scoped `cargo fmt --check` set in CI. Full-workspace fmt still carries older
+   Leptos debt, so it stays out of scope.
+ - The tracked-file whitespace gate runs with
+   `web/scripts/whitespace-baseline.txt` (783 pre-existing findings in committed
+   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff`); new findings still fail.
+ - `npm run test:aggregate`/`test:browser` build the Axum binary via pretest
+   before suites spawn it; CI builds it as its own step first.
+ 
++## Gate notes (Task 7)
++
++- `test:aggregate` now includes `search-contracts`, `search-source`,
++  `advanced-search`, `source-badge` and `ranking-skeleton` (12 suites). The
++  three browser-based suites need Playwright Chromium, so CI installs it before
++  the aggregate step; the Axum prebuild ordering is untouched.
++- The full local gate passed: aggregate 203/203, browser 23/23, workspace Rust
++  tests 90/0, `cargo build -p server`, clippy `-D warnings`, scoped
++  `cargo fmt --check` including `core`, typecheck/lint, whitespace/secrets and
++  `git diff --check`. No deploy, push or merge was performed.
++
+ ## Unverified
+ 
+ No Axum service was deployed, exposed publicly, or connected to live Neon/Google
+ configuration in this task. Docker was unavailable, so no PostgreSQL container was
+ created; the migration test used embedded PGlite as a dev/test-only engine and did
+ not touch any pre-existing database.
+ 
+ ## Task 9 hardening
+diff --git a/web/package.json b/web/package.json
+index b98d52c..9b56b7f 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -10,17 +10,17 @@
+     "build:web": "next build",
+     "start": "next start",
+     "typecheck": "tsc --noEmit",
+     "browser:install": "node node_modules/playwright-core/cli.js install chromium",
+     "check:secrets": "node scripts/secret-scan.mjs ..",
+     "check:whitespace": "node scripts/whitespace-check.mjs --baseline scripts/whitespace-baseline.txt ..",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+     "pretest:aggregate": "cargo build --manifest-path ../Cargo.toml -p server",
+-    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs",
++    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs scripts/search-contracts.test.mjs scripts/search-source.test.mjs scripts/advanced-search.test.mjs scripts/source-badge.test.mjs scripts/ranking-skeleton.test.mjs",
+     "pretest:browser": "cargo build --manifest-path ../Cargo.toml -p server",
+     "test:browser": "node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs scripts/reader-playwright.test.mjs",
+     "pretest:source": "cargo build --manifest-path ../Cargo.toml -p server",
+     "test:source": "node --import tsx --conditions=react-server --test scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
