@@ -50,7 +50,8 @@ const chapters = { vi: [chapter], en: [] };
 let fixture;
 let app;
 let browser;
-let contentDelay = 1200;
+// Long enough to keep Suspense fallbacks visible through all assertions and bounding-box captures.
+let contentDelay = 6000;
 
 function json(res, payload) {
   res.writeHead(200, { "content-type": "application/json" });
