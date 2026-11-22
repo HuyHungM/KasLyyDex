@@ -137,8 +137,9 @@ nguồn/fallback/UI/theme/dropdown/skeleton + search-contracts/search-source/
 advanced-search/source-badge/ranking-skeleton; 2 suite mới dùng browser nên cần
 Chromium; server được build trước qua pretest; rồi browser suites; tracked-file
 whitespace/conflict-marker scan với baseline — không vacuous trên clean
-checkout, nhưng 783 finding đã commit trong
-`docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua
+checkout, nhưng 1130 finding đã commit trong
+`docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` và
+`docs/superpowers/sdd/kaslyydex-multi-source-ux/*.diff` được baseline hóa qua
 `web/scripts/whitespace-baseline.txt` thay vì sửa artifact của plan cũ; mọi
 finding mới vẫn fail.
 

@@ -83,7 +83,7 @@ jobs:
         run: npm run lint
         working-directory: web
 
-      # Aggregate now includes Playwright suites, so Chromium must exist first.
+      # Aggregate is Node-only; the separate browser suites below need Chromium.
       - name: Install Playwright Chromium
         run: npm run browser:install
         working-directory: web
@@ -97,7 +97,8 @@ jobs:
         working-directory: web
 
       # Inspects tracked checkout content, so it is not vacuous on a clean tree.
-      # Baseline covers committed prior-plan SDD .diff artifacts only; new findings fail.
+      # Baseline covers committed SDD .diff artifacts from prior and multi-source
+      # plans (1130 entries); new findings fail.
       - name: Whitespace / conflict-marker check (baselined)
         run: npm run check:whitespace
         working-directory: web
