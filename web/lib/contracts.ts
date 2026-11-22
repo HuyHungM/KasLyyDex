@@ -93,6 +93,7 @@ export type MangaSummaryDto = {
   latest_chapter: string | null;
   source?: string;
   source_label?: string;
+  source_url?: string | null;
 };
 
 export type LatestChapterSummaryDto = {
@@ -114,7 +115,7 @@ export type SearchResponse = {
   partial?: boolean;
 };
 
-export type ChaptersResponse = { vi: ChapterDto[]; en: ChapterDto[] };
+export type ChaptersResponse = { vi: ChapterDto[]; en: ChapterDto[]; notice?: string | null };
 
 export type ChapterDto = {
   id: string;

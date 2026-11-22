@@ -340,7 +340,14 @@ fn comick_chapter_dto(chapter: ComickChapter) -> ChapterDto {
 async fn manga(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
     if is_comick_manga_id(&id) {
         let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
-        return Ok(json_cached(comick.detail(&id).await.map_err(bad)?, 3600));
+        return match comick.detail(&id).await {
+            Ok(detail) => Ok(json_cached(detail, 3600)),
+            // Search stays reachable when Comick challenges the detail route.
+            Err(error) => match comick.cached(&id) {
+                Some(hit) => Ok(json_cached(hit, 3600)),
+                None => Err(bad(error)),
+            },
+        };
     }
     if !is_uuid(&id) {
         return Err(api_error(
@@ -359,17 +366,15 @@ async fn chapters(
     if is_comick_manga_id(&id) {
         let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
         let (vi, en) = tokio::join!(comick.chapters(&id, "vi"), comick.chapters(&id, "en"));
+        // Comick's chapter route can be challenged even when search stays up.
+        // Degrade to an explained empty list instead of a hard 502.
+        let notice = (vi.is_err() || en.is_err()).then(|| {
+            "Comick hiện chặn API danh sách chapter. Mở truyện trên Comick để đọc chapter mới nhất.".to_owned()
+        });
         let response = contracts::ChaptersResponse {
-            vi: vi
-                .map_err(bad)?
-                .into_iter()
-                .map(comick_chapter_dto)
-                .collect(),
-            en: en
-                .map_err(bad)?
-                .into_iter()
-                .map(comick_chapter_dto)
-                .collect(),
+            vi: vi.unwrap_or_default().into_iter().map(comick_chapter_dto).collect(),
+            en: en.unwrap_or_default().into_iter().map(comick_chapter_dto).collect(),
+            notice,
         };
         return Ok(json_cached(response, 60));
     }

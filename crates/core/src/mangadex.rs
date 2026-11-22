@@ -276,7 +276,7 @@ impl Md {
         self.chapters
             .try_get_with(id.clone(), async move {
                 let (vi, en) = futures::join!(md.feed(&id, "vi"), md.feed(&id, "en"));
-                Ok(Arc::new(ChaptersResponse { vi: vi?, en: en? }))
+                Ok(Arc::new(ChaptersResponse { vi: vi?, en: en?, notice: None }))
             })
             .await
             .map_err(|e: Arc<Err>| (*e).clone())
@@ -617,6 +617,7 @@ fn summary(m: &Value) -> Option<MangaSummaryDto> {
         latest_chapter: None,
         source: "mangadex".to_owned(),
         source_label: "MangaDex".to_owned(),
+        source_url: None,
     })
 }
 

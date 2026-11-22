@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { freePort, repoDir, startHttpServer, webDir } from "./test-helpers.mjs";
+import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
 
 // Real Axum process + loopback MangaDex/Comick fixtures. No remote calls, auth,
 // database, or deployment configuration is involved.
@@ -26,8 +26,10 @@ let mangadexFixture;
 let comickFixture;
 let axum;
 let axumUrl;
+let app;
 let comickRequests = [];
 let lastSearchTitle = "";
+let comickBlocked = false;
 
 function waitForTcp(port, deadlineMs = 20_000) {
   return new Promise((resolve, reject) => {
@@ -131,9 +133,13 @@ before(async () => {
       const title = url.searchParams.get("q") ?? "";
       lastSearchTitle = title;
       if (title.includes("Error")) return json(res, "upstream failure", 500);
+      if (comickBlocked) {
+        return json(res, [{ hid: "blocked-1", slug: "blocked-title", title: "Blocked Comic", md_titles: [] }]);
+      }
       return json(res, [{ hid: "comic-1", title, md_titles: [] }]);
     }
     if (url.pathname.endsWith("/chapters")) {
+      if (comickBlocked) return json(res, "cloudflare challenge", 403);
       if (lastSearchTitle.includes("Error")) return json(res, "upstream failure", 500);
       const number = lastSearchTitle.includes("No Match") ? "99" : "10.1";
       return json(res, { chapters: [comickChapter("chap-101", number)], total: 1, limit: 12 });
@@ -163,9 +169,11 @@ before(async () => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   await waitForTcp(port);
+  app = await startNext({ RUST_CONTENT_API_ORIGIN: axumUrl });
 });
 
 after(async () => {
+  await stop(app?.child);
   if (axum && axum.exitCode === null) axum.kill("SIGKILL");
   await mangadexFixture?.close();
   await comickFixture?.close();
@@ -244,4 +252,40 @@ test("malformed comick chapter ID is a structured 400 before any upstream call",
   assert.equal(response.status, 400);
   assert.equal(body.error.code, "VALIDATION_ERROR");
   assert.equal(comickRequests.length, before);
+});
+
+test("blocked Comick detail uses cached search hit and chapters degrade with a notice", async () => {
+  comickBlocked = true;
+  try {
+    const searched = await get("/api/content/search?q=Blocked&source=comick&page=1");
+    assert.equal(searched.response.status, 200);
+    assert.ok(searched.body.results.some((manga) => manga.id === "comick:blocked-1"));
+
+    const detail = await get("/api/content/manga/comick%3Ablocked-1");
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.body.title, "Blocked Comic");
+    assert.equal(detail.body.source_url, "https://comick.dev/comic/blocked-title");
+
+    const chapters = await get("/api/content/manga/comick%3Ablocked-1/chapters");
+    assert.equal(chapters.response.status, 200);
+    assert.equal(chapters.body.vi.length, 0);
+    assert.match(chapters.body.notice, /Comick/i);
+  } finally {
+    comickBlocked = false;
+  }
+});
+
+test("Next manga route renders an encoded Comick ID without double encoding", async () => {
+  comickBlocked = true;
+  try {
+    await get("/api/content/search?q=Blocked&source=comick&page=1");
+    const response = await fetch(`${app.baseUrl}/manga/${encodeURIComponent("comick:blocked-1")}`);
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.ok(html.includes("Blocked Comic"), "encoded provider ID must reach the cached detail");
+    assert.ok(html.includes('class="manga-title"'), "encoded provider ID must render the manga page");
+    assert.ok(html.includes("source-notice"), "blocked chapters need the explanatory notice");
+  } finally {
+    comickBlocked = false;
+  }
 });

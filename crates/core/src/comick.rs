@@ -19,6 +19,8 @@
 use contracts::MangaSummaryDto;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 const API: &str = "https://api.comick.dev";
@@ -51,6 +53,7 @@ pub struct ComickChapter {
 pub struct Comick {
     http: reqwest::Client,
     api: String,
+    hits: Arc<RwLock<HashMap<String, MangaSummaryDto>>>,
 }
 
 impl Default for Comick {
@@ -79,6 +82,7 @@ impl Comick {
             } else {
                 trimmed
             },
+            hits: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -99,7 +103,19 @@ impl Comick {
     ) -> Result<Vec<MangaSummaryDto>, Err> {
         let body = self.get_json(&search_path(q, lang, year, page)?).await?;
         let results = body.as_array().ok_or_else(upstream_err)?;
-        results.iter().map(normalize_search_hit).collect()
+        let hits: Vec<MangaSummaryDto> = results.iter().map(normalize_search_hit).collect::<Result<_, _>>()?;
+        {
+            let mut cache = self.hits.write().map_err(|_| upstream_err())?;
+            for hit in &hits {
+                cache.insert(hit.id.as_str().to_owned(), hit.clone());
+            }
+        }
+        Ok(hits)
+    }
+
+    /// Search is reachable even when Comick's detail route is behind a challenge.
+    pub fn cached(&self, id: &str) -> Option<MangaSummaryDto> {
+        self.hits.read().ok()?.get(id).cloned()
     }
 
     /// Comic detail by prefixed ID; the official route accepts a slug or HID.
@@ -237,6 +253,10 @@ pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
         latest_chapter: string_or_number(&hit["last_chapter"]),
         source: "comick".to_owned(),
         source_label: "Comick".to_owned(),
+        source_url: hit["slug"]
+            .as_str()
+            .filter(|slug| valid_opaque(slug))
+            .map(|slug| format!("https://comick.dev/comic/{slug}")),
     })
 }
 

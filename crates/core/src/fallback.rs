@@ -461,6 +461,7 @@ mod tests {
             latest_chapter: None,
             source: "mangadex".into(),
             source_label: "MangaDex".into(),
+            source_url: None,
         }
     }
 
@@ -518,6 +519,7 @@ mod tests {
         let input = ChaptersResponse {
             vi: vec![primary.clone()],
             en: vec![],
+            notice: None,
         };
         let output = enrich_chapters(&state, &manga(), input)
             .await

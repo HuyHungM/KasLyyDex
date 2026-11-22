@@ -321,7 +321,7 @@ test("bare UUID detail and chapter routes stay on MangaDex", async () => {
 
   const chapters = await get(`/api/content/manga/${UUID}/chapters`);
   assert.equal(chapters.response.status, 200);
-  assert.deepEqual(chapters.body, { vi: [], en: [] });
+  assert.deepEqual(chapters.body, { vi: [], en: [], notice: null });
   assert.ok(mdRequests.length > mdBefore);
 });
 

@@ -59,6 +59,8 @@ pub struct MangaSummaryDto {
     pub source: String,
     #[serde(default = "default_source_label")]
     pub source_label: String,
+    #[serde(default)]
+    pub source_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -123,6 +125,8 @@ pub struct PagesResponse {
 pub struct ChaptersResponse {
     pub vi: Vec<ChapterDto>,
     pub en: Vec<ChapterDto>,
+    #[serde(default)]
+    pub notice: Option<String>,
 }
 
 /// Bounded, continuation-based feed used only by chapter notifications. Unlike

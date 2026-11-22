@@ -14,8 +14,17 @@ import CommentSection from "@/components/comments/CommentSection";
 
 type Props = { params: Promise<{ id: string }> };
 
+// Next keeps the encoded colon in route params; contentPath encodes once more.
+function routeId(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { id } = await params;
+  const id = routeId((await params).id);
   try {
     const manga = await (await serverContent()).manga(id);
     return { title: manga.title, description: manga.description.slice(0, 160) };
@@ -25,7 +34,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 async function MangaContent({ params }: Props) {
-  const { id } = await params;
+  const id = routeId((await params).id);
   let manga: MangaSummaryDto;
   let chapters: ChaptersResponse;
   try {
@@ -81,6 +90,14 @@ async function MangaContent({ params }: Props) {
       </section>
       <section className="surface chapters-panel">
         <SectionTitle>Danh sách chapter</SectionTitle>
+        {chapters.notice ? (
+          <div className="source-notice" role="status">
+            <span>{chapters.notice}</span>
+            {manga.source_url ? (
+              <a href={manga.source_url} target="_blank" rel="noopener noreferrer">Mở trên Comick ↗</a>
+            ) : null}
+          </div>
+        ) : null}
         <ChapterList mangaId={manga.id} chapters={chapters} />
       </section>
       <CommentSection targetType="manga" targetId={manga.id} />
