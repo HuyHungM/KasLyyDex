@@ -225,8 +225,10 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .rank-title small { display: block; color: var(--muted); font-size: .6875rem; }
 .rank-title small:empty { display: none; }
 .rank-rating { font-size: .8125rem; font-weight: 700; }
-.rank-loading { padding-inline: 14px; }
-.rank-loading .skel-line { height: 56px; margin: 8px 0; }
+.rank-row.rank-top { border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.rank-row.rank-1 { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); box-shadow: inset 0 0 0 2px var(--accent); }
+.rank-row.rank-2 { background: color-mix(in srgb, var(--muted) 12%, var(--surface)); box-shadow: inset 0 0 0 2px var(--muted); }
+.rank-row.rank-3 { background: color-mix(in srgb, var(--line) 45%, var(--surface)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--muted) 55%, var(--surface)); }
 .search-filters { margin-bottom: 22px; }
 .search-filters summary { min-height: 48px; padding: 11px 16px; font-weight: 600; }
 .search-filters form { padding: 14px 16px; border-top: 1px solid var(--line); }

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
 import { SourceBadge } from "@/components/source-badge";
+import { RankListSkeleton } from "@/components/rank-skeleton";
 
 type Props = { searchParams: Promise<{ kind?: string }> };
 
@@ -30,7 +31,7 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
         const cover = coverImageUrl(manga, 256);
         return (
           <li key={manga.id}>
-            <Link href={`/manga/${manga.id}`} className="rank-row">
+            <Link href={`/manga/${manga.id}`} className={`rank-row${index < 3 ? ` rank-top rank-${index + 1}` : ""}`}>
               <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
               <span className="rank-cover">
                 {cover && (
@@ -68,7 +69,7 @@ async function RankingContent({ searchParams }: Props) {
             <Link key={value} href={`/bxh?kind=${value}`} aria-current={kind === value ? "page" : undefined}>{label}</Link>
           ))}
         </nav>
-        <Suspense key={kind} fallback={<div className="rank-loading" role="status" aria-label="Đang tải xếp hạng" />}>
+        <Suspense key={kind} fallback={<RankListSkeleton />}>
           <RankList kind={kind} />
         </Suspense>
       </section>
@@ -78,7 +79,7 @@ async function RankingContent({ searchParams }: Props) {
 
 export default function RankingPage(props: Props) {
   return (
-    <Suspense fallback={<main className="wrap catalog-page" role="status" aria-label="Đang tải bảng xếp hạng" />}>
+    <Suspense fallback={<RankListSkeleton />}>
       <RankingContent {...props} />
     </Suspense>
   );
