@@ -222,7 +222,11 @@ test("desktop and 375px shells render decodable covers, no horizontal overflow, 
     const { context, page } = await openPage(viewport);
     await page.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
     await page.locator(".feature h1").waitFor();
-    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga (MangaDex)");
+    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga");
+    const badge = page.locator(".feature-art .source-badge");
+    assert.equal(await badge.textContent(), "MangaDex");
+    assert.equal(await badge.getAttribute("aria-label"), "Nguồn: MangaDex");
+    assert.ok(await badge.isVisible());
     assert.ok(await page.locator(".popular-rail .card").count() >= 1);
     const cover = page.locator(".feature-poster");
     assert.ok(cover && await cover.getAttribute("src").then((src) => src.startsWith("/api/content/img?u=")));

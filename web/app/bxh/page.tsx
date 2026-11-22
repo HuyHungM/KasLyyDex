@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
-import { titleWithSource } from "@/lib/format";
+import { SourceBadge } from "@/components/source-badge";
 
 type Props = { searchParams: Promise<{ kind?: string }> };
 
@@ -37,9 +37,10 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={cover} alt="" loading="lazy" />
                 )}
+                <SourceBadge source={manga.source} />
               </span>
               <span className="rank-title">
-                {titleWithSource(manga.title, manga.source)}
+                {manga.title}
                 <small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small>
               </span>
               {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}

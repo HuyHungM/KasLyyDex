@@ -49,7 +49,7 @@ function rowTitles(html) {
 const sourceManga = {
   id: "m1",
   title: "Slime",
-  cover_file: null,
+  cover_file: "https://meo.comick.pictures/comic-1-cover.jpg",
   status: "ongoing",
   year: 2026,
   description: "desc",
@@ -159,25 +159,31 @@ test("reader toolbar back title marks a fallback chapter", () => {
   assert.equal(backLink, "← Slime (Comick)");
 });
 
-test("manga card title shows the source label", () => {
+const badge = /<span class="source-badge" role="img" aria-label="Nguồn: Comick">Comick<\/span>/;
+
+test("manga card cover shows the source badge and keeps its link", () => {
   const html = render("components/manga-card.tsx", { manga: sourceManga, rank: 1 }, "MangaCard");
-  assert.match(html, /<h3 class="card-title">Slime \(Comick\)<\/h3>/);
+  assert.match(html, /<h3 class="card-title">Slime<\/h3>/);
+  assert.match(html, badge);
   assert.match(html, /href="\/manga\/m1"/);
 });
 
-test("home feature, feed and rank titles show the source label", () => {
+test("home feature, feed and rank covers show the source badge", () => {
   const html = renderPage("app/page.tsx", {});
-  assert.match(html, /<h1 id="featured-title">Slime \(Comick\)<\/h1>/);
-  assert.match(html, /<h3><a href="\/manga\/m1">Slime \(Comick\)<\/a><\/h3>/);
-  assert.match(html, /<span class="rank-title">Slime \(Comick\)<small>12 theo dõi<\/small><\/span>/);
+  assert.match(html, /<h1 id="featured-title">Slime<\/h1>/);
+  assert.match(html, /<h3><a href="\/manga\/m1">Slime<\/a><\/h3>/);
+  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
+  assert.equal(html.split(badge).length - 1, 4);
 });
 
-test("manga detail title shows the source label", () => {
+test("manga detail cover shows the source badge", () => {
   const html = renderPage("app/manga/[id]/page.tsx", { params: {} });
-  assert.match(html, /<h1 class="manga-title">Slime \(Comick\)<\/h1>/);
+  assert.match(html, /<h1 class="manga-title">Slime<\/h1>/);
+  assert.match(html, badge);
 });
 
-test("ranking page titles show the source label", () => {
+test("ranking page covers show the source badge", () => {
   const html = renderPage("app/bxh/page.tsx", { searchParams: {} });
-  assert.match(html, /<span class="rank-title">Slime \(Comick\)<small>12 theo dõi<\/small><\/span>/);
+  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
+  assert.match(html, badge);
 });

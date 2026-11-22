@@ -5,10 +5,11 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type ChaptersResponse, type MangaSummaryDto } from "@/lib/contracts";
-import { chapterLabel, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
+import { chapterLabel, filterUrl, statusText, tagLabel } from "@/lib/format";
 import ChapterList from "@/components/chapter-list";
 import MangaActions from "@/components/manga-actions";
 import { SectionTitle } from "@/components/manga-card";
+import { SourceBadge } from "@/components/source-badge";
 import CommentSection from "@/components/comments/CommentSection";
 
 type Props = { params: Promise<{ id: string }> };
@@ -44,9 +45,10 @@ async function MangaContent({ params }: Props) {
       <section className="surface manga-head">
         <div className="manga-cover">
           {cover && <img src={cover} alt="" fetchPriority="high" />}
+          <SourceBadge source={manga.source} />
         </div>
         <div className="manga-info">
-          <h1 className="manga-title">{titleWithSource(manga.title, manga.source)}</h1>
+          <h1 className="manga-title">{manga.title}</h1>
           <p className="meta-row">
             {manga.author ? <>Tác giả: <b>{manga.author}</b></> : null}
             {manga.status ? <span className="stat-chip">{statusText(manga.status)}</span> : null}

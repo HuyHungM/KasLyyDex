@@ -255,10 +255,22 @@ export function contentImageUrl(upstream: string): string {
 }
 
 export function coverImageUrl(
-  manga: Pick<MangaSummaryDto, "id" | "cover_file">,
+  manga: Pick<MangaSummaryDto, "id" | "cover_file" | "source">,
   size = 256,
 ): string | null {
   if (!manga.cover_file) return null;
+  if (manga.source === "comick") {
+    // Comick normalization supplies a full CDN URL; only the proxy allowlist's
+    // HTTPS host may pass through.
+    let upstream: URL;
+    try {
+      upstream = new URL(manga.cover_file);
+    } catch {
+      return null;
+    }
+    if (upstream.protocol !== "https:" || upstream.hostname !== "meo.comick.pictures") return null;
+    return contentImageUrl(upstream.href);
+  }
   return contentImageUrl(
     `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover_file}.${size}.jpg`,
   );

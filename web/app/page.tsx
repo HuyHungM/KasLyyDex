@@ -2,8 +2,9 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
-import { chapterName, relDate, statusText, titleWithSource } from "@/lib/format";
+import { chapterName, relDate, statusText } from "@/lib/format";
 import { CardSkeleton, MangaCard } from "@/components/manga-card";
+import { SourceBadge } from "@/components/source-badge";
 import ContinueReading from "@/components/continue-reading";
 
 async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
@@ -83,16 +84,17 @@ async function Featured() {
   return (
     <section className="feature" aria-labelledby="featured-title">
       {cover && (
-        <div className="feature-art" aria-hidden="true">
+        <div className="feature-art">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className="feature-bleed" src={cover} alt="" />
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className="feature-poster" src={cover} alt="" fetchPriority="high" />
+          <SourceBadge source={manga.source} />
         </div>
       )}
       <div className="feature-copy">
         <p className="feature-label"><span aria-hidden="true" />Truyện nổi bật</p>
-        <h1 id="featured-title">{titleWithSource(manga.title, manga.source)}</h1>
+        <h1 id="featured-title">{manga.title}</h1>
         <p className="feature-meta">
           {manga.rating && manga.rating > 0 ? <strong>★ {manga.rating.toFixed(1)}</strong> : null}
           {manga.year ? <span>{manga.year}</span> : null}
@@ -129,9 +131,10 @@ async function LatestFeed() {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={cover} alt="" loading="lazy" decoding="async" />
               )}
+              <SourceBadge source={item.source} />
             </Link>
             <div className="feed-details">
-              <h3><Link href={`/manga/${item.id}`}>{titleWithSource(item.title, item.source)}</Link></h3>
+              <h3><Link href={`/manga/${item.id}`}>{item.title}</Link></h3>
               <div className="chapter-pills">
                 {item.chapters.map((chapter, index) => (
                   <Link
@@ -168,8 +171,9 @@ async function RankPanel() {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={coverImageUrl(manga, 256) ?? ""} alt="" loading="lazy" />
               )}
+              <SourceBadge source={manga.source} />
             </span>
-            <span className="rank-title">{titleWithSource(manga.title, manga.source)}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
+            <span className="rank-title">{manga.title}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
             {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
           </Link>
         </li>
