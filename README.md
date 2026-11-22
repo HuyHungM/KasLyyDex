@@ -83,8 +83,9 @@ cd ..
 cargo build -p server
 cd web
 npm run test:source       # 7 suite nguồn/fallback/UI/theme/dropdown/skeleton
-npm run test:aggregate    # 12 suite: 7 ở trên + search-contracts, search-source,
-                          # advanced-search, source-badge, ranking-skeleton
+npm run test:aggregate    # 28 aggregate test files (7 source + 5 new among them):
+                          # search-contracts, search-source, advanced-search,
+                          # source-badge, ranking-skeleton
 npm run test:browser      # cần Edge local hoặc Playwright Chromium
 ```
 
@@ -131,10 +132,10 @@ secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
 `reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
 `cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
 `build:wasm` → `build:web` → typecheck/lint; cài Playwright Chromium trước rồi
-aggregate tests (12 suite: nguồn/fallback/UI/theme/dropdown/skeleton +
-search-contracts/search-source/advanced-search/source-badge/ranking-skeleton —
-3 suite sau dùng browser nên cần Chromium; server được build trước qua pretest);
-browser suites; tracked-file
+aggregate tests — 28 aggregate test files (7 source + 5 new among them), gồm
+nguồn/fallback/UI/theme/dropdown/skeleton + search-contracts/search-source/
+advanced-search/source-badge/ranking-skeleton; 2 suite mới dùng browser nên cần
+Chromium; server được build trước qua pretest; rồi browser suites; tracked-file
 whitespace/conflict-marker scan với baseline — không vacuous trên clean
 checkout, nhưng 783 finding đã commit trong
 `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua

@@ -109,9 +109,10 @@ files; the two Rust files touched by Task 4 were formatted with `rustfmt --editi
 ## Gate notes (Task 7)
 
 - `test:aggregate` now includes `search-contracts`, `search-source`,
-  `advanced-search`, `source-badge` and `ranking-skeleton` (12 suites). The
-  three browser-based suites need Playwright Chromium, so CI installs it before
-  the aggregate step; the Axum prebuild ordering is untouched.
+  `advanced-search`, `source-badge` and `ranking-skeleton`: 28 aggregate test
+  files (7 source + 5 new among them). Two of the added suites are browser
+  based and need Playwright Chromium, so CI installs it before the aggregate
+  step; the Axum prebuild ordering is untouched.
 - The full local gate passed: aggregate 203/203, browser 23/23, workspace Rust
   tests 90/0, `cargo build -p server`, clippy `-D warnings`, scoped
   `cargo fmt --check` including `core`, typecheck/lint, whitespace/secrets and

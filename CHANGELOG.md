@@ -20,13 +20,13 @@
 - Add a shape-matched `/bxh` loading shell (12 rows) and `rank-top rank-1/2/3`
   frames for the top three rows, stable across tab changes and mobile widths.
 - Register `search-contracts`, `search-source`, `advanced-search`,
-  `source-badge` and `ranking-skeleton` in `test:aggregate` (12 suites total).
-  CI installs Playwright Chromium before aggregate because three of the added
-  suites are browser tests; the Axum prebuild hooks are unchanged.
+  `source-badge` and `ranking-skeleton` in `test:aggregate`: 28 aggregate test
+  files (7 source + 5 new among them). CI installs Playwright Chromium before
+  aggregate because two of the added suites are browser tests; the Axum prebuild
+  hooks are unchanged.
 - Run the full deterministic local gate: aggregate 203/203, browser 23/23,
   Rust workspace tests 90 passed/0 failed, build/clippy/scoped fmt/typecheck/
-  lint/whitespace/secrets/diff clean. Exact commands and counts are in
-  `docs/superpowers/sdd/kaslyydex-advanced-search-ux/task-7-report.md`.
+  lint/whitespace/secrets/diff clean.
 
 No deployment, push, merge, provisioning or live provider verification was
 performed. Live MangaDex/Comick catalog and ToS checks remain manual gates.

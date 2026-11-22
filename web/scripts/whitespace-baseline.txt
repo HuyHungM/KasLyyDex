@@ -1,7 +1,8 @@
 # Baseline for committed pre-existing whitespace findings.
-# All entries are in docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff (prior-plan artifacts).
+# Entries come from committed SDD diff artifacts in prior kaslyydex-phase-1-2/*.diff
+# and current kaslyydex-multi-source-ux/*.diff.
 # Measured at task-10 BASE 1c4524b38c70d3351d7989628ff5b6f807cff0da; do not add new entries.
-# 783 entries
+# 1130 entries (prior + current baselines)
 docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1006:trailing-whitespace
 docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1029:trailing-whitespace
 docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1040:trailing-whitespace
