@@ -254,8 +254,11 @@ test("search filters, clickable tags, genres, rank and library work from Axum da
   await page.waitForURL(/\/search\?tags=/);
   await page.locator(".manga-grid .card").first().waitFor();
 
-  await page.goto(`${baseUrl}/the-loai`, { waitUntil: "networkidle" });
-  assert.ok(await page.locator(".genre-group .chapter-pill").count() >= 1);
+  await page.goto(`${baseUrl}/search`, { waitUntil: "networkidle" });
+  await page.locator(".search-filters summary").click();
+  assert.ok(await page.locator(".search-filters .genre-group .chapter-pill").count() >= 1);
+  const genres = await page.goto(`${baseUrl}/the-loai`, { waitUntil: "domcontentloaded" });
+  assert.equal(genres.status(), 404, "the-loai route must be gone");
   await page.goto(`${baseUrl}/bxh?kind=rating`, { waitUntil: "networkidle" });
   assert.ok(await page.locator(".rank-list li").count() >= 1);
   await page.goto(`${baseUrl}/tu-truyen`, { waitUntil: "networkidle" });

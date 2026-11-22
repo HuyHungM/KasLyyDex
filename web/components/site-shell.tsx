@@ -7,7 +7,6 @@ import SiteHeader from "@/components/site-header";
 const LINKS = [
   { href: "/", label: "Trang chủ", icon: "home", exact: true },
   { href: "/search", label: "Khám phá", icon: "search", mobileHidden: true },
-  { href: "/the-loai", label: "Thể loại", icon: "genres" },
   { href: "/bxh", label: "Xếp hạng", icon: "rank" },
   { href: "/tu-truyen", label: "Tủ truyện", icon: "bookmark" },
   { href: "/thong-bao", label: "Thông báo", icon: "bell" },
@@ -17,7 +16,6 @@ const LINKS = [
 export function NavIcon({ name }: { name: string }) {
   const paths: Record<string, string> = {
     home: "M3 10 12 3l9 7v10h-6v-6H9v6H3z",
-    genres: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
     rank: "M7 4h10v5a5 5 0 0 1-10 0z M7 6H4a3 3 0 0 0 3 5 M17 6h3a3 3 0 0 1-3 5 M12 14v6m-4 0h8",
     bookmark: "M6 4h12v16l-6-4-6 4z",
     search: "M18 10a8 8 0 1 0-16 0 8 8 0 0 0 16 0z m-2 6 5 5",

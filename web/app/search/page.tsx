@@ -1,9 +1,11 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
-import type { TagDto } from "@/lib/contracts";
-import { filterUrl, statusText, tagLabel } from "@/lib/format";
+import { searchQuery } from "@/lib/contracts";
+import { statusText } from "@/lib/format";
 import { GridSkeleton, MangaGrid } from "@/components/manga-card";
+import GenreGroups from "@/components/search/GenreGroups";
+import GenreGroupsSkeleton from "@/components/search/GenreGroupsSkeleton";
 import Select from "@/components/ui/Select";
 
 type Query = {
@@ -12,6 +14,9 @@ type Query = {
   status?: string;
   sort?: string;
   page?: string;
+  source?: string;
+  lang?: string;
+  year?: string;
 };
 
 type Props = { searchParams: Promise<Query> };
@@ -25,29 +30,43 @@ const SORTS = [
 ] as const;
 
 const STATUSES = ["ongoing", "completed", "hiatus", "cancelled"] as const;
+const SOURCES = [["all", "Tất cả"], ["mangadex", "MangaDex"], ["comick", "Comick"]] as const;
+const LANGS = [["all", "Tất cả"], ["vi", "Tiếng Việt"], ["en", "Tiếng Anh"]] as const;
+const MIN_YEAR = 1900;
+const MAX_YEAR = new Date().getUTCFullYear() + 1;
+const YEARS = Array.from({ length: MAX_YEAR - MIN_YEAR + 1 }, (_, index) => String(MAX_YEAR - index));
 
 function parseQuery(query: Query) {
   const raw = Array.isArray(query.tags) ? query.tags : query.tags ? [query.tags] : [];
   const tags = raw.flatMap((value) => value.split(",")).map((tag) => tag.trim()).filter(Boolean).slice(0, 8);
   const page = Math.min(416, Math.max(1, Number.parseInt(query.page ?? "1", 10) || 1));
+  const rawYear = typeof query.year === "string" ? query.year.trim() : "";
+  const year = /^\d{4}$/.test(rawYear) && Number(rawYear) >= MIN_YEAR && Number(rawYear) <= MAX_YEAR
+    ? Number(rawYear)
+    : undefined;
   return {
     q: (query.q ?? "").trim(),
     tags,
     status: STATUSES.includes(query.status as (typeof STATUSES)[number]) ? query.status! : "",
     sort: SORTS.some(([value]) => value === query.sort) ? query.sort! : "follows",
     page,
+    source: SOURCES.some(([value]) => value === query.source) ? query.source! : "all",
+    lang: LANGS.some(([value]) => value === query.lang) ? query.lang! : "all",
+    year,
   };
 }
 
+function searchHref(current: ReturnType<typeof parseQuery>, page = current.page) {
+  return `/search${searchQuery({ ...current, page })}`;
+}
+
 async function Filters({ current }: { current: ReturnType<typeof parseQuery> }) {
-  let tags: TagDto[] = [];
-  try {
-    tags = (await (await serverContent()).tags()).slice();
-  } catch {
-    tags = [];
-  }
-  tags.sort((a, b) => tagLabel(a.name).localeCompare(tagLabel(b.name)));
-  const count = current.tags.length + Number(Boolean(current.status)) + Number(current.sort !== "follows");
+  const count = current.tags.length
+    + Number(Boolean(current.status))
+    + Number(current.sort !== "follows")
+    + Number(current.source !== "all")
+    + Number(current.lang !== "all")
+    + Number(current.year !== undefined);
 
   return (
     <details className="surface search-filters">
@@ -55,6 +74,30 @@ async function Filters({ current }: { current: ReturnType<typeof parseQuery> }) 
       <form action="/search" method="get">
         <input type="hidden" name="q" value={current.q} />
         <div className="filter-fields">
+          <label>Nguồn
+            <Select
+              name="source"
+              ariaLabel="Nguồn"
+              defaultValue={current.source}
+              options={SOURCES.map(([value, label]) => ({ value, label }))}
+            />
+          </label>
+          <label>Ngôn ngữ
+            <Select
+              name="lang"
+              ariaLabel="Ngôn ngữ"
+              defaultValue={current.lang}
+              options={LANGS.map(([value, label]) => ({ value, label }))}
+            />
+          </label>
+          <label>Năm
+            <Select
+              name="year"
+              ariaLabel="Năm"
+              defaultValue={current.year === undefined ? "" : String(current.year)}
+              options={[{ value: "", label: "Tất cả" }, ...YEARS.map((value) => ({ value, label: value }))]}
+            />
+          </label>
           <label>Trạng thái
             <Select
               name="status"
@@ -77,18 +120,13 @@ async function Filters({ current }: { current: ReturnType<typeof parseQuery> }) 
         </div>
         <fieldset className="filter-tags">
           <legend>Thể loại ({current.tags.length}/8)</legend>
-          <div className="tag-options">
-            {tags.map((tag) => (
-              <label className="filter-tag" key={tag.id}>
-                <input type="checkbox" name="tags" value={tag.id} defaultChecked={current.tags.includes(tag.id)} />
-                {tagLabel(tag.name)}
-              </label>
-            ))}
-          </div>
+          <Suspense fallback={<GenreGroupsSkeleton />}>
+            <GenreGroups selected={current.tags} />
+          </Suspense>
         </fieldset>
         <div className="actions">
           <button type="submit" className="btn btn-primary">Áp dụng</button>
-          <Link href={filterUrl(current.q, [], "", "follows", 1)} className="btn">Xóa bộ lọc</Link>
+          <Link href={`/search${searchQuery({ q: current.q })}`} className="btn">Xóa bộ lọc</Link>
         </div>
       </form>
     </details>
@@ -122,16 +160,19 @@ async function Results({ searchParams }: Props) {
 
   return (
     <>
+      {results.partial ? (
+        <p className="result-info partial-warning" role="status">Lưu ý: kết quả có thể chưa đầy đủ do giới hạn từ nguồn dữ liệu.</p>
+      ) : null}
       <p className="result-info">{results.total > 0 ? label : "Không tìm thấy truyện nào. Thử tên khác hoặc bỏ bớt bộ lọc."}</p>
       <MangaGrid list={results.results} />
       {pages > 1 && (
         <nav className="pagination" aria-label="Trang kết quả">
           {current.page > 1 ? (
-            <Link href={filterUrl(current.q, current.tags, current.status, current.sort, current.page - 1)} className="btn">← Trước</Link>
+            <Link href={searchHref(current, current.page - 1)} className="btn">← Trước</Link>
           ) : null}
           <span className="page-info">Trang {current.page}/{pages}</span>
           {current.page < pages ? (
-            <Link href={filterUrl(current.q, current.tags, current.status, current.sort, current.page + 1)} className="btn">Sau →</Link>
+            <Link href={searchHref(current, current.page + 1)} className="btn">Sau →</Link>
           ) : null}
         </nav>
       )}

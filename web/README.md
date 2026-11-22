@@ -26,8 +26,8 @@ npm start -- -p 3100
 ## Tính năng
 
 - Trang chủ: featured, rail được theo dõi, chương mới, bảng xếp hạng, đọc tiếp/tủ truyện
-- `/search`: lọc URL `q`, `tags` (comma-separated), `status`, `sort`, `page`; checkbox thể loại từ Axum
-- `/the-loai`, `/bxh?kind=follows|rating|new`, `/tu-truyen`, `/manga/[id]` với tag có thể bấm
+- `/search`: lọc URL `q`, `tags` (comma-separated), `status`, `sort`, `page`, `source`, `lang`, `year`; nhóm thể loại trong bộ lọc nâng cao
+- `/bxh?kind=follows|rating|new`, `/tu-truyen`, `/manga/[id]` với tag có thể bấm
 - Reader: cuộn dọc/lật ngang, vuốt/phím, khôi phục trang theo đúng chapter, lazy image, prefetch chapter sau, tự cuộn + dừng, nền riêng, toàn màn hình, tiến độ %
 - Lưu localStorage `truyenviet:*`: tương thích camelCase Next cũ và snake_case Leptos; dữ liệu hỏng/không có storage không làm lỗi
 

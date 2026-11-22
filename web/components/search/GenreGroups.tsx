@@ -1,8 +1,6 @@
-import { Suspense } from "react";
-import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import type { TagDto } from "@/lib/contracts";
-import { filterUrl, tagLabel } from "@/lib/format";
+import { tagLabel } from "@/lib/format";
 
 const GROUPS = [
   ["genre", "Thể loại chính"],
@@ -11,14 +9,15 @@ const GROUPS = [
   ["content", "Nội dung"],
 ] as const;
 
-async function GenreGroups() {
+export default async function GenreGroups({ selected }: { selected: string[] }) {
   let tags: TagDto[] = [];
   try {
     tags = await (await serverContent()).tags();
   } catch {
-    return <div className="surface empty" role="alert">Chưa tải được thể loại. Vui lòng thử lại sau.</div>;
+    return <p className="empty" role="alert">Chưa tải được thể loại. Vui lòng thử lại sau.</p>;
   }
   tags.sort((a, b) => tagLabel(a.name).localeCompare(tagLabel(b.name)));
+
   return (
     <>
       {GROUPS.map(([group, title]) => {
@@ -29,27 +28,15 @@ async function GenreGroups() {
             <h2>{title}</h2>
             <div className="tag-options">
               {groupTags.map((tag) => (
-                <Link key={tag.id} href={filterUrl("", [tag.id], "", "follows", 1)} className="chapter-pill">
+                <label className="filter-tag chapter-pill" key={tag.id}>
+                  <input type="checkbox" name="tags" value={tag.id} defaultChecked={selected.includes(tag.id)} />
                   {tagLabel(tag.name)}
-                </Link>
+                </label>
               ))}
             </div>
           </section>
         );
       })}
     </>
-  );
-}
-
-export default function GenresPage() {
-  return (
-    <main className="wrap catalog-page">
-      <div className="page-intro">
-        <div><h1>Thể loại</h1><p>Chọn một chủ đề để tìm truyện hợp gu.</p></div>
-      </div>
-      <Suspense fallback={<div className="surface skel" role="status" aria-label="Đang tải thể loại" />}>
-        <GenreGroups />
-      </Suspense>
-    </main>
   );
 }
