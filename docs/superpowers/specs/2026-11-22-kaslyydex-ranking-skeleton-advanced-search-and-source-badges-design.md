@@ -6,13 +6,13 @@ Scope: web catalog UX and Axum search boundary. Extends the multi-source reading
 
 ## 1. Problem
 
-The ranking page and genre page still show weak loading states: `/bxh` has an empty outer Suspense fallback and a single-line inner skeleton, while `/the-loai` has one generic block. Navigation feels slow even when content is available. Search currently supports basic query/tags/status/sort/page only and cannot search Comick catalog. Source attribution is currently appended after manga titles, which clutters titles and does not communicate source at a glance.
+The ranking page and the genre tags inside search still show weak loading states: `/bxh` has an empty outer Suspense fallback and a single-line inner skeleton, while genre groups have one generic block. Navigation feels slow even when content is available. Search currently supports basic query/tags/status/sort/page only and cannot search Comick catalog. Source attribution is currently appended after manga titles, which clutters titles and does not communicate source at a glance.
 
 ## 2. Goals
 
 1. Show a shape-matched skeleton immediately when entering or changing `/bxh`.
 2. Give ranks 1–3 a distinct visual frame in both real and skeleton states.
-3. Show a shape-matched skeleton immediately when entering `/the-loai`.
+3. Show a shape-matched skeleton for genre groups immediately inside Advanced Search.
 4. Add advanced search filters: source, language, year, status, sort, tags, page.
 5. Search MangaDex and Comick catalogs through Axum; `source=all` returns both.
 6. Replace title suffix labels with a source badge rendered on the cover image.
@@ -66,16 +66,18 @@ The ranking page and genre page still show weak loading states: `/bxh` has an em
 - Row height remains unchanged on mobile; only border/badge/background emphasis changes.
 - Hover/focus states retain existing motion tokens and reduced-motion guard.
 
-## 6. Genre page design
+## 6. Genre groups merged into Advanced Search
 
-- Add `web/app/the-loai/loading.tsx`.
-- Add a `GenreGroupsSkeleton` component rendering four group sections:
+- Remove the standalone `/the-loai` route and its navigation entry entirely.
+- The page keeps the name and route `Khám phá` (`/search`).
+- Genre/tag groups move into the advanced search panel as a section titled "Thể loại":
   - "Thể loại chính",
   - "Chủ đề",
   - "Định dạng",
   - "Nội dung".
-- Each group shows a heading bar and 8–10 pill skeletons wrapping like real tags.
-- Suspense fallback in `web/app/the-loai/page.tsx` uses the same component.
+- Add a `GenreGroupsSkeleton` rendering four group sections with a heading bar and 8–10 pill skeletons wrapping like real tags.
+- The same skeleton is used while the advanced panel loads tags and while filters reset.
+- Selecting a genre pill updates the visible `tags` filter and submits through the existing search form.
 - No overflow at 375px; pill skeleton widths are bounded.
 
 ## 7. Advanced search and Axum aggregation
@@ -128,12 +130,13 @@ Web URL uses the same names so search state is bookmarkable.
 
 ## 8. Web advanced search UI
 
-- Extend the existing `<details>` filter panel on `/search`.
+- Extend the existing `<details>` filter panel on `/search` and rename nothing: the page remains "Khám phá".
 - Add controls using the shared `Select` component:
   - Nguồn: `Tất cả`, `MangaDex`, `Comick`.
   - Ngôn ngữ: `Tất cả`, `Tiếng Việt`, `English`.
   - Năm: empty plus recent years descending.
-- Keep existing status, sort, tags and pagination behavior.
+- Include the merged genre/tag groups from Section 6 inside the same advanced panel.
+- Keep existing status, sort, tags and pagination behavior; genre pills write into the same `tags` filter.
 - Form `GET /search` submits all values; hidden `q` remains.
 - `parseQuery` validates source/lang/year and clamps page.
 - Show a short warning when `SearchResponse.partial === true` without claiming full results.
@@ -155,6 +158,7 @@ Web URL uses the same names so search state is bookmarkable.
 ## 10. Compatibility
 
 - Existing search URLs without new params default to `source=all`, `lang=all`, no year, preserving current behavior.
+- The `/the-loai` route and navigation item are removed; no redirect is kept. Existing bookmarks to that path will 404 by explicit owner decision.
 - Existing MangaDex results keep UUID ids and gain source metadata.
 - Comick catalog results use provider-prefixed ids and never collide with MangaDex ids in progress/history.
 - Reader fallback rules remain unchanged: fallback is still chapter-level and never replaces readable MangaDex chapters.
@@ -173,11 +177,12 @@ Rust/Axum:
 Web:
 - URL serialization/deserialization for new filters;
 - advanced search controls submit expected values;
+- advanced panel contains merged genre groups and no separate `/the-loai` route remains;
 - partial warning renders;
 - source badge appears on all cover surfaces and title has no suffix;
 - ranking skeleton appears on entry and tab change;
 - top 1/2/3 frame classes are present in real and skeleton states;
-- genre skeleton renders four groups;
+- genre skeleton renders four groups inside the advanced search panel;
 - 375px no horizontal overflow in all three pages;
 - reduced-motion guard remains intact.
 
