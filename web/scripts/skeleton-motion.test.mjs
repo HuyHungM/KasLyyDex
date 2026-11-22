@@ -151,7 +151,7 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
   for (const key of Object.keys(loadedBoxes)) {
     assert.ok(Math.abs(loadedBoxes[key].width - skeletonBoxes[key].width) <= 2, `${key} skeleton width shifted`);
   }
-  assert.match(await page.locator(".card-title:visible").first().textContent(), /MangaDex/, "source label must stay visible");
+  assert.match(await page.locator(".source-badge:visible").first().textContent(), /MangaDex/, "source badge label must stay visible");
 
   contentDelay = 1200;
   await page.goto(`${app.baseUrl}/search?q=Fixture`, { waitUntil: "commit" });
@@ -173,7 +173,7 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
   contentDelay = 0;
   await page.locator(".chapter-row:visible").first().waitFor();
   await assertNoOverflow(page, "375px manga loaded");
-  assert.match(await page.locator(".manga-title:visible").textContent(), /MangaDex/, "source label must stay visible");
+  assert.match(await page.locator(".manga-cover .source-badge:visible").textContent(), /MangaDex/, "source badge label must stay visible");
   await context.close();
 });
 
