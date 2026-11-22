@@ -34,6 +34,7 @@ const MANGA = {
 let fixture;
 let app;
 let browser;
+let tagsDelay = 0;
 
 function json(res, body) {
   res.writeHead(200, { "content-type": "application/json" });
@@ -42,9 +43,12 @@ function json(res, body) {
 
 before(async () => {
   assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
-  fixture = await startHttpServer((req, res) => {
+  fixture = await startHttpServer(async (req, res) => {
     const { pathname, searchParams } = new URL(req.url ?? "/", "http://content.local");
-    if (pathname === "/api/content/tags") return json(res, TAGS);
+    if (pathname === "/api/content/tags") {
+      if (tagsDelay) await new Promise((resolve) => setTimeout(resolve, tagsDelay));
+      return json(res, TAGS);
+    }
     if (pathname === "/api/content/search") {
       return json(res, { results: [MANGA], total: 1, partial: searchParams.get("q") === "partial" });
     }
@@ -151,4 +155,29 @@ test("advanced search has no horizontal overflow at 375px", async () => {
     `375px advanced search overflowed horizontally: ${JSON.stringify(sizes)}`,
   );
   await context.close();
+});
+
+test("genre fallback reserves four groups with at least eight pills each on first render", async () => {
+  tagsDelay = 2_000;
+  const { context, page } = await openPage();
+  try {
+    await page.goto(`${app.baseUrl}/search`, { waitUntil: "commit" });
+    const groups = page.locator(".search-filters .genre-group.skel");
+    await groups.first().waitFor({ state: "attached" });
+    assert.equal(await groups.count(), 4, "genre fallback needs four groups");
+    const pillCounts = await groups.evaluateAll((sections) => sections.map(
+      (section) => section.querySelectorAll(".skel-pill").length,
+    ));
+    assert.ok(
+      pillCounts.every((count) => count >= 8),
+      `each genre fallback group needs >=8 pills: ${JSON.stringify(pillCounts)}`,
+    );
+    assert.ok(
+      await page.locator('.search-filters [role="status"][aria-label="Đang tải thể loại"]').count() >= 1,
+      "genre fallback needs an accessible status",
+    );
+  } finally {
+    tagsDelay = 0;
+    await context.close();
+  }
 });

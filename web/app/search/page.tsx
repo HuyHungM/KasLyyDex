@@ -188,9 +188,12 @@ async function SearchContent({ searchParams }: Props) {
         <div><h1>Khám phá truyện</h1><p>Lọc theo thể loại, trạng thái hoặc cách sắp xếp.</p></div>
       </div>
       <Suspense fallback={
-        <div className="surface search-filters skel" role="status" aria-label="Đang tải bộ lọc">
+        <div className="surface search-filters" role="status" aria-label="Đang tải bộ lọc">
           <div className="skel-line w60" aria-hidden="true" />
-          <div className="skel-pill" aria-hidden="true" />
+          <fieldset className="filter-tags">
+            <legend>Thể loại</legend>
+            <GenreGroupsSkeleton />
+          </fieldset>
         </div>
       }>
         <Filters current={current} />

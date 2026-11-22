@@ -5,8 +5,7 @@ export default function GenreGroupsSkeleton() {
         <section className="surface genre-group skel" key={index} aria-hidden="true">
           <div className="skel-line w30" />
           <div className="tag-options">
-            <div className="skel-pill" />
-            <div className="skel-pill" />
+            {Array.from({ length: 9 }, (_, pill) => <div className="skel-pill" key={pill} />)}
           </div>
         </section>
       ))}
