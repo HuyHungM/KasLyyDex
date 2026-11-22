@@ -108,7 +108,11 @@ export type LatestMangaDto = MangaSummaryDto & {
 
 export type TagDto = { id: string; name: string; group: string };
 
-export type SearchResponse = { results: MangaSummaryDto[]; total: number };
+export type SearchResponse = {
+  results: MangaSummaryDto[];
+  total: number;
+  partial?: boolean;
+};
 
 export type ChaptersResponse = { vi: ChapterDto[]; en: ChapterDto[] };
 
@@ -276,6 +280,9 @@ export type SearchParams = {
   status?: string;
   sort?: string;
   page?: number;
+  source?: string;
+  lang?: string;
+  year?: number;
 };
 
 export function searchQuery(params: SearchParams): string {
@@ -286,6 +293,9 @@ export function searchQuery(params: SearchParams): string {
   if (params.status) query.set("status", params.status);
   if (params.sort && params.sort !== "follows") query.set("sort", params.sort);
   if (params.page && params.page > 1) query.set("page", String(params.page));
+  if (params.source && params.source !== "all") query.set("source", params.source);
+  if (params.lang && params.lang !== "all") query.set("lang", params.lang);
+  if (params.year !== undefined) query.set("year", String(params.year));
   const encoded = query.toString();
   return encoded ? `?${encoded}` : "";
 }

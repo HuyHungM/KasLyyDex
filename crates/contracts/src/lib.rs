@@ -1,6 +1,7 @@
 use domain::{ChapterId, MangaId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use domain::{
     Chapter, CultivationLevel, CultivationRealm, Manga, ReaderBackground, ReaderMode,
@@ -140,6 +141,108 @@ pub struct ChapterFeedPage {
 pub struct SearchResponse {
     pub results: Vec<MangaSummaryDto>,
     pub total: u64,
+    #[serde(default)]
+    pub partial: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    pub page: u32,
+    pub tags: Vec<String>,
+    pub status: Option<String>,
+    pub sort: String,
+    pub source: String,
+    pub lang: String,
+    pub year: Option<i32>,
+}
+
+// shortcut: mirrors manga_core's filter allowlists to keep contracts dependency acyclic;
+// consolidate if those helpers move out of core.
+fn sort_allowed(sort: &str) -> bool {
+    matches!(sort, "follows" | "rating" | "new" | "year" | "title")
+}
+
+fn status_allowed(status: &str) -> bool {
+    matches!(status, "ongoing" | "completed" | "hiatus" | "cancelled")
+}
+
+fn is_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+fn current_year() -> i32 {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+    (1970 + secs / 31_556_952) as i32
+}
+
+/// Validates public `/api/content/search` query parameters once for every caller.
+pub fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, ApiError> {
+    let value = |key| q.get(key).map(|s| s.trim()).filter(|s| !s.is_empty());
+    let invalid = |name| ApiError::new("VALIDATION_ERROR", format!("{name} không hợp lệ."));
+    let page = match value("page") {
+        Some(raw) => raw
+            .parse::<u32>()
+            .ok()
+            .filter(|p| (1..=416).contains(p))
+            .ok_or_else(|| invalid("Số trang"))?,
+        None => 1,
+    };
+    let query = value("q").unwrap_or("");
+    if query.chars().count() > 200 {
+        return Err(invalid("Tên truyện"));
+    }
+    let sort = value("sort").unwrap_or("follows");
+    if !sort_allowed(sort) {
+        return Err(invalid("Cách sắp xếp"));
+    }
+    let status = value("status");
+    if status.is_some_and(|s| !status_allowed(s)) {
+        return Err(invalid("Trạng thái"));
+    }
+    let source = value("source").unwrap_or("all");
+    if !matches!(source, "all" | "mangadex" | "comick") {
+        return Err(invalid("Nguồn"));
+    }
+    let lang = value("lang").unwrap_or("all");
+    if !matches!(lang, "all" | "vi" | "en") {
+        return Err(invalid("Ngôn ngữ"));
+    }
+    let year = match value("year") {
+        Some(raw) => Some(
+            raw.parse::<i32>()
+                .ok()
+                .filter(|year| (1900..=current_year() + 1).contains(year))
+                .ok_or_else(|| invalid("Năm"))?,
+        ),
+        None => None,
+    };
+    let mut tags: Vec<_> = value("tags")
+        .into_iter()
+        .flat_map(|s| s.split(','))
+        .collect();
+    if tags.len() > 8 || !tags.iter().all(|id| is_uuid(id)) {
+        return Err(invalid("Thể loại"));
+    }
+    tags.sort_unstable();
+    tags.dedup();
+    Ok(SearchQuery {
+        q: query.to_owned(),
+        page,
+        tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
+        status: status.map(str::to_owned),
+        sort: sort.to_owned(),
+        source: source.to_owned(),
+        lang: lang.to_owned(),
+        year,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,6 +302,52 @@ impl From<ReaderSettingsDto> for ReaderSettings {
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    use std::collections::HashMap;
+
+    #[test]
+    fn search_query_defaults_source_all_lang_all() {
+        let query = parse_search_query(HashMap::new()).unwrap();
+        assert_eq!(query.source, "all");
+        assert_eq!(query.lang, "all");
+        assert_eq!(query.year, None);
+
+        let response: SearchResponse =
+            serde_json::from_value(json!({ "results": [], "total": 0 })).unwrap();
+        assert!(!response.partial.unwrap_or(false));
+    }
+
+    #[test]
+    fn search_query_accepts_valid_source_lang_year() {
+        for (source, lang) in [("all", "all"), ("mangadex", "en"), ("comick", "vi")] {
+            let query = parse_search_query(HashMap::from([
+                ("source".into(), source.into()),
+                ("lang".into(), lang.into()),
+                ("year".into(), "2024".into()),
+            ]))
+            .unwrap();
+            assert_eq!(query.source, source);
+            assert_eq!(query.lang, lang);
+            assert_eq!(query.year, Some(2024));
+        }
+    }
+
+    #[test]
+    fn search_query_rejects_invalid_source_lang_year() {
+        for (name, value) in [
+            ("source", "bad"),
+            ("lang", "fr"),
+            ("year", "0"),
+            ("year", "abc"),
+            ("year", "-2024"),
+            ("year", "1899"),
+            ("page", "0"),
+        ] {
+            assert!(
+                parse_search_query(HashMap::from([(name.into(), value.into())])).is_err(),
+                "{name}={value} should be rejected"
+            );
+        }
+    }
 
     #[test]
     fn manga_summary_contract_keeps_existing_fields_and_accepts_legacy_omissions() {

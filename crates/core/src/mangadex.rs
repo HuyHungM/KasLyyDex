@@ -178,6 +178,7 @@ impl Md {
                 Ok(Arc::new(SearchResponse {
                     results,
                     total: j["total"].as_u64().unwrap_or(0),
+                    partial: Some(false),
                 }))
             })
             .await

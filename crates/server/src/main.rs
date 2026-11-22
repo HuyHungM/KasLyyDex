@@ -4,7 +4,7 @@ use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use contracts::{ApiError, ApiErrorEnvelope};
+use contracts::{parse_search_query, ApiError, ApiErrorEnvelope};
 use manga_core::comick::is_comick_chapter_id;
 use manga_core::fallback::{
     chapter_metadata as fallback_metadata, chapter_pages, enrich_chapters, ContentState,
@@ -28,6 +28,10 @@ fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Err 
             error: ApiError::new(code, message),
         }),
     )
+}
+
+fn validation_error(error: ApiError) -> Err {
+    (StatusCode::BAD_REQUEST, Json(ApiErrorEnvelope { error }))
 }
 
 fn json_cached<T: Serialize>(v: T, secs: u32) -> Response {
@@ -219,7 +223,7 @@ async fn search(
     State(state): State<ContentState>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Err> {
-    let q = parse_search_query(q)?;
+    let q = parse_search_query(q).map_err(validation_error)?;
     Ok(json_cached(
         state
             .md
@@ -228,60 +232,6 @@ async fn search(
             .map_err(bad)?,
         60,
     ))
-}
-
-#[derive(Debug)]
-struct SearchQuery {
-    q: String,
-    page: u32,
-    tags: Vec<String>,
-    status: Option<String>,
-    sort: String,
-}
-
-fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
-    let value = |key| q.get(key).map(|s| s.trim()).filter(|s| !s.is_empty());
-    let invalid = |name| {
-        api_error(
-            StatusCode::BAD_REQUEST,
-            "VALIDATION_ERROR",
-            format!("{name} không hợp lệ."),
-        )
-    };
-    let page = match value("page") {
-        Some(raw) => raw
-            .parse::<u32>()
-            .ok()
-            .filter(|p| (1..=416).contains(p))
-            .ok_or_else(|| invalid("Số trang"))?,
-        None => 1,
-    };
-    let query = value("q").unwrap_or("");
-    if query.chars().count() > 200 {
-        return Err(invalid("Tên truyện"));
-    }
-    let sort = value("sort").unwrap_or("follows");
-    manga_core::mangadex::sort_param(sort).ok_or_else(|| invalid("Cách sắp xếp"))?;
-    let status = value("status");
-    if status.is_some_and(|s| manga_core::mangadex::status_param(s).is_none()) {
-        return Err(invalid("Trạng thái"));
-    }
-    let mut tags: Vec<_> = value("tags")
-        .into_iter()
-        .flat_map(|s| s.split(','))
-        .collect();
-    if tags.len() > 8 || !tags.iter().all(|id| is_uuid(id)) {
-        return Err(invalid("Thể loại"));
-    }
-    tags.sort_unstable();
-    tags.dedup();
-    Ok(SearchQuery {
-        q: query.to_owned(),
-        page,
-        tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
-        status: status.map(str::to_owned),
-        sort: sort.to_owned(),
-    })
 }
 
 #[derive(Debug)]
@@ -589,17 +539,20 @@ mod tests {
             ("page", "4294967295"),
         ] {
             assert_eq!(
-                parse_search_query(HashMap::from([(name.into(), value.into())]))
-                    .unwrap_err()
-                    .0,
+                validation_error(
+                    parse_search_query(HashMap::from([(name.into(), value.into())])).unwrap_err()
+                )
+                .0,
                 StatusCode::BAD_REQUEST
             );
         }
         let id = "391b0423-d847-456f-aff0-8b0cfc03066b";
         assert_eq!(
-            parse_search_query(HashMap::from([("tags".into(), [id; 9].join(","))]))
-                .unwrap_err()
-                .0,
+            validation_error(
+                parse_search_query(HashMap::from([("tags".into(), [id; 9].join(","))]))
+                    .unwrap_err(),
+            )
+            .0,
             StatusCode::BAD_REQUEST
         );
         let query = parse_search_query(HashMap::from([
