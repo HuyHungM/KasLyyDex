@@ -2,9 +2,10 @@
 // https://api.comick.dev/docs/json (rendered by https://api.comick.dev/docs/):
 // - GET /v1.0/search/?q=...&page=1&limit=15 — bare array; page <= 50 with
 //   limit <= 50, or page <= 5 with limit <= 300; defaults page=1, limit=15.
-//   Verified search filter names: q (keyword), page, limit, from/to (inclusive
-//   publication year), status (1 ongoing, 2 completed, 3 cancelled, 4 hiatus),
-//   genres (numeric ids), md_covers[].b2key, bayesian_rating,
+//   Verified search filter names: q (keyword, optional for browse), page,
+//   limit, from/to (inclusive publication year), status (1 ongoing,
+//   2 completed, 3 cancelled, 4 hiatus), genres (request: slugs from /genre/;
+//   response: numeric ids), md_covers[].b2key, bayesian_rating,
 //   user_follow_count, last_chapter. There is NO documented `lang` filter on
 //   this route: language is applied by the aggregator, not invented here.
 // - GET /v1.0/comic/{hid}/chapters?lang=...&page=1&limit=12 — returns
@@ -160,7 +161,7 @@ pub fn search_path(q: &str, lang: &str, year: Option<i32>, page: u32) -> Result<
     // `lang` is validated for the shared contract but is not an upstream field.
     request_opaque(lang).ok_or_else(upstream_err)?;
     let q = q.trim();
-    if q.is_empty() || q.chars().count() > 200 || !(1..=50).contains(&page) {
+    if q.chars().count() > 200 || !(1..=50).contains(&page) {
         return Err(upstream_err());
     }
     if year.is_some_and(|year| year < 1900) {
@@ -169,9 +170,14 @@ pub fn search_path(q: &str, lang: &str, year: Option<i32>, page: u32) -> Result<
     let years = year
         .map(|year| format!("&from={year}&to={year}"))
         .unwrap_or_default();
+    // q is optional upstream: omit it for browse/filter-only searches.
+    let keyword = if q.is_empty() {
+        String::new()
+    } else {
+        format!("q={}&", encode(q))
+    };
     Ok(format!(
-        "/v1.0/search/?q={}&page={page}&limit=15{years}",
-        encode(q)
+        "/v1.0/search/?{keyword}page={page}&limit=15{years}"
     ))
 }
 
@@ -201,7 +207,7 @@ pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
         _ => hit["status"].as_str().unwrap_or_default(),
     };
     Ok(MangaSummaryDto {
-        id: hid.into(),
+        id: format!("comick:{hid}").into(),
         title: title.to_owned(),
         cover_file,
         status: status.to_owned(),
@@ -405,6 +411,14 @@ mod tests {
     }
 
     #[test]
+    fn comick_search_path_allows_browse_without_query() {
+        let path = search_path("", "all", Some(2024), 2).expect("browse without q");
+        assert_eq!(path, "/v1.0/search/?page=2&limit=15&from=2024&to=2024");
+        let blank = search_path("   ", "all", None, 1).expect("blank q is omitted");
+        assert_eq!(blank, "/v1.0/search/?page=1&limit=15");
+    }
+
+    #[test]
     fn comick_search_hit_sets_source_pair() {
         let hit = json!({
             "hid": "zZc_AAsE",
@@ -419,7 +433,8 @@ mod tests {
             "last_chapter": 20.1
         });
         let dto = normalize_search_hit(&hit).expect("valid search hit");
-        assert_eq!(dto.id.as_str(), "zZc_AAsE");
+        assert_eq!(dto.id.as_str(), "comick:zZc_AAsE");
+        assert_eq!(request_opaque(dto.id.as_str()), Some("zZc_AAsE"));
         assert_eq!(dto.title, "Slime Slayer");
         assert_eq!(dto.source, "comick");
         assert_eq!(dto.source_label, "Comick");
