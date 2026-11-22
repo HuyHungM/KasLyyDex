@@ -4,8 +4,8 @@ use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use contracts::{parse_search_query, ApiError, ApiErrorEnvelope};
-use manga_core::comick::is_comick_chapter_id;
+use contracts::{parse_search_query, ApiError, ApiErrorEnvelope, ChapterDto};
+use manga_core::comick::{is_comick_chapter_id, is_comick_manga_id, ComickChapter};
 use manga_core::fallback::{
     chapter_metadata as fallback_metadata, chapter_pages, enrich_chapters, ContentState,
 };
@@ -219,19 +219,31 @@ async fn latest(State(state): State<ContentState>) -> Result<Response, Err> {
     Ok(json_cached(state.md.latest().await.map_err(bad)?, 60))
 }
 
+fn content_unavailable() -> Err {
+    api_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "CONTENT_UNAVAILABLE",
+        "Comick catalog unavailable.",
+    )
+}
+
+fn search_error(error: String) -> Err {
+    if error == manga_core::search::CONTENT_UNAVAILABLE {
+        content_unavailable()
+    } else {
+        bad(error)
+    }
+}
+
 async fn search(
     State(state): State<ContentState>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Err> {
     let q = parse_search_query(q).map_err(validation_error)?;
-    Ok(json_cached(
-        state
-            .md
-            .search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort)
-            .await
-            .map_err(bad)?,
-        60,
-    ))
+    let response = manga_core::search::search_all(&state.md, state.comick.as_ref(), &q)
+        .await
+        .map_err(search_error)?;
+    Ok(json_cached(response, 60))
 }
 
 #[derive(Debug)]
@@ -307,7 +319,29 @@ async fn rank(
     Ok(json_cached(state.md.rank(kind).await.map_err(bad)?, 300))
 }
 
+fn comick_chapter_dto(chapter: ComickChapter) -> ChapterDto {
+    ChapterDto {
+        id: chapter.id.into(),
+        chapter: chapter.chapter,
+        volume: None,
+        title: chapter.title,
+        lang: chapter.lang,
+        // Page count is only known through the chapter pages endpoint.
+        pages: 0,
+        external_url: None,
+        publish_at: chapter.publish_at,
+        group: chapter.group,
+        source: "comick".into(),
+        source_label: "Comick".into(),
+        readable: false,
+    }
+}
+
 async fn manga(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
+    if is_comick_manga_id(&id) {
+        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
+        return Ok(json_cached(comick.detail(&id).await.map_err(bad)?, 3600));
+    }
     if !is_uuid(&id) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -322,6 +356,15 @@ async fn chapters(
     State(state): State<ContentState>,
     Path(id): Path<String>,
 ) -> Result<Response, Err> {
+    if is_comick_manga_id(&id) {
+        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
+        let (vi, en) = tokio::join!(comick.chapters(&id, "vi"), comick.chapters(&id, "en"));
+        let response = contracts::ChaptersResponse {
+            vi: vi.map_err(bad)?.into_iter().map(comick_chapter_dto).collect(),
+            en: en.map_err(bad)?.into_iter().map(comick_chapter_dto).collect(),
+        };
+        return Ok(json_cached(response, 60));
+    }
     if !is_uuid(&id) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -563,6 +606,31 @@ mod tests {
         assert_eq!(query.tags, [id]);
         assert_eq!(query.sort, "rating");
         assert!(query.q.is_empty());
+    }
+
+    #[test]
+    fn missing_comick_adapter_maps_to_structured_503() {
+        let (status, Json(body)) = search_error(manga_core::search::CONTENT_UNAVAILABLE.to_owned());
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
+        let (status, _) = search_error("Comick catalog unavailable".into());
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn comick_manga_ids_dispatch_before_validation_and_report_unavailable() {
+        let state = ContentState {
+            md: Md::new(manga_core::dns::PublicDns::client()),
+            comick: None,
+        };
+        for result in [
+            manga(State(state.clone()), Path("comick:comic-1".into())).await,
+            chapters(State(state.clone()), Path("comick:comic-1".into())).await,
+        ] {
+            let (status, Json(body)) = result.unwrap_err();
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
+        }
     }
 
     #[test]

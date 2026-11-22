@@ -18,7 +18,7 @@
 
 use contracts::MangaSummaryDto;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const API: &str = "https://api.comick.dev";
@@ -102,6 +102,12 @@ impl Comick {
         results.iter().map(normalize_search_hit).collect()
     }
 
+    /// Comic detail by prefixed ID; the official route accepts a slug or HID.
+    pub async fn detail(&self, id: &str) -> Result<MangaSummaryDto, Err> {
+        let body = self.get_json(&comic_path(id)?).await?;
+        normalize_detail(&body)
+    }
+
     pub async fn chapters(&self, hid: &str, lang: &str) -> Result<Vec<ComickChapter>, Err> {
         let body = self.get_json(&chapters_path(hid, lang)?).await?;
         let chapters = body["chapters"].as_array().ok_or_else(upstream_err)?;
@@ -133,6 +139,11 @@ impl Comick {
 
 /// Provider-prefixed chapter IDs used by content routes and progress records.
 pub fn is_comick_chapter_id(id: &str) -> bool {
+    id.strip_prefix("comick:").is_some_and(valid_opaque)
+}
+
+/// Provider-prefixed comic IDs accepted by detail and chapter routes.
+pub fn is_comick_manga_id(id: &str) -> bool {
     id.strip_prefix("comick:").is_some_and(valid_opaque)
 }
 
@@ -227,6 +238,36 @@ pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
         source: "comick".to_owned(),
         source_label: "Comick".to_owned(),
     })
+}
+
+fn comic_path(id: &str) -> Result<String, Err> {
+    let hid = request_opaque(id).ok_or_else(upstream_err)?;
+    Ok(format!("/v1.0/comic/{}/", encode(hid)))
+}
+
+/// Detail responses nest the comic under `comic` and expose genres as
+/// `md_comic_md_genres`; the shared hit normalizer expects `genres`.
+fn normalize_detail(body: &Value) -> Result<MangaSummaryDto, Err> {
+    let mut comic = body
+        .get("comic")
+        .and_then(Value::as_object)
+        .ok_or_else(upstream_err)?
+        .clone();
+    if comic.get("genres").is_none() {
+        let genres: Vec<String> = comic["md_comic_md_genres"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry["md_genres"]["slug"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !genres.is_empty() {
+            comic.insert("genres".into(), json!(genres));
+        }
+    }
+    normalize_search_hit(&Value::Object(comic))
 }
 
 fn chapters_path(hid: &str, lang: &str) -> Result<String, Err> {
@@ -350,6 +391,43 @@ mod tests {
         for invalid in ["comick:bad/id", "comick:bad?id", "comick:bad#id"] {
             assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
         }
+    }
+
+    #[test]
+    fn comick_manga_id_requires_prefix_and_nonempty_opaque_id() {
+        assert!(is_comick_manga_id("comick:comic-1"));
+        for invalid in ["comic-1", "comick:", "comick:bad/id", ""] {
+            assert!(!is_comick_manga_id(invalid), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn comick_detail_normalizes_official_comic_envelope() {
+        let body = json!({
+            "comic": {
+                "hid": "comic-1",
+                "title": "Comick Detail",
+                "desc": "detail description",
+                "status": 2,
+                "year": 2024,
+                "md_covers": [{ "b2key": "cover.jpg" }],
+                "md_comic_md_genres": [
+                    { "md_genres": { "slug": "action", "name": "Action" } }
+                ],
+                "bayesian_rating": "8.5",
+                "user_follow_count": 99,
+                "last_chapter": 3
+            }
+        });
+        let dto = normalize_detail(&body).expect("valid comic detail");
+        assert_eq!(dto.id.as_str(), "comick:comic-1");
+        assert_eq!(dto.title, "Comick Detail");
+        assert_eq!(dto.description, "detail description");
+        assert_eq!(dto.status, "completed");
+        assert_eq!(dto.tags, ["action"]);
+        assert_eq!(dto.source_label, "Comick");
+        assert_eq!(comic_path(dto.id.as_str()).unwrap(), "/v1.0/comic/comic%2D1/");
+        assert!(normalize_detail(&json!({})).is_err());
     }
 
     #[test]

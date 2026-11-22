@@ -42,6 +42,11 @@ impl Md {
             .map(|value| value.trim().trim_end_matches('/').to_owned())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| API.to_owned());
+        Self::with_origin(http, api)
+    }
+
+    /// Explicit origin for local upstream fixtures; production uses `new()`.
+    pub fn with_origin(http: reqwest::Client, api: String) -> Self {
         Self {
             http,
             api,
@@ -183,6 +188,15 @@ impl Md {
             })
             .await
             .map_err(|e: Arc<Err>| (*e).clone())
+    }
+
+    /// Existing content cache, keyed by the full multi-source query in core::search.
+    pub async fn cached_search(&self, key: &str) -> Option<Arc<SearchResponse>> {
+        self.search.get(key).await
+    }
+
+    pub async fn cache_search(&self, key: String, response: Arc<SearchResponse>) {
+        self.search.insert(key, response).await;
     }
 
     async fn search_chapters(&self, manga: &Value) -> Value {
