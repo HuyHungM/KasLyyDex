@@ -2,6 +2,11 @@
 // https://api.comick.dev/docs/json (rendered by https://api.comick.dev/docs/):
 // - GET /v1.0/search/?q=...&page=1&limit=15 — bare array; page <= 50 with
 //   limit <= 50, or page <= 5 with limit <= 300; defaults page=1, limit=15.
+//   Verified search filter names: q (keyword), page, limit, from/to (inclusive
+//   publication year), status (1 ongoing, 2 completed, 3 cancelled, 4 hiatus),
+//   genres (numeric ids), md_covers[].b2key, bayesian_rating,
+//   user_follow_count, last_chapter. There is NO documented `lang` filter on
+//   this route: language is applied by the aggregator, not invented here.
 // - GET /v1.0/comic/{hid}/chapters?lang=...&page=1&limit=12 — returns
 //   { chapters, total, limit, checkVol2Chap1 }; default page size 12, no max.
 // - GET /chapter/{hid}/get_images — ordered image metadata array, may be [].
@@ -10,6 +15,7 @@
 //   live delivery and ToS remain a manual release gate (no live fetch gate here).
 // OAuth/Library endpoints are deliberately not used.
 
+use contracts::MangaSummaryDto;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::Value;
 use std::time::Duration;
@@ -76,9 +82,23 @@ impl Comick {
     }
 
     pub async fn search_titles(&self, query: &str) -> Result<Vec<ComickTitle>, Err> {
-        let body = self.get_json(&search_path(query)).await?;
+        let body = self.get_json(&search_path(query, "all", None, 1)?).await?;
         let results = body.as_array().ok_or_else(upstream_err)?;
         results.iter().map(title_from_value).collect()
+    }
+
+    /// `lang` belongs to the shared search contract; the official search route
+    /// has no language filter, so the aggregator applies it locally.
+    pub async fn search(
+        &self,
+        q: &str,
+        lang: &str,
+        year: Option<i32>,
+        page: u32,
+    ) -> Result<Vec<MangaSummaryDto>, Err> {
+        let body = self.get_json(&search_path(q, lang, year, page)?).await?;
+        let results = body.as_array().ok_or_else(upstream_err)?;
+        results.iter().map(normalize_search_hit).collect()
     }
 
     pub async fn chapters(&self, hid: &str, lang: &str) -> Result<Vec<ComickChapter>, Err> {
@@ -136,8 +156,71 @@ fn encode(value: &str) -> String {
     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
 }
 
-fn search_path(query: &str) -> String {
-    format!("/v1.0/search/?q={}&page=1&limit=15", encode(query))
+pub fn search_path(q: &str, lang: &str, year: Option<i32>, page: u32) -> Result<String, Err> {
+    // `lang` is validated for the shared contract but is not an upstream field.
+    request_opaque(lang).ok_or_else(upstream_err)?;
+    let q = q.trim();
+    if q.is_empty() || q.chars().count() > 200 || !(1..=50).contains(&page) {
+        return Err(upstream_err());
+    }
+    if year.is_some_and(|year| year < 1900) {
+        return Err(upstream_err());
+    }
+    let years = year
+        .map(|year| format!("&from={year}&to={year}"))
+        .unwrap_or_default();
+    Ok(format!(
+        "/v1.0/search/?q={}&page={page}&limit=15{years}",
+        encode(q)
+    ))
+}
+
+/// Required fields are never filled in; optional fields use DTO defaults.
+pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
+    let hid = hit["hid"]
+        .as_str()
+        .filter(|hid| valid_opaque(hid))
+        .ok_or_else(upstream_err)?;
+    let title = hit["title"]
+        .as_str()
+        .filter(|title| !title.trim().is_empty())
+        .ok_or_else(upstream_err)?;
+    let genres: Vec<String> = hit["genres"]
+        .as_array()
+        .map(|values| values.iter().filter_map(string_or_number).collect())
+        .unwrap_or_default();
+    let cover_file = hit["md_covers"]
+        .as_array()
+        .and_then(|covers| covers.first())
+        .and_then(|cover| image_url(cover).ok());
+    let status = match hit["status"].as_i64() {
+        Some(1) => "ongoing",
+        Some(2) => "completed",
+        Some(3) => "cancelled",
+        Some(4) => "hiatus",
+        _ => hit["status"].as_str().unwrap_or_default(),
+    };
+    Ok(MangaSummaryDto {
+        id: hid.into(),
+        title: title.to_owned(),
+        cover_file,
+        status: status.to_owned(),
+        year: hit["year"]
+            .as_i64()
+            .and_then(|year| i32::try_from(year).ok()),
+        description: hit["desc"].as_str().unwrap_or_default().to_owned(),
+        tags: genres.clone(),
+        tag_ids: genres,
+        author: String::new(),
+        artist: String::new(),
+        rating: hit["bayesian_rating"]
+            .as_str()
+            .and_then(|rating| rating.parse().ok()),
+        follows: hit["user_follow_count"].as_u64(),
+        latest_chapter: string_or_number(&hit["last_chapter"]),
+        source: "comick".to_owned(),
+        source_label: "Comick".to_owned(),
+    })
 }
 
 fn chapters_path(hid: &str, lang: &str) -> Result<String, Err> {
@@ -304,10 +387,68 @@ mod tests {
     }
 
     #[test]
-    fn comick_search_path_encodes_query() {
+    fn comick_search_path_encodes_filters() {
+        let path = search_path("slime & 100%", "vi", Some(2024), 2).expect("valid filters");
+        assert!(path.starts_with("/v1.0/search/?q=slime%20%26%20100%25"));
+        assert!(path.contains("&page=2"));
+        assert!(path.contains("&limit=15"));
+        // Official /v1.0/search/ has no `lang` filter; `from`/`to` are the year filters.
+        assert!(path.contains("&from=2024&to=2024"));
+        assert!(!path.contains("lang="));
         assert_eq!(
-            search_path("solo leveling & 100%"),
-            "/v1.0/search/?q=solo%20leveling%20%26%20100%25&page=1&limit=15"
+            path.matches('&').count(),
+            4,
+            "unexpected query params: {path}"
         );
+        assert!(search_path("slime", "vi", None, 51).is_err());
+        assert!(search_path("slime", "", None, 1).is_err());
+    }
+
+    #[test]
+    fn comick_search_hit_sets_source_pair() {
+        let hit = json!({
+            "hid": "zZc_AAsE",
+            "title": "Slime Slayer",
+            "desc": "A slime story.",
+            "year": 2024,
+            "status": 1,
+            "genres": [30, 244],
+            "md_covers": [{ "b2key": "cover.jpg" }],
+            "bayesian_rating": "7.11",
+            "user_follow_count": 14253,
+            "last_chapter": 20.1
+        });
+        let dto = normalize_search_hit(&hit).expect("valid search hit");
+        assert_eq!(dto.id.as_str(), "zZc_AAsE");
+        assert_eq!(dto.title, "Slime Slayer");
+        assert_eq!(dto.source, "comick");
+        assert_eq!(dto.source_label, "Comick");
+        assert_eq!(
+            dto.cover_file.as_deref(),
+            Some("https://meo.comick.pictures/cover.jpg")
+        );
+        assert_eq!(dto.year, Some(2024));
+        assert_eq!(dto.status, "ongoing");
+        assert_eq!(dto.tags, ["30", "244"]);
+        assert_eq!(dto.tag_ids, ["30", "244"]);
+        assert_eq!(dto.rating, Some(7.11));
+        assert_eq!(dto.follows, Some(14_253));
+        assert_eq!(dto.latest_chapter.as_deref(), Some("20.1"));
+    }
+
+    #[test]
+    fn comick_search_hit_rejects_missing_title_or_id() {
+        for hit in [
+            json!({ "title": "Slime" }),
+            json!({ "hid": "zZc_AAsE" }),
+            json!({ "hid": "zZc_AAsE", "title": "" }),
+            json!({ "hid": "bad/hid", "title": "Slime" }),
+        ] {
+            assert_eq!(
+                normalize_search_hit(&hit).unwrap_err(),
+                UPSTREAM_ERR,
+                "accepted incomplete hit: {hit}"
+            );
+        }
     }
 }
