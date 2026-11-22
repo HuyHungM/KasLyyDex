@@ -230,54 +230,62 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .rank-row.rank-2 { background: color-mix(in srgb, var(--muted) 12%, var(--surface)); box-shadow: inset 0 0 0 2px var(--muted); }
 .rank-row.rank-3 { background: color-mix(in srgb, var(--line) 45%, var(--surface)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--muted) 55%, var(--surface)); }
 
-/* /bxh podium — scoped so the home mini-rank keeps its compact rows. */
+/* /bxh podium — flat editorial cards, scoped so home mini-rank stays untouched. */
 .rank-podium { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
 .rank-podium > li { grid-column: 1 / -1; min-width: 0; }
 .rank-podium > li:nth-child(2), .rank-podium > li:nth-child(3) { grid-column: auto; }
 .rank-podium li + li { border-top: 0; }
-.rank-podium .rank-1 { --medal: #e9c675; --medal-glow: color-mix(in srgb, #e9c675 42%, transparent); }
-.rank-podium .rank-2 { --medal: #cbd4de; --medal-glow: color-mix(in srgb, #cbd4de 30%, transparent); }
-.rank-podium .rank-3 { --medal: #dda077; --medal-glow: color-mix(in srgb, #dda077 28%, transparent); }
+.rank-podium .rank-1 { --rank-color: #c9a227; }
+.rank-podium .rank-2 { --rank-color: #a8b0b8; }
+.rank-podium .rank-3 { --rank-color: #b07a52; }
+:root[data-theme="light"] .rank-podium .rank-1 { --rank-color: #8a6508; }
+:root[data-theme="light"] .rank-podium .rank-2 { --rank-color: #5d6670; }
+:root[data-theme="light"] .rank-podium .rank-3 { --rank-color: #8a5533; }
 .rank-podium .podium-card {
-  position: relative;
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: 2.5ch 58px minmax(0, 1fr);
   align-content: center;
-  gap: 6px 11px;
+  gap: 6px 10px;
   min-height: 104px;
   padding: 12px;
-  overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 14px;
-  background: radial-gradient(120% 140% at 0 0, color-mix(in srgb, var(--medal) 9%, var(--surface)), var(--surface) 64%);
+  border-left: 2px solid var(--rank-color);
+  border-radius: 12px;
+  background: var(--surface);
 }
+.rank-podium .rank-1.podium-card { background: color-mix(in srgb, var(--rank-color) 8%, var(--surface)); }
+.rank-podium .rank-2.podium-card { background: color-mix(in srgb, var(--rank-color) 5%, var(--surface)); }
+.rank-podium .rank-3.podium-card { background: color-mix(in srgb, var(--rank-color) 4%, var(--surface)); }
 .rank-podium .podium-card > b, .rank-podium .podium-card > .skel-rank-no {
-  position: absolute; top: -12px; right: 8px;
-  color: var(--medal); font-size: 3.6rem; font-weight: 800; line-height: 1; opacity: .16;
+  display: flex; align-items: center;
+  width: 2.5ch; height: 26px;
+  color: var(--rank-color);
+  font: 700 1.5rem/1 var(--display);
+  font-variant-numeric: tabular-nums;
 }
-.rank-podium .podium-card > .skel-rank-no { width: 2ch; height: 18px; opacity: .5; }
-.rank-podium .podium-card .rank-cover { grid-row: 1 / span 2; width: 58px; border-radius: 8px; overflow: hidden; }
-.rank-podium .podium-card .rank-title { align-self: end; font-size: .875rem; }
-.rank-podium .podium-card .rank-rating { grid-column: 2; justify-self: start; }
-.rank-podium .podium-medal {
-  position: absolute; z-index: 2; top: 4px; left: 4px;
-  padding: 1px 4px; border-radius: 4px;
-  background: var(--medal); color: #17160f;
-  font: 800 .56rem/1.5 var(--display); letter-spacing: .04em;
+.rank-podium .podium-card > .skel-rank-no { border-radius: 4px; background: var(--hover); color: transparent; }
+.rank-podium .podium-card .rank-cover { width: 58px; border-radius: 8px; overflow: hidden; }
+.rank-podium .podium-card .rank-title { align-self: center; font-size: .875rem; }
+.rank-podium .podium-card .rank-rating { grid-column: 3; justify-self: start; }
+.rank-podium .podium-tag {
+  display: block; margin-bottom: 2px;
+  color: var(--rank-color);
+  font: 700 .625rem/1.4 var(--display);
+  letter-spacing: .14em;
 }
-.rank-podium .skel .podium-medal { width: 34px; height: 12px; background: var(--hover); }
-.rank-podium .rank-1.podium-card { grid-template-columns: 92px minmax(0, 1fr); min-height: 150px; padding: 14px; }
+.rank-podium .skel .podium-tag { width: 8ch; height: 10px; }
+.rank-podium .rank-1 { box-shadow: 0 1px 3px -1px color-mix(in srgb, var(--rank-color) 40%, transparent); }
+.rank-podium .rank-2 { box-shadow: 0 1px 3px -1px color-mix(in srgb, var(--rank-color) 32%, transparent); }
+.rank-podium .rank-3 { box-shadow: 0 1px 3px -1px color-mix(in srgb, var(--rank-color) 26%, transparent); }
+.rank-podium .rank-1.podium-card { grid-template-columns: 3ch 92px minmax(0, 1fr); min-height: 164px; padding: 14px; }
 .rank-podium .rank-1 .rank-cover { width: 92px; }
 .rank-podium .rank-1 .rank-title { font-size: 1.05rem; }
-.rank-podium .rank-1 > b { top: -16px; font-size: 5.2rem; opacity: .2; }
-.rank-podium .rank-1 { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--medal) 55%, var(--line)), 0 12px 30px -16px var(--medal-glow); }
-.rank-podium .rank-2 { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--medal) 40%, var(--line)), 0 9px 22px -14px var(--medal-glow); }
-.rank-podium .rank-3 { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--medal) 32%, var(--line)), 0 7px 18px -14px var(--medal-glow); }
+.rank-podium .rank-1 > b, .rank-podium .rank-1 > .skel-rank-no { height: 32px; font-size: 1.75rem; }
 @media (max-width: 480px) {
-  .rank-podium .podium-card { grid-template-columns: 44px minmax(0, 1fr); gap: 5px 8px; min-height: 92px; padding: 9px; }
+  .rank-podium .podium-card { grid-template-columns: 2.5ch 44px minmax(0, 1fr); gap: 5px 7px; min-height: 92px; padding: 9px; }
   .rank-podium .podium-card .rank-cover { width: 44px; }
   .rank-podium .podium-card .rank-title { font-size: .8125rem; }
-  .rank-podium .podium-medal { top: 3px; left: 3px; padding: 1px 3px; font-size: .5rem; }
-  .rank-podium .rank-1.podium-card { grid-template-columns: 74px minmax(0, 1fr); min-height: 132px; padding: 11px; }
+  .rank-podium .podium-tag { font-size: .5625rem; letter-spacing: .1em; }
+  .rank-podium .rank-1.podium-card { grid-template-columns: 3ch 74px minmax(0, 1fr); min-height: 164px; padding: 11px; }
   .rank-podium .rank-1 .rank-cover { width: 74px; }
 }
 .search-filters { margin-bottom: 22px; }

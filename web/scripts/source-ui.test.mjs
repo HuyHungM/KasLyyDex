@@ -184,6 +184,6 @@ test("manga detail cover shows the source badge", () => {
 
 test("ranking page covers show the source badge", () => {
   const html = renderPage("app/bxh/page.tsx", { searchParams: {} });
-  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
+  assert.match(html, /<span class="rank-title">(?:<span class="podium-tag"[^>]*>[\s\S]*?<\/span>)?Slime<small>12 theo dõi<\/small><\/span>/);
   assert.match(html, badge);
 });

@@ -107,7 +107,7 @@ test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows",
   }
   assert.doesNotMatch(frames[3], /rank-top/, "skeleton row 4 must not be framed");
   assert.equal(await page.locator(`${SKELETON}.podium-card`).count(), 3, "skeleton needs three podium cards");
-  assert.equal(await page.locator(".rank-podium .skel .podium-medal").count(), 3, "podium skeletons need medal slots");
+  assert.equal(await page.locator(".rank-podium .skel .podium-tag").count(), 3, "podium skeletons need rank label slots");
 
   const skeletonBox = await page.locator(SKELETON).first().boundingBox();
   assert.ok(skeletonBox && skeletonBox.width > 0 && skeletonBox.height > 0);
@@ -131,7 +131,7 @@ test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows",
 
   const podium = page.locator(`${REAL}.podium-card`);
   assert.equal(await podium.count(), 3, "ranking needs three podium cards");
-  assert.deepEqual(await page.locator(".rank-podium .podium-medal").allTextContents(), ["TOP 1", "TOP 2", "TOP 3"]);
+  assert.deepEqual(await page.locator(".rank-podium .podium-tag").allTextContents(), ["HẠNG 1", "HẠNG 2", "HẠNG 3"]);
   const [gold, silver, bronze] = await Promise.all([0, 1, 2].map((i) => podium.nth(i).boundingBox()));
   assert.ok(gold.width > silver.width + 40, `rank 1 must dominate: ${gold.width} vs ${silver.width}`);
   assert.ok(Math.abs(silver.y - bronze.y) <= 1, "ranks 2 and 3 must share a row at 375px");

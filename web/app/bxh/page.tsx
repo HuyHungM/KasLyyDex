@@ -35,7 +35,6 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
             <Link href={`/manga/${manga.id}`} className={`rank-row${podium ? ` podium-card rank-top rank-${index + 1}` : ""}`}>
               <b className={podium ? "top-rank" : undefined}>{index + 1}</b>
               <span className="rank-cover">
-                {podium ? <span className="podium-medal" aria-hidden="true">TOP {index + 1}</span> : null}
                 {cover && (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={cover} alt="" loading="lazy" />
@@ -43,6 +42,7 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
                 <SourceBadge source={manga.source} />
               </span>
               <span className="rank-title">
+                {podium ? <span className="podium-tag" aria-hidden="true">HẠNG {index + 1}</span> : null}
                 {manga.title}
                 <small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small>
               </span>

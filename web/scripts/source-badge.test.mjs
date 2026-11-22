@@ -122,16 +122,16 @@ test("home feature, feed and rank covers show badges without title suffixes", ()
   const feedLink = html.match(/<a[^>]*class="feed-cover"[\s\S]*?<\/a>/)?.[0] ?? "";
   assert.match(feedLink, /href="\/manga\/m1"/);
   assert.match(feedLink, new RegExp(BADGE("Comick")));
-  const rankCover = html.match(/<span class="rank-cover">(?:<span class="podium-medal"[^>]*>[\s\S]*?<\/span>)?<img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
+  const rankCover = html.match(/<span class="rank-cover"><img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
   assert.match(rankCover, new RegExp(BADGE("Comick")));
   assert.ok(html.includes(COMICK_PROXY));
 });
 
 test("ranking and detail covers show badges", () => {
   const rankHtml = renderPage("app/bxh/page.tsx", { searchParams: {} });
-  const rankCover = rankHtml.match(/<span class="rank-cover">(?:<span class="podium-medal"[^>]*>[\s\S]*?<\/span>)?<img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
+  const rankCover = rankHtml.match(/<span class="rank-cover"><img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
   assert.match(rankCover, new RegExp(BADGE("Comick")));
-  assert.match(rankHtml, /<span class="rank-title">Slime<small>/);
+  assert.match(rankHtml, /<span class="rank-title">(?:<span class="podium-tag"[^>]*>[\s\S]*?<\/span>)?Slime<small>/);
   assert.doesNotMatch(rankHtml, /\(Comick\)|\(MangaDex\)/);
 
   const detail = renderPage("app/manga/[id]/page.tsx", { params: {} });
