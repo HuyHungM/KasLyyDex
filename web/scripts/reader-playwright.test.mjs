@@ -236,6 +236,15 @@ test("desktop and 375px shells render decodable covers, no horizontal overflow, 
     if (name === "desktop") assert.equal(await rail.isVisible(), true);
     else {
       assert.equal(await page.locator(".bottom-tabs").isVisible(), true);
+      const tabs = await page.locator(".bottom-tabs").evaluate((nav) => ({
+        count: nav.querySelectorAll("a").length,
+        tops: Array.from(nav.querySelectorAll("a")).map((a) => Math.round(a.getBoundingClientRect().top)),
+        height: nav.getBoundingClientRect().height,
+        inset: parseFloat(getComputedStyle(document.querySelector(".site-shell")).paddingBottom),
+      }));
+      assert.equal(tabs.count, 5, "mobile bottom nav needs all five links");
+      assert.equal(new Set(tabs.tops).size, 1, "mobile bottom tabs must stay on one row");
+      assert.ok(tabs.height <= tabs.inset + 1, `bottom tabs ${tabs.height} exceed content inset ${tabs.inset}`);
       await assertNoHorizontalOverflow(page, `${name} home`);
     }
     await page.screenshot({ path: join(SHOT_DIR, `home-${name}.png`), fullPage: false });
