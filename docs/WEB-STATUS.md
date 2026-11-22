@@ -129,3 +129,37 @@ Exact commands, counts and rulings are in
   pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with
   `cargo fmt -p core` and `core` joined the scoped `cargo fmt --check` set.
 - No deployment, push, merge, or live provider verification was performed.
+
+## Advanced search UX + final local gate (Task 7)
+
+Exact commands, counts and concerns are in
+`docs/superpowers/sdd/kaslyydex-advanced-search-ux/task-7-report.md`.
+
+- Advanced search: `/search` ("Khám phá") now keeps `source`
+  (`all`/`mangadex`/`comick`), `lang` (`all`/`vi`/`en`) and `year`
+  (1900…current+1) in the same GET form as `q`/tags/status/sort/page. Axum
+  dispatches to MangaDex and/or Comick, keeps provider duplicates separate,
+  sorts deterministically and returns at most 24 results per page. When a
+  filter can only be applied locally or a provider fails, `partial=true` makes
+  the UI show a short warning instead of implying a complete result.
+- Genre browsing moved into the same page: four grouped tag sections with a
+  four-group skeleton; the standalone Next `/the-loai` route and nav link are
+  gone.
+- Cover badges replace title suffixes: `MangaDex`/`Comick` with accessible name
+  `Nguồn: <label>` on cards, feed, ranking and detail covers.
+- `/bxh` has a route-level loading shell with 12 shape-matched rows and
+  `rank-top rank-1/2/3` frames for the top three rows; tab changes re-show the
+  skeleton and skeleton/loaded row boxes stay within 2px, with shimmer disabled
+  under `prefers-reduced-motion`.
+- `test:aggregate` now runs 12 suites (the previous seven plus
+  `search-contracts`, `search-source`, `advanced-search`, `source-badge`,
+  `ranking-skeleton`). CI installs Chromium before aggregate since three of
+  the new suites are Playwright tests; the Axum prebuild hooks are unchanged.
+- Local gate results: `build:wasm`/`build` pass; aggregate 203 pass / 0 fail;
+  browser 23 pass / 0 fail; `cargo build -p server` pass; workspace tests
+  90 pass / 0 fail; clippy `-D warnings`, scoped fmt (including `core`),
+  typecheck, lint (0 errors, 7 pre-existing `@next/next/no-img-element`
+  warnings), whitespace (0 new findings), secrets (0 candidates) and
+  `git diff --check` all pass.
+- No deployment, push, merge or live provider verification was done. Live
+  MangaDex/Comick catalog and ToS checks remain manual release gates.

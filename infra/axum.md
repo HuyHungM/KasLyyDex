@@ -71,6 +71,29 @@ files; the two Rust files touched by Task 4 were formatted with `rustfmt --editi
   provider-prefixed chapters) come from the shared contracts and are rendered by
   the web UI; reader tickets and progression records bind the chapter source.
 
+## Advanced search (Tasks 1–3, gated in Task 7)
+
+- `contracts::SearchQuery` is the single parser for `/api/content/search` and
+  its legacy `/api/search` alias. It accepts `source` (`all`/`mangadex`/
+  `comick`, default `all`), `lang` (`all`/`vi`/`en`, default `all`), `year`
+  (1900…current year + 1), and keeps the existing `q`/`tags`/`status`/`sort`/
+  `page` validation. `SearchResponse.partial` defaults to `false` for older DTOs.
+- The handler calls `core::search_all`. `source=mangadex` and `source=comick`
+  dispatch to one provider; `source=all` calls both concurrently, keeps
+  same-title hits from different providers as separate results, sorts by
+  `sort` → source label → title → id and slices to at most 24 items per page.
+  A filter the provider cannot apply (`lang`, `year`) is applied locally and
+  marks the response `partial: true`, as does a failing provider; successful
+  full responses are cached under a key containing every query field.
+  `comick`-only queries with no configured `Comick` adapter return a structured
+  `503 CONTENT_UNAVAILABLE` instead of panicking.
+- `COMICK_API_ORIGIN` keeps `web/scripts/search-source.test.mjs` on loopback
+  MangaDex/Comick fixtures. It asserts provider dispatch, merged `source_label`
+  values, `partial=true` on a Comick 500, structured 400s for bad filters and
+  cache-key changes per `source`/`lang`/`year`. No remote call or credential is
+  involved; live catalog/ToS verification of both providers is still a manual
+  release gate and is not claimed.
+
 ## Gate notes (Task 10)
 
 - `cargo fmt -p core` fixed the two known pre-existing rustfmt hunks in
@@ -82,6 +105,17 @@ files; the two Rust files touched by Task 4 were formatted with `rustfmt --editi
   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff`); new findings still fail.
 - `npm run test:aggregate`/`test:browser` build the Axum binary via pretest
   before suites spawn it; CI builds it as its own step first.
+
+## Gate notes (Task 7)
+
+- `test:aggregate` now includes `search-contracts`, `search-source`,
+  `advanced-search`, `source-badge` and `ranking-skeleton` (12 suites). The
+  three browser-based suites need Playwright Chromium, so CI installs it before
+  the aggregate step; the Axum prebuild ordering is untouched.
+- The full local gate passed: aggregate 203/203, browser 23/23, workspace Rust
+  tests 90/0, `cargo build -p server`, clippy `-D warnings`, scoped
+  `cargo fmt --check` including `core`, typecheck/lint, whitespace/secrets and
+  `git diff --check`. No deploy, push or merge was performed.
 
 ## Unverified
 

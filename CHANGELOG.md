@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — advanced search UX and final local gate
+
+- Extend `SearchParams`/`searchQuery` with `source`, `lang` and `year`; add
+  `partial: bool` to `SearchResponse` and move query parsing into `contracts` so
+  Axum and the web share the same allowlists and page clamp.
+- Add a Comick catalog search adapter and Axum `search_all` orchestration.
+  `source=all` queries both providers, keeps same-title hits from different
+  providers distinct, sorts deterministically (`sort`, source, title, id) and
+  slices to 24 per page. A locally-applied `lang`/`year` filter or a failing
+  provider sets `partial`, surfaced as a short warning in the UI; a missing
+  Comick adapter returns a structured 503.
+- Move genre groups into the `/search` ("Khám phá") advanced panel with a
+  four-group skeleton and write selected chips into `tags`. Remove the Next
+  `/the-loai` page and its navigation link.
+- Render source as a cover badge (`MangaDex`/`Comick`, accessible
+  `Nguồn: <label>`) on cards, feed, ranking and detail covers; drop the
+  `(MangaDex)`/`(Comick)` title suffixes.
+- Add a shape-matched `/bxh` loading shell (12 rows) and `rank-top rank-1/2/3`
+  frames for the top three rows, stable across tab changes and mobile widths.
+- Register `search-contracts`, `search-source`, `advanced-search`,
+  `source-badge` and `ranking-skeleton` in `test:aggregate` (12 suites total).
+  CI installs Playwright Chromium before aggregate because three of the added
+  suites are browser tests; the Axum prebuild hooks are unchanged.
+- Run the full deterministic local gate: aggregate 203/203, browser 23/23,
+  Rust workspace tests 90 passed/0 failed, build/clippy/scoped fmt/typecheck/
+  lint/whitespace/secrets/diff clean. Exact commands and counts are in
+  `docs/superpowers/sdd/kaslyydex-advanced-search-ux/task-7-report.md`.
+
+No deployment, push, merge, provisioning or live provider verification was
+performed. Live MangaDex/Comick catalog and ToS checks remain manual gates.
+
 ## Unreleased — multi-source reading UX and final local gate
 
 - Read MangaDex as the primary catalog and fall back to Comick **per chapter**

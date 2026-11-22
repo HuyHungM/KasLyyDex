@@ -49,6 +49,26 @@ mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
   thử lại hiện có chỉ xử lý lỗi tải chapter/WASM (`pageError`/`wasmError`), không
   có nút thử lại riêng cho từng ảnh.
 
+## Tìm kiếm nâng cao và xếp hạng
+
+- `/search` ("Khám phá") dùng chung dropdown cho `source` (`all`/`mangadex`/
+  `comick`), `lang` (`all`/`vi`/`en`) và `year` (1900…năm hiện tại + 1); các
+  giá trị này nằm trong form GET và giữ nguyên `q`, `tags`, `status`, `sort`,
+  `page`. Axum gọi MangaDex và/hoặc Comick theo `source`, gộp ổn định theo
+  `sort` → source → title → id rồi cắt tối đa 24 kết quả/trang. Khi bộ lọc
+  `lang`/`year` chỉ áp được ở local hoặc một provider lỗi, response có
+  `partial: true` và UI hiện cảnh báo ngắn — không ngầm hiểu là kết quả đầy đủ.
+- Bốn nhóm thể loại (Thể loại chính / Chủ đề / Định dạng / Nội dung) nằm trong
+  panel nâng cao của `/search`; chip ghi thẳng vào `tags` và có skeleton 4 nhóm
+  lúc tải. Trang `/the-loai` cùng link điều hướng đã bị xóa ở bản Next; dùng
+  `/search` thay thế.
+- Nguồn hiển thị thành badge trên góc ảnh bìa (`MangaDex`/`Comick`, nhãn truy
+  cập `Nguồn: <label>`) ở card, feed, top rank và trang chi tiết; tiêu đề không
+  còn hậu tố `(MangaDex)`/`(Comick)`.
+- `/bxh` có route `loading.tsx` với 12 hàng skeleton khớp bảng xếp hạng và khung
+  top 3 (`rank-top rank-1/2/3`) giữ kích thước khi đổi tab; shimmer vẫn nằm
+  trong `prefers-reduced-motion`.
+
 ## Chạy local
 
 ```bash
@@ -63,7 +83,8 @@ cd ..
 cargo build -p server
 cd web
 npm run test:source       # 7 suite nguồn/fallback/UI/theme/dropdown/skeleton
-npm run test:aggregate    # bao gồm cả 7 suite trên, không cần secret
+npm run test:aggregate    # 12 suite: 7 ở trên + search-contracts, search-source,
+                          # advanced-search, source-badge, ranking-skeleton
 npm run test:browser      # cần Edge local hoặc Playwright Chromium
 ```
 
@@ -109,9 +130,11 @@ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
 secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
 `reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
 `cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
-`build:wasm` → `build:web` → typecheck/lint; aggregate tests (bao gồm các suite
-nguồn/fallback/UI/theme/dropdown/skeleton, server được build trước qua
-pretest); Playwright Chromium install + browser suites; tracked-file
+`build:wasm` → `build:web` → typecheck/lint; cài Playwright Chromium trước rồi
+aggregate tests (12 suite: nguồn/fallback/UI/theme/dropdown/skeleton +
+search-contracts/search-source/advanced-search/source-badge/ranking-skeleton —
+3 suite sau dùng browser nên cần Chromium; server được build trước qua pretest);
+browser suites; tracked-file
 whitespace/conflict-marker scan với baseline — không vacuous trên clean
 checkout, nhưng 783 finding đã commit trong
 `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua

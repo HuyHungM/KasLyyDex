@@ -83,12 +83,13 @@ jobs:
         run: npm run lint
         working-directory: web
 
-      - name: Aggregate Node / PGlite / API tests
-        run: npm run test:aggregate
-        working-directory: web
-
+      # Aggregate now includes Playwright suites, so Chromium must exist first.
       - name: Install Playwright Chromium
         run: npm run browser:install
+        working-directory: web
+
+      - name: Aggregate Node / PGlite / API tests
+        run: npm run test:aggregate
         working-directory: web
 
       - name: Browser suites
