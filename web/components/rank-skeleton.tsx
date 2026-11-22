@@ -1,14 +1,15 @@
 export function RankListSkeleton() {
   return (
-    <ol className="rank-list" role="status" aria-label="Đang tải xếp hạng">
+    <ol className="rank-list rank-podium" role="status" aria-label="Đang tải xếp hạng">
       {Array.from({ length: 12 }, (_, index) => {
         const rank = index + 1;
-        const frame = rank <= 3 ? `rank-top rank-${rank}` : "";
+        const podium = rank <= 3;
+        const frame = podium ? `podium-card rank-top rank-${rank}` : "";
         return (
-          <li key={rank}>
+          <li key={rank} className={podium ? "podium-slot" : undefined}>
             <div className={`rank-row skel-rank skel ${frame}`} aria-hidden="true">
               <span className="skel-bar skel-rank-no" />
-              <span className="rank-cover" />
+              <span className="rank-cover">{podium ? <span className="podium-medal skel-bar" /> : null}</span>
               <span className="rank-title"><span className="skel-bar" /><span className="skel-bar" /></span>
               <span className="skel-bar skel-rank-score" />
             </div>

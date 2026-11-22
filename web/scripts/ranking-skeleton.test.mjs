@@ -106,6 +106,8 @@ test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows",
       `skeleton row ${rank} needs rank-top rank-${rank}`);
   }
   assert.doesNotMatch(frames[3], /rank-top/, "skeleton row 4 must not be framed");
+  assert.equal(await page.locator(`${SKELETON}.podium-card`).count(), 3, "skeleton needs three podium cards");
+  assert.equal(await page.locator(".rank-podium .skel .podium-medal").count(), 3, "podium skeletons need medal slots");
 
   const skeletonBox = await page.locator(SKELETON).first().boundingBox();
   assert.ok(skeletonBox && skeletonBox.width > 0 && skeletonBox.height > 0);
@@ -126,6 +128,13 @@ test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows",
     rows.slice(0, 3).map((row) => getComputedStyle(row).boxShadow));
   assert.ok(shadows.every((shadow) => shadow && shadow !== "none"), "top 3 rows need visible frames");
   assert.equal(new Set(shadows).size, 3, "top 3 rows need distinct frame styles");
+
+  const podium = page.locator(`${REAL}.podium-card`);
+  assert.equal(await podium.count(), 3, "ranking needs three podium cards");
+  assert.deepEqual(await page.locator(".rank-podium .podium-medal").allTextContents(), ["TOP 1", "TOP 2", "TOP 3"]);
+  const [gold, silver, bronze] = await Promise.all([0, 1, 2].map((i) => podium.nth(i).boundingBox()));
+  assert.ok(gold.width > silver.width + 40, `rank 1 must dominate: ${gold.width} vs ${silver.width}`);
+  assert.ok(Math.abs(silver.y - bronze.y) <= 1, "ranks 2 and 3 must share a row at 375px");
 
   const realBox = await page.locator(REAL).first().boundingBox();
   assert.ok(Math.abs(realBox.width - skeletonBox.width) <= 2, `skeleton width shifted: ${skeletonBox.width} vs ${realBox.width}`);
@@ -156,8 +165,13 @@ test("shimmer is guarded by reduced motion on the ranking skeleton", async () =>
     contentDelay = 1500;
     const { context, page } = await openPage({ reducedMotion });
     await page.goto(`${app.baseUrl}/bxh`, { waitUntil: "commit" });
-    await page.locator(SKELETON).first().waitFor();
-    const animation = await page.locator(SKELETON).first().evaluate((el) => getComputedStyle(el).animationName);
+    const skeleton = page.locator(`${SKELETON}:visible`).first();
+    await skeleton.waitFor();
+    await page.waitForFunction((selector) => {
+      const row = Array.from(document.querySelectorAll(selector)).find((el) => el.getClientRects().length > 0);
+      return !!row && getComputedStyle(row).animationName !== "";
+    }, SKELETON);
+    const animation = await skeleton.evaluate((el) => getComputedStyle(el).animationName);
     if (reducedMotion === "reduce") assert.equal(animation, "none", "reduced motion must disable shimmer");
     else assert.match(animation, /shimmer/, "normal motion needs shimmer");
     await assertNoOverflow(page, `375px /bxh skeleton (${reducedMotion})`);

@@ -26,14 +26,16 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
   if (list.length === 0) return <p className="empty">Chưa có truyện để xếp hạng.</p>;
 
   return (
-    <ol className="rank-list">
+    <ol className="rank-list rank-podium">
       {list.slice(0, 24).map((manga, index) => {
         const cover = coverImageUrl(manga, 256);
+        const podium = index < 3;
         return (
-          <li key={manga.id}>
-            <Link href={`/manga/${manga.id}`} className={`rank-row${index < 3 ? ` rank-top rank-${index + 1}` : ""}`}>
-              <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+          <li key={manga.id} className={podium ? "podium-slot" : undefined}>
+            <Link href={`/manga/${manga.id}`} className={`rank-row${podium ? ` podium-card rank-top rank-${index + 1}` : ""}`}>
+              <b className={podium ? "top-rank" : undefined}>{index + 1}</b>
               <span className="rank-cover">
+                {podium ? <span className="podium-medal" aria-hidden="true">TOP {index + 1}</span> : null}
                 {cover && (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={cover} alt="" loading="lazy" />
