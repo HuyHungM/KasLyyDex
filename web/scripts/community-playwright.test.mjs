@@ -3,23 +3,22 @@ import { existsSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
 import { browserExecutable } from "./browser.mjs";
+import { installIdentityFixture } from "./identity-fixture.mjs";
 import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
 
-// Browser fixture: the SDK session is real (loopback Neon-auth fixture), while
-// community API responses are intercepted at the browser boundary. That proves
-// rendering, spoiler state, dialogs and authorized calls without a local
-// PostgreSQL wire server; SQL ownership is covered in community.test.mjs.
+// Browser fixture: Identity endpoints and community API responses are
+// intercepted at the browser boundary. That proves rendering, spoiler state,
+// dialogs and authorized calls without a live site or local PostgreSQL wire
+// server; SQL ownership is covered in community.test.mjs.
 const EDGE = browserExecutable();
 const MANGA_ID = "manga-fixture";
 const COMMENT_ID = "comment-xss";
 const SPOILER_ID = "comment-spoiler";
 
 let contentFixture;
-let authFixture;
 let next;
 let browser;
 let baseUrl;
-let cookies;
 let pageErrors = [];
 
 function json(res, body, status = 200) {
@@ -75,7 +74,7 @@ const notifications = {
 
 async function signedInPage(routes = []) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: "dark" });
-  await context.addCookies(cookies);
+  await installIdentityFixture(context, { signedIn: true, userId: "google|sdk-identity" });
   for (const [pattern, handler] of routes) await context.route(pattern, handler);
   const page = await context.newPage();
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -92,46 +91,14 @@ before(async () => {
     if (url.startsWith("/api/content/manga/")) return json(res, manga);
     return json(res, {});
   });
-  authFixture = await startHttpServer((req, res) => {
-    if (req.url?.includes("get-session")) {
-      const signedIn = (req.headers.cookie ?? "").includes("session_token=fixture");
-      return json(res, signedIn ? {
-        session: { id: "session-opaque", userId: "google|sdk-identity", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
-        user: {
-          id: "google|sdk-identity", name: "Fixture Reader", email: "reader@example.com",
-          emailVerified: true, image: null,
-        },
-      } : { session: null, user: null });
-    }
-    res.writeHead(200, {
-      "content-type": "application/json",
-      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
-    });
-    res.end(JSON.stringify({ ok: true }));
-  });
-  next = await startNext({
-    RUST_CONTENT_API_ORIGIN: contentFixture.baseUrl,
-    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
-    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
-  });
+  next = await startNext({ RUST_CONTENT_API_ORIGIN: contentFixture.baseUrl });
   baseUrl = next.baseUrl;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
-  await page.locator('input[type="email"]').fill("reader@example.com");
-  await page.locator('input[type="password"]').fill("fixture-password");
-  await page.getByRole("button", { name: "Đăng nhập", exact: true }).click();
-  await page.getByText("Đã đăng nhập").waitFor({ timeout: 15_000 });
-  cookies = await context.cookies();
-  await context.close();
 });
 
 after(async () => {
   await browser?.close();
   await stop(next?.child);
-  await authFixture?.close();
   await contentFixture?.close();
 });
 

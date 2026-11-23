@@ -102,7 +102,7 @@
 - Produces: `readDatabaseConfig(env = process.env): { url: string }` reading `NETLIFY_DB_URL`; `getDatabase()` using that config with `getConnectionString()` fallback only in a Netlify runtime.
 
 - [ ] **Step 1: Write failing tests**:
-  - in `env-validation.test.mjs`, assert `readDatabaseConfig({ NETLIFY_DB_URL: "postgresql://u:p@localhost/db" })` returns that URL and `readDatabaseConfig({})` throws `DATABASE_NOT_CONFIGURED` with `missing: ["NETLIFY_DB_URL"]`;
+  - in `env-validation.test.mjs`, assert `readDatabaseConfig({ NETLIFY_DB_URL: "<connection-url-placeholder>" })` returns that URL and `readDatabaseConfig({})` throws `DATABASE_NOT_CONFIGURED` with `missing: ["NETLIFY_DB_URL"]`;
   - in `database.test.mjs`, change `migrationUrls` to the eight files under `../../netlify/database/migrations/`;
   - add an assertion that no migration file contains `--> statement-breakpoint` and that the ordered filenames end with `_application`, `_account_data`, `_comments_moderation`, `_community_cursor_scrub`, `_notification_feed_cursor`, `_notification_pending`, `_progression`, `_reader_session_source`.
 

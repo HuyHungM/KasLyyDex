@@ -96,8 +96,7 @@ test("GET /api/v1/ready is separate from liveness and lists missing config names
   assert.equal(body.status, "unavailable");
   assert.equal(body.checks.configuration, "missing");
   for (const name of [
-    "DATABASE_URL", "NEON_AUTH_BASE_URL", "NEON_AUTH_COOKIE_SECRET",
-    "READER_TICKET_SECRET", "RUST_CONTENT_API_ORIGIN",
+    "NETLIFY_DB_URL", "READER_TICKET_SECRET", "RUST_CONTENT_API_ORIGIN",
   ]) {
     assert.ok(body.missing.includes(name), name);
   }

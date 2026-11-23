@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
 import { browserExecutable } from "./browser.mjs";
+import { installIdentityFixture, sessionBody } from "./identity-fixture.mjs";
 import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
 import { pagePng } from "./image-fixtures.mjs";
 
@@ -18,7 +19,6 @@ const PAGES = [CHAPTER_A, CHAPTER_B].flatMap((id) =>
   [1, 2, 3, 4].map((page) => `https://uploads.mangadex.org/data/${id}/page-${page}.png`));
 
 let contentFixture;
-let authFixture;
 let axum;
 let next;
 let browser;
@@ -99,28 +99,7 @@ before(async () => {
   });
   await waitForTcp(axumPort);
 
-  authFixture = await startHttpServer((req, res) => {
-    if (req.url?.includes("get-session")) {
-      const signedIn = (req.headers.cookie ?? "").includes("session_token=fixture");
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(signedIn ? {
-        session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
-        user: { id: "google|opaque-42", name: "Fixture Reader", email: "reader@example.com", emailVerified: true, image: null },
-      } : { session: null, user: null }));
-      return;
-    }
-    res.writeHead(200, {
-      "content-type": "application/json",
-      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
-    });
-    res.end(JSON.stringify({ ok: true }));
-  });
-
-  next = await startNext({
-    RUST_CONTENT_API_ORIGIN: axumUrl,
-    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
-    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
-  });
+  next = await startNext({ RUST_CONTENT_API_ORIGIN: axumUrl });
   baseUrl = next.baseUrl;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
 });
@@ -129,25 +108,14 @@ after(async () => {
   await browser?.close();
   await stop(next?.child);
   if (axum && axum.exitCode === null) axum.kill("SIGKILL");
-  await authFixture?.close();
   await contentFixture?.close();
 });
 
 async function signedInContext() {
-  const signIn = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: "dark" });
-  const signPage = await signIn.newPage();
-  await signPage.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
-  await signPage.locator('input[type="email"]').fill("reader@example.com");
-  await signPage.locator('input[type="password"]').fill("fixture-password");
-  await signPage.getByRole("button", { name: "Đăng nhập", exact: true }).click();
-  await signPage.getByText("Đã đăng nhập").waitFor({ timeout: 15_000 });
-  const cookies = await signIn.cookies();
-  await signIn.close();
-
-  // Fresh context => fresh client module state; the SDK cookies are the only
-  // thing carried over, so each test starts from a real session resolution.
+  // Fresh context per test, with the session fixture installed before any page
+  // loads so no client module state leaks between tests.
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: "dark" });
-  await context.addCookies(cookies);
+  await installIdentityFixture(context, { signedIn: true });
   const page = await context.newPage();
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await context.route("**/api/v1/me/settings", async (route) => {
@@ -214,7 +182,11 @@ test("a follow click during session loading is not written to guest storage", as
   });
   await context.route("**/api/auth/get-session", async (route) => {
     await delay(1500);
-    await route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(sessionBody(true)),
+    });
   });
   await page.goto(`${baseUrl}/manga/${MANGA_ID}`);
   const follow = page.locator("button[aria-pressed]");

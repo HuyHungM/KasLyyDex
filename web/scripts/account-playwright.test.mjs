@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
 import { browserExecutable } from "./browser.mjs";
-import { startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
+import { installIdentityFixture } from "./identity-fixture.mjs";
+import { startNext, stop, webDir } from "./test-helpers.mjs";
 
 const EDGE = browserExecutable();
 const SHOT_DIR = join(webDir, ".test-screenshots");
 
 let unconfigured;
 let configured;
-let authFixture;
 let browser;
 let pageErrors = [];
 
@@ -19,50 +19,13 @@ before(async () => {
   assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
   unconfigured = await startNext();
-  authFixture = await startHttpServer((req, res, body) => {
-    if (req.url?.includes("get-session")) {
-      if ((req.headers.cookie ?? "").includes("session_token=fixture")) {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({
-          session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
-          user: { id: "google|opaque-42", name: "Fixture Reader", email: "reader@example.com", emailVerified: true, image: null },
-        }));
-      } else {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ session: null, user: null }));
-      }
-      return;
-    }
-    if (req.url?.includes("sign-in/") || req.url?.includes("sign-up/")) {
-      res.writeHead(200, {
-        "content-type": "application/json",
-        "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
-      });
-      res.end(JSON.stringify({ ok: true, body }));
-      return;
-    }
-    if (req.url?.includes("sign-out")) {
-      res.writeHead(200, {
-        "content-type": "application/json",
-        "set-cookie": "__Secure-neon-auth.session_token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
-      });
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-  });
-  configured = await startNext({
-    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
-    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
-  });
+  configured = await startNext();
 });
 
 after(async () => {
   await browser?.close();
   await stop(configured?.child);
   await stop(unconfigured?.child);
-  await authFixture?.close();
 });
 
 async function open(baseUrl, viewport = { width: 1280, height: 800 }) {
@@ -86,7 +49,7 @@ test("auth-not-configured is explicit and guest account pages stay usable", asyn
   await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
   await page.getByText("Chưa bật đăng nhập").waitFor();
   assert.equal(await page.locator('input[type="email"]').count(), 0, "no inert sign-in form when unconfigured");
-  assert.match(await page.locator(".account-card").first().innerText(), /NEON_AUTH_BASE_URL/);
+  assert.match(await page.locator(".account-card").first().innerText(), /Netlify Identity/);
   await page.screenshot({ path: join(SHOT_DIR, "account-unconfigured.png") });
 
   await page.goto(`${baseUrl}/tai-khoan/cai-dat`, { waitUntil: "networkidle" });
@@ -115,8 +78,9 @@ test("auth-not-configured is explicit and guest account pages stay usable", asyn
   await context.close();
 });
 
-test("real Neon SDK sign-in through a loopback auth fixture reaches the account UI", async () => {
+test("Netlify Identity sign-in through a loopback fixture reaches the account UI", async () => {
   const { context, page, baseUrl } = await open(configured.baseUrl);
+  await installIdentityFixture(context);
   await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
   const email = page.locator('input[type="email"]');
   await email.waitFor();

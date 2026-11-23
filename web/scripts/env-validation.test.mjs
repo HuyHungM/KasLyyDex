@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { scanText } from "./secret-scan-lib.mjs";
 
 const example = await readFile(fileURLToPath(new URL("../.env.example", import.meta.url)), "utf8");
 const rootFile = (relativePath) => fileURLToPath(new URL(`../../${relativePath}`, import.meta.url));
+const repoDir = fileURLToPath(new URL("../..", import.meta.url));
 const { readDatabaseConfig } = await import("../lib/db/client.ts");
 
 const REQUIRED = [
@@ -18,6 +20,19 @@ const FORBIDDEN = [
   "DATABASE_URL",
   "NEON_AUTH_BASE_URL",
   "NEON_AUTH_COOKIE_SECRET",
+];
+
+// SDD plans/specs record the pre-migration state verbatim; scanner tests and
+// this file must name the strings they reject. Neither is runtime config.
+const SWEEP_EXEMPT = [
+  "docs/superpowers/",
+  "web/scripts/env-validation.test.mjs",
+  "web/scripts/observability.test.mjs",
+  "web/scripts/secret-scan-lib.mjs",
+  "web/scripts/secret-scan.test.mjs",
+];
+const SWEEP_PATTERNS = [
+  "@neon/auth", "NEON_AUTH_", "DATABASE_URL", "@vercel/functions", "vercel deploy",
 ];
 
 test("Netlify build config pins base, command and Node version", async () => {
@@ -103,4 +118,20 @@ test("Northflank runbook pins the combined-service settings", async () => {
 test(".env.example keeps the content origin hostname-free", () => {
   assert.match(example, /^RUST_CONTENT_API_ORIGIN=$/m);
   assert.doesNotMatch(example, /northflank\.(?:net|io|app|com)/i);
+});
+
+test("current tracked source and docs have no removed platform references", async () => {
+  const files = execFileSync("git", ["ls-files", "-z"], { cwd: repoDir, encoding: "utf8" })
+    .split("\0")
+    .filter(Boolean)
+    .filter((file) => /\.(?:md|mjs|js|ts|tsx|json|yml|yaml|sql|toml|example|txt)$/.test(file) || file.endsWith(".env.example"))
+    .filter((file) => !SWEEP_EXEMPT.some((exempt) => file.startsWith(exempt)));
+  const offenders = [];
+  for (const file of files) {
+    const text = await readFile(fileURLToPath(new URL(`../../${file}`, import.meta.url)), "utf8");
+    for (const pattern of SWEEP_PATTERNS) {
+      if (text.includes(pattern)) offenders.push(`${file}: ${pattern}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `stale references in ${files.length} tracked files`);
 });
