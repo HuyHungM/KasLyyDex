@@ -2,7 +2,7 @@
 
 [build]
   base = "web"
-  command = "rustup target add wasm32-unknown-unknown && npm run build"
+  command = "cargo install wasm-bindgen-cli --version 0.2.130 --locked && rustup target add wasm32-unknown-unknown && npm run build"
   publish = ".next"
 
 [build.environment]
