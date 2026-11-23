@@ -3,6 +3,10 @@
 [build]
   base = "web"
   command = "cargo install wasm-bindgen-cli --version 0.2.130 --locked && rustup target add wasm32-unknown-unknown && npm run build"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
 
 [build.environment]
   NODE_VERSION = "22"
