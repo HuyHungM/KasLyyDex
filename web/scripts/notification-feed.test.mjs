@@ -81,7 +81,7 @@ async function migratedDb(files = MIGRATIONS) {
   const db = drizzle(pg, { schema });
   for (const file of files) {
     try {
-      await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
+      await pg.exec(await readFile(fileURLToPath(new URL(`../../netlify/database/migrations/${file}`, import.meta.url)), "utf8"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
@@ -431,7 +431,7 @@ test("0005 backfill replays same-publish legacy rows without duplicate notificat
         title: "Chương mới", body: "legacy",
       });
       await pg.exec(await readFile(fileURLToPath(new URL(
-        "../drizzle/0005_notification_pending.sql", import.meta.url)), "utf8"));
+        "../../netlify/database/migrations/0005_notification_pending.sql", import.meta.url)), "utf8"));
       const notes = await drain(db, 10);
       const keys = notes.map((item) => item.eventKey);
       assert.equal(notes.length, 3);

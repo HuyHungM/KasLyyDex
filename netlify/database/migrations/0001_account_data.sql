@@ -14,7 +14,7 @@ CREATE TABLE "chapter_progress" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "chapter_progress_user_id_manga_id_chapter_id_language_pk" PRIMARY KEY("user_id","manga_id","chapter_id","language")
 );
---> statement-breakpoint
+
 CREATE TABLE "library_entries" (
 	"user_id" text NOT NULL,
 	"manga_id" text NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE "library_entries" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "library_entries_user_id_manga_id_pk" PRIMARY KEY("user_id","manga_id")
 );
---> statement-breakpoint
+
 CREATE TABLE "reader_preferences" (
 	"user_id" text PRIMARY KEY NOT NULL,
 	"mode" text DEFAULT 'vertical' NOT NULL,
@@ -38,21 +38,21 @@ CREATE TABLE "reader_preferences" (
 	"speed" integer DEFAULT 3 NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
---> statement-breakpoint
+
 CREATE TABLE "user_roles" (
 	"user_id" text NOT NULL,
 	"role" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "user_roles_user_id_role_pk" PRIMARY KEY("user_id","role")
 );
---> statement-breakpoint
-ALTER TABLE "profiles" ADD COLUMN "username" text;--> statement-breakpoint
-ALTER TABLE "profiles" ADD COLUMN "display_name" text;--> statement-breakpoint
-ALTER TABLE "profiles" ADD COLUMN "avatar_url" text;--> statement-breakpoint
-ALTER TABLE "profiles" ADD COLUMN "total_xp" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "chapter_progress" ADD CONSTRAINT "chapter_progress_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "library_entries" ADD CONSTRAINT "library_entries_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reader_preferences" ADD CONSTRAINT "reader_preferences_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "user_roles" ADD CONSTRAINT "user_roles_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "chapter_progress_user_recent_idx" ON "chapter_progress" USING btree ("user_id","last_read_at");--> statement-breakpoint
+
+ALTER TABLE "profiles" ADD COLUMN "username" text;
+ALTER TABLE "profiles" ADD COLUMN "display_name" text;
+ALTER TABLE "profiles" ADD COLUMN "avatar_url" text;
+ALTER TABLE "profiles" ADD COLUMN "total_xp" integer DEFAULT 0 NOT NULL;
+ALTER TABLE "chapter_progress" ADD CONSTRAINT "chapter_progress_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "library_entries" ADD CONSTRAINT "library_entries_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "reader_preferences" ADD CONSTRAINT "reader_preferences_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "user_roles" ADD CONSTRAINT "user_roles_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+CREATE INDEX "chapter_progress_user_recent_idx" ON "chapter_progress" USING btree ("user_id","last_read_at");
 CREATE UNIQUE INDEX "profiles_username_key" ON "profiles" USING btree ("username");

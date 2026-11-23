@@ -35,7 +35,7 @@ async function migratedDb(files = MIGRATIONS) {
   const db = drizzle(pg, { schema });
   for (const file of files) {
     try {
-      await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
+      await pg.exec(await readFile(fileURLToPath(new URL(`../../netlify/database/migrations/${file}`, import.meta.url)), "utf8"));
     } catch (error) {
       // During RED the fix migration does not exist yet; keep the older SQL so
       // behaviour regressions fail on assertions rather than a setup error.
@@ -805,7 +805,7 @@ test("0003 migration scrubs previously persisted reply snippets", async () => {
       eventKey: "reply:legacy", title: "Có phản hồi bình luận", body: "LEGACY_SECRET_SNIPPET",
     });
     await pg.exec(await readFile(fileURLToPath(new URL(
-      "../drizzle/0003_community_cursor_scrub.sql", import.meta.url)), "utf8"));
+      "../../netlify/database/migrations/0003_community_cursor_scrub.sql", import.meta.url)), "utf8"));
     const rows = await db.select().from(schema.notifications);
     assert.equal(rows.length, 1);
     assert.ok(!rows[0].body.includes("LEGACY_SECRET_SNIPPET"));

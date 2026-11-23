@@ -5,14 +5,14 @@ CREATE TABLE "cultivation_realms" (
 	"name" text NOT NULL,
 	CONSTRAINT "cultivation_realms_range_check" CHECK ("cultivation_realms"."min_level" <= "cultivation_realms"."max_level")
 );
---> statement-breakpoint
+
 CREATE TABLE "reader_checkpoints" (
 	"session_id" text NOT NULL,
 	"page" integer NOT NULL,
 	"seen_at" bigint NOT NULL,
 	CONSTRAINT "reader_checkpoints_session_id_page_pk" PRIMARY KEY("session_id","page")
 );
---> statement-breakpoint
+
 CREATE TABLE "reader_sessions" (
 	"id" text PRIMARY KEY NOT NULL,
 	"user_id" text NOT NULL,
@@ -24,7 +24,7 @@ CREATE TABLE "reader_sessions" (
 	"expires_at" bigint NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
---> statement-breakpoint
+
 CREATE TABLE "reading_completions" (
 	"user_id" text NOT NULL,
 	"chapter_id" text NOT NULL,
@@ -36,7 +36,7 @@ CREATE TABLE "reading_completions" (
 	"completed_at" bigint NOT NULL,
 	CONSTRAINT "reading_completions_user_id_chapter_id_pk" PRIMARY KEY("user_id","chapter_id")
 );
---> statement-breakpoint
+
 CREATE TABLE "xp_events" (
 	"id" text PRIMARY KEY NOT NULL,
 	"user_id" text NOT NULL,
@@ -46,15 +46,15 @@ CREATE TABLE "xp_events" (
 	"rule_version" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
---> statement-breakpoint
-ALTER TABLE "profiles" ADD COLUMN "level" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
-ALTER TABLE "reader_checkpoints" ADD CONSTRAINT "reader_checkpoints_session_id_reader_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."reader_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reader_sessions" ADD CONSTRAINT "reader_sessions_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reading_completions" ADD CONSTRAINT "reading_completions_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "xp_events" ADD CONSTRAINT "xp_events_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "reader_sessions_user_idx" ON "reader_sessions" USING btree ("user_id","issued_at");--> statement-breakpoint
+
+ALTER TABLE "profiles" ADD COLUMN "level" integer DEFAULT 1 NOT NULL;
+ALTER TABLE "reader_checkpoints" ADD CONSTRAINT "reader_checkpoints_session_id_reader_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."reader_sessions"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "reader_sessions" ADD CONSTRAINT "reader_sessions_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "reading_completions" ADD CONSTRAINT "reading_completions_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "xp_events" ADD CONSTRAINT "xp_events_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+CREATE INDEX "reader_sessions_user_idx" ON "reader_sessions" USING btree ("user_id","issued_at");
 CREATE UNIQUE INDEX "xp_events_user_type_chapter_key" ON "xp_events" USING btree ("user_id","event_type","chapter_id");
---> statement-breakpoint
+
 -- Deterministic cosmetic seed; boundaries mirror the pure TypeScript/Rust
 -- shared-domain fixtures and the approved platform spec section 8.
 INSERT INTO "cultivation_realms" ("key","min_level","max_level","name") VALUES

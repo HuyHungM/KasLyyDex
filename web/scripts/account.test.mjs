@@ -28,7 +28,7 @@ async function migratedDb() {
     "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
     "0005_notification_pending.sql", "0006_progression.sql",
   ]) {
-    const url = new URL(`../drizzle/${file}`, import.meta.url);
+    const url = new URL(`../../netlify/database/migrations/${file}`, import.meta.url);
     await pg.exec(await readFile(fileURLToPath(url), "utf8"));
   }
   return { pg, db };

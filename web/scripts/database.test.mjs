@@ -1,22 +1,22 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { getTableName } from "drizzle-orm";
 
-const { readDatabaseConfig } = await import("../lib/db/client.ts");
+const { readDatabaseConfig, getDatabase } = await import("../lib/db/client.ts");
 const { profiles } = await import("../lib/db/schema.ts");
 
 const migrationUrls = [
-  new URL("../drizzle/0000_application.sql", import.meta.url),
-  new URL("../drizzle/0001_account_data.sql", import.meta.url),
-  new URL("../drizzle/0002_comments_moderation.sql", import.meta.url),
-  new URL("../drizzle/0003_community_cursor_scrub.sql", import.meta.url),
-  new URL("../drizzle/0004_notification_feed_cursor.sql", import.meta.url),
-  new URL("../drizzle/0005_notification_pending.sql", import.meta.url),
-  new URL("../drizzle/0006_progression.sql", import.meta.url),
-  new URL("../drizzle/0007_reader_session_source.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0000_application.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0001_account_data.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0002_comments_moderation.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0003_community_cursor_scrub.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0004_notification_feed_cursor.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0005_notification_pending.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0006_progression.sql", import.meta.url),
+  new URL("../../netlify/database/migrations/0007_reader_session_source.sql", import.meta.url),
 ];
 
 async function freshDatabase() {
@@ -29,6 +29,23 @@ async function freshDatabase() {
   }
   return { db, sql };
 }
+
+test("migrations are plain SQL in Netlify's numbered order", async () => {
+  const files = (await readdir(fileURLToPath(new URL("../../netlify/database/migrations/", import.meta.url)))).sort();
+  assert.deepEqual(files, [
+    "0000_application.sql",
+    "0001_account_data.sql",
+    "0002_comments_moderation.sql",
+    "0003_community_cursor_scrub.sql",
+    "0004_notification_feed_cursor.sql",
+    "0005_notification_pending.sql",
+    "0006_progression.sql",
+    "0007_reader_session_source.sql",
+  ]);
+  for (const url of migrationUrls) {
+    assert.doesNotMatch(await readFile(fileURLToPath(url), "utf8"), /--> statement-breakpoint/);
+  }
+});
 
 test("application migrations own account tables and never touch Neon Auth tables", async () => {
   const { db, sql } = await freshDatabase();
@@ -201,6 +218,25 @@ test("realm seed and XP ledger uniqueness match the progression contract", async
   }
 });
 
+test("getDatabase falls back to the Netlify connection string only on Netlify", () => {
+  const previous = { NETLIFY: process.env.NETLIFY, NETLIFY_DB_URL: process.env.NETLIFY_DB_URL };
+  delete process.env.NETLIFY_DB_URL;
+  try {
+    process.env.NETLIFY = "true";
+    assert.throws(() => getDatabase(), (error) => error.name === "MissingDatabaseConnectionError");
+    process.env.NETLIFY = "false";
+    assert.throws(
+      () => getDatabase(),
+      (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("NETLIFY_DB_URL"),
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("Drizzle schema and database config stay application-only and lazy", () => {
   assert.equal(getTableName(profiles), "profiles");
   const keys = Object.keys(profiles);
@@ -208,6 +244,6 @@ test("Drizzle schema and database config stay application-only and lazy", () => 
   assert.ok(!keys.some((key) => /auth|session|account/i.test(key)));
   assert.throws(
     () => readDatabaseConfig({}),
-    (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("DATABASE_URL"),
+    (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("NETLIFY_DB_URL"),
   );
 });

@@ -8,11 +8,11 @@ CREATE TABLE "notification_pending" (
 	"title" text,
 	CONSTRAINT "notification_pending_user_id_manga_id_language_chapter_id_pk" PRIMARY KEY("user_id","manga_id","language","chapter_id")
 );
---> statement-breakpoint
-ALTER TABLE "notification_cursors" ADD COLUMN "cohort_publish" bigint;--> statement-breakpoint
-ALTER TABLE "notification_cursors" ADD COLUMN "cohort_complete" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE "notification_pending" ADD CONSTRAINT "notification_pending_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "notification_pending_cohort_idx" ON "notification_pending" USING btree ("user_id","manga_id","language","publish");--> statement-breakpoint
+
+ALTER TABLE "notification_cursors" ADD COLUMN "cohort_publish" bigint;
+ALTER TABLE "notification_cursors" ADD COLUMN "cohort_complete" boolean DEFAULT false NOT NULL;
+ALTER TABLE "notification_pending" ADD CONSTRAINT "notification_pending_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;
+CREATE INDEX "notification_pending_cohort_idx" ON "notification_pending" USING btree ("user_id","manga_id","language","publish");
 -- Round-2 rows used an exclusive scan bound equal to the processed publish time.
 -- Rewind one second so same-time legacy rows are replayed; event-key uniqueness
 -- makes the overlap idempotent.

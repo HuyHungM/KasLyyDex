@@ -1,5 +1,6 @@
 import "server-only";
 
+import { getConnectionString } from "@netlify/database";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { errorEnvelope } from "../contracts";
@@ -24,19 +25,19 @@ export class DatabaseConfigurationError extends Error {
 }
 
 export function readDatabaseConfig(env: NodeJS.ProcessEnv = process.env): DatabaseConfig {
-  const url = env.DATABASE_URL?.trim();
+  const url = env.NETLIFY_DB_URL?.trim();
   if (!url) {
     throw new DatabaseConfigurationError(
       "DATABASE_NOT_CONFIGURED",
       "Application database is not configured.",
-      ["DATABASE_URL"],
+      ["NETLIFY_DB_URL"],
     );
   }
   try {
     const parsed = new URL(url);
     if (!["postgres:", "postgresql:"].includes(parsed.protocol)) throw new Error("protocol");
   } catch {
-    throw new DatabaseConfigurationError("DATABASE_CONFIG_INVALID", "DATABASE_URL is invalid.");
+    throw new DatabaseConfigurationError("DATABASE_CONFIG_INVALID", "NETLIFY_DB_URL is invalid.");
   }
   return { url };
 }
@@ -57,8 +58,19 @@ export type AppDatabase = ReturnType<typeof connect>["db"];
 
 let connection: ReturnType<typeof connect> | undefined;
 
-// Pool creation stays lazy so builds and public routes need no DATABASE_URL.
+// Pool creation stays lazy so builds and public routes need no NETLIFY_DB_URL.
 export function getDatabase() {
-  if (!connection) connection = connect(readDatabaseConfig().url);
+  if (!connection) {
+    let url: string;
+    try {
+      url = readDatabaseConfig().url;
+    } catch (error) {
+      const absent = error instanceof DatabaseConfigurationError
+        && error.code === "DATABASE_NOT_CONFIGURED";
+      if (!absent || process.env.NETLIFY !== "true") throw error;
+      url = getConnectionString();
+    }
+    connection = connect(url);
+  }
   return connection.db;
 }

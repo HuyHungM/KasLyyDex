@@ -34,7 +34,7 @@ async function migratedDb() {
   const pg = new PGlite();
   const db = drizzle(pg, { schema });
   for (const file of migrationFiles) {
-    const url = new URL(`../drizzle/${file}`, import.meta.url);
+    const url = new URL(`../../netlify/database/migrations/${file}`, import.meta.url);
     await pg.exec(await readFile(fileURLToPath(url), "utf8"));
   }
   return { pg, db };

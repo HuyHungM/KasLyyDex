@@ -75,7 +75,7 @@ export async function checkReadiness(env: NodeJS.ProcessEnv = process.env): Prom
     if (error instanceof DatabaseConfigurationError && error.missing.length > 0) {
       missing.push(...error.missing);
     } else {
-      missing.push("DATABASE_URL");
+      missing.push("NETLIFY_DB_URL");
     }
   }
   try {

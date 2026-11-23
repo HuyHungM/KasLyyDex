@@ -37,7 +37,7 @@ async function migratedDb() {
   const pg = new PGlite();
   const db = drizzle(pg, { schema });
   for (const file of migrationFiles) {
-    const url = new URL(`../drizzle/${file}`, import.meta.url);
+    const url = new URL(`../../netlify/database/migrations/${file}`, import.meta.url);
     // RED runs before the additive source migration exists; skip it so the
     // failures reflect missing source behaviour, not a missing file.
     if (!existsSync(fileURLToPath(url))) continue;

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const example = await readFile(fileURLToPath(new URL("../.env.example", import.meta.url)), "utf8");
 const rootFile = (relativePath) => fileURLToPath(new URL(`../../${relativePath}`, import.meta.url));
+const { readDatabaseConfig } = await import("../lib/db/client.ts");
 
 const REQUIRED = [
   "NETLIFY_DB_URL",
@@ -41,6 +42,19 @@ test(".env.example documents every required runtime name without values", () => 
     assert.match(example, new RegExp(`^${name}=$`, "m"), name);
   }
   assert.doesNotMatch(example, /NEXT_PUBLIC_(?:DATABASE|NEON|GOOGLE_CLIENT_SECRET|READER_TICKET)/);
+});
+
+test("database config reads only the Netlify connection name", () => {
+  const url = "postgresql://u:" + "p@localhost/db";
+  assert.deepEqual(readDatabaseConfig({ NETLIFY_DB_URL: url }), { url });
+  assert.throws(
+    () => readDatabaseConfig({}),
+    (error) => {
+      assert.equal(error.code, "DATABASE_NOT_CONFIGURED");
+      assert.deepEqual(error.missing, ["NETLIFY_DB_URL"]);
+      return true;
+    },
+  );
 });
 
 test("configured values are shape-checked without being printed", () => {
