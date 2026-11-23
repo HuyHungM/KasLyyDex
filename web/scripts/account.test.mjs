@@ -7,14 +7,16 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { startNext, stop } from "./test-helpers.mjs";
 
-// RED/GREEN harness for Task 6. The app DB is real SQL in embedded PGlite;
-// authentication is exercised through the real Neon SDK against a local HTTP
-// fixture. Nothing here injects a production header or in-memory user store.
+// RED/GREEN harness for Task 5. The app DB is real SQL in embedded PGlite;
+// identity comes from a Netlify-shaped user mapped by the production helper.
+// Nothing here injects a production header or in-memory user store.
 const validators = await import("../lib/validators.ts");
 const merge = await import("../lib/merge.ts");
-const { identityFromSession } = await import("../lib/auth/identity.ts");
+const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const { setIdentityProvider } = await import("../lib/auth/server.ts");
 const service = await import("../lib/me/service.ts");
-const { createMeApi } = await import("../lib/me/handlers.ts");
+const { createMeApi, productionMeApi } = await import("../lib/me/handlers.ts");
+const { signOutAccount } = await import("../lib/account/client.ts");
 const schema = await import("../lib/db/schema.ts");
 
 const DAY = 86_400_000;
@@ -60,65 +62,27 @@ function api(db, user = identity(), overrides = {}) {
   });
 }
 
-let configuredNext;
 let unconfiguredNext;
-let authFixture;
 let fixtureSession;
 
 before(async () => {
   unconfiguredNext = await startNext();
-  // Loopback managed-auth fixture: the SAME SDK proxy used in production sends
-  // the requests and rewrites the session cookies; no fake session is minted by
-  // application code.
-  const { startHttpServer } = await import("./test-helpers.mjs");
-  authFixture = await startHttpServer((req, res, body) => {
-    if (req.url?.includes("get-session")) {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(now + DAY).toISOString() },
-        user: {
-          id: "google|opaque-42",
-          name: "Fixture Reader",
-          email: "reader@example.com",
-          emailVerified: true,
-          image: null,
-        },
-      }));
-      return;
-    }
-    if (req.url?.includes("sign-in/email")) {
-      res.writeHead(200, {
-        "content-type": "application/json",
-        "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
-      });
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, body }));
-  });
-  configuredNext = await startNext({
-      NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
-      NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
-    });
-    const signIn = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
-    });
-    assert.equal(signIn.status, 200);
-    const sessionRes = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`, {
-      headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
-    });
-    assert.equal(sessionRes.status, 200);
-    fixtureSession = await sessionRes.json();
-    assert.equal(fixtureSession.user.id, "google|opaque-42");
+  // Netlify Identity's raw GoTrue shape; mapped to AccountIdentity by the same
+  // helper the production adapter uses. No fake session is minted by app code.
+  fixtureSession = {
+    id: "google|opaque-42",
+    email: "reader@example.com",
+    email_verified: true,
+    confirmed_at: "2026-06-01T00:00:00.000Z",
+    name: "Fixture Reader",
+    user_metadata: { full_name: "Fixture Reader" },
+    role: "admin",
+    totalXp: 999_999,
+  };
 });
 
 after(async () => {
-  await stop(configuredNext?.child);
   await stop(unconfiguredNext?.child);
-  await authFixture?.close();
 });
 
 test("server routes fail closed when auth or database configuration is absent", async () => {
@@ -127,23 +91,32 @@ test("server routes fail closed when auth or database configuration is absent", 
   assert.equal((await noAuth.json()).error.code, "AUTH_NOT_CONFIGURED");
   assert.equal(noAuth.headers.get("cache-control"), "private, no-store");
 
-  const noDatabase = await fetch(`${configuredNext.baseUrl}/api/v1/me`, {
-    headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
-  });
-  assert.equal(noDatabase.status, 503);
-  assert.equal((await noDatabase.json()).error.code, "DATABASE_NOT_CONFIGURED");
-
-  const crossOrigin = await fetch(`${configuredNext.baseUrl}/api/v1/me/library/m1`, {
+  const crossOrigin = await fetch(`${unconfiguredNext.baseUrl}/api/v1/me/library/m1`, {
     method: "PUT",
-    headers: {
-      "content-type": "application/json",
-      origin: "https://evil.example",
-      cookie: "__Secure-neon-auth.session_token=fixture",
-    },
+    headers: { "content-type": "application/json", origin: "https://evil.example" },
     body: JSON.stringify({ title: "One", lang: "vi", status: "reading", coverFile: null }),
   });
   assert.equal(crossOrigin.status, 403);
   assert.equal((await crossOrigin.json()).error.code, "ORIGIN_REJECTED");
+
+  const previousUrl = process.env.NETLIFY_DB_URL;
+  delete process.env.NETLIFY_DB_URL;
+  setIdentityProvider({
+    config: () => ({ url: "https://identity.test" }),
+    getUser: async () => fixtureSession,
+    login: async () => fixtureSession,
+    signup: async () => fixtureSession,
+    logout: async () => {},
+  });
+  try {
+    const noDatabase = await productionMeApi().meGet(request("/api/v1/me"));
+    assert.equal(noDatabase.status, 503);
+    assert.equal((await noDatabase.json()).error.code, "DATABASE_NOT_CONFIGURED");
+  } finally {
+    setIdentityProvider();
+    if (previousUrl === undefined) delete process.env.NETLIFY_DB_URL;
+    else process.env.NETLIFY_DB_URL = previousUrl;
+  }
 });
 
 test("validators reject cross-origin mutations, oversize bodies and implausible timestamps", () => {
@@ -206,16 +179,54 @@ test("merge precedence keeps newer server state and stays idempotent", () => {
   assert.equal(library.value.status, "completed");
 });
 
-test("real SDK session identity is opaque and never derived from client fields", () => {
-  const resolved = identityFromSession(fixtureSession);
+test("Netlify session identity is opaque and never derived from client fields", () => {
+  const resolved = identityFromNetlifyUser(fixtureSession);
   assert.equal(resolved.id, "google|opaque-42");
   assert.equal(resolved.emailVerified, true);
+  assert.deepEqual(Object.keys(resolved).sort(), ["email", "emailVerified", "id", "image", "name", "sessionId"]);
   assert.equal(validators.roleFromVerifiedAllowlist({
     ...resolved, emailVerified: false,
   }, ["reader@example.com"]), null);
   assert.equal(validators.roleFromVerifiedAllowlist(resolved, ["reader@example.com"]), "admin");
   assert.equal(validators.roleFromVerifiedAllowlist(resolved, []), null);
   assert.equal(validators.roleFromVerifiedAllowlist(resolved, ["other@example.com"]), null);
+});
+
+test("sign-out posts to the auth route before clearing the local session", async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    calls.push({ call: `${init?.method ?? "GET"} ${url}`, init });
+    if (url === "/api/auth/sign-out") return Response.json({ ok: true });
+    if (url === "/api/auth/get-session") return Response.json({ session: null, user: null });
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  try {
+    await signOutAccount();
+    assert.deepEqual(calls.map((entry) => entry.call), ["POST /api/auth/sign-out", "GET /api/auth/get-session"]);
+    assert.equal(calls[0].init?.credentials, "same-origin");
+    assert.equal(calls[0].init?.cache, "no-store");
+    assert.equal(calls[0].init?.body, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a failed sign-out never clears the local session", async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    calls.push(`${init?.method ?? "GET"} ${url}`);
+    return Response.json({ error: { code: "AUTH_REQUEST_REJECTED", message: "signed out refused" } }, { status: 500 });
+  };
+  try {
+    await assert.rejects(signOutAccount(), /signed out refused/);
+    assert.deepEqual(calls, ["POST /api/auth/sign-out"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("library rows are unique per user and ownership never crosses accounts", async () => {

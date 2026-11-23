@@ -35,7 +35,6 @@
     "test:task8:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs"
   },
   "dependencies": {
-    "@neon/auth": "^0.8.2",
     "@netlify/database": "^2.0.3",
     "@netlify/identity": "^2.0.1",
     "drizzle-orm": "^0.45.4",

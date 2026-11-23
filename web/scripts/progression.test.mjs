@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { after, before, test } from "node:test";
+import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
-import { startNext, stop } from "./test-helpers.mjs";
 
-// Task 8 RED/GREEN harness. Real SQL migrations run in embedded PostgreSQL and
-// identity comes from the real Neon SDK session fixture. No production bypass:
-// the clock, content fixture and failure hook exist only on this test factory.
+// Task 5 RED/GREEN harness. Real SQL migrations run in embedded PostgreSQL and
+// identity comes from a Netlify-shaped user mapped by the production helper.
+// No production bypass: the clock, content fixture and hook exist only here.
 const progression = await import("../lib/progression.ts");
 const apiModule = await import("../lib/progression-api.ts");
-const { identityFromSession } = await import("../lib/auth/identity.ts");
+const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
 const schema = await import("../lib/db/schema.ts");
 const meService = await import("../lib/me/service.ts");
 
@@ -92,45 +91,21 @@ async function checkpoints(handler, ticket, pages) {
   return json(await handler.checkpointPost(request("/api/v1/progress/checkpoint", { ticket, pages })));
 }
 
-let authFixture;
-let configuredNext;
 let realIdentity;
 
 before(async () => {
-  authFixture = await (await import("./test-helpers.mjs")).startHttpServer((req, res) => {
-    if (req.url?.includes("get-session")) {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(now + 86_400_000).toISOString() },
-        user: { id: "google|opaque-42", name: "Fixture Reader", email: "reader@example.com", emailVerified: true, image: null },
-      }));
-      return;
-    }
-    res.writeHead(200, {
-      "content-type": "application/json",
-      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
-    });
-    res.end(JSON.stringify({ ok: true }));
+  // Netlify Identity's raw GoTrue shape; the same mapping the adapter uses.
+  realIdentity = identityFromNetlifyUser({
+    id: "google|opaque-42",
+    email: "reader@example.com",
+    email_verified: true,
+    confirmed_at: "2026-11-21T00:00:00.000Z",
+    name: "Fixture Reader",
+    user_metadata: { full_name: "Fixture Reader" },
+    role: "admin",
+    totalXp: 999_999,
   });
-  configuredNext = await startNext({
-    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
-    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
-  });
-  await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
-  });
-  const sessionRes = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`, {
-    headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
-  });
-  realIdentity = identityFromSession(await sessionRes.json());
   assert.equal(realIdentity.id, "google|opaque-42");
-});
-
-after(async () => {
-  await stop(configuredNext?.child);
-  await authFixture?.close();
 });
 
 // Step 1: pure contract.
@@ -176,19 +151,35 @@ test("coverage is distinct, bounded and elapsed time uses required pages", () =>
   assert.deepEqual(merged, [1, 2, 9, 10], "out-of-range and duplicate pages never enter the union");
 });
 
-test("production route fails closed without READER_TICKET_SECRET", async () => {
-  const res = await fetch(`${configuredNext.baseUrl}/api/v1/reader-sessions`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      origin: configuredNext.baseUrl,
-      cookie: "__Secure-neon-auth.session_token=fixture",
-    },
-    body: JSON.stringify({ chapterId: CHAPTER, mangaId: MANGA, lang: "vi" }),
-  });
+test("production route fails closed when Identity has no session", async () => {
+  const res = await apiModule.productionProgressionApi().sessionPost(
+    request("/api/v1/reader-sessions", { chapterId: CHAPTER, mangaId: MANGA, lang: "vi" }));
   assert.equal(res.status, 503);
-  assert.equal((await res.json()).error.code, "READER_TICKET_NOT_CONFIGURED");
+  assert.equal((await res.json()).error.code, "AUTH_NOT_CONFIGURED");
   assert.equal(res.headers.get("cache-control"), "private, no-store");
+});
+
+test("forged totalXp, percent and pageCount in a body grant nothing without a session", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const guest = api(db, null);
+    const session = await json(await guest.sessionPost(request("/api/v1/reader-sessions", {
+      chapterId: CHAPTER, mangaId: MANGA, lang: "vi",
+      role: "admin", totalXp: 999_999, percent: 100, pageCount: 9999,
+    })));
+    assert.equal(session.status, 401);
+    assert.equal(session.body.error.code, "UNAUTHENTICATED");
+    assert.equal((await pg.query("select count(*)::int as n from reader_sessions")).rows[0].n, 0);
+
+    const checkpoint = await json(await guest.checkpointPost(request("/api/v1/progress/checkpoint", {
+      role: "admin", totalXp: 999_999, percent: 100, pageCount: 9999, pages: [1],
+    })));
+    assert.equal(checkpoint.status, 401);
+    assert.equal(checkpoint.body.error.code, "UNAUTHENTICATED");
+    assert.equal((await pg.query("select count(*)::int as n from reader_checkpoints")).rows[0].n, 0);
+  } finally {
+    await pg.close();
+  }
 });
 
 // Step 3: signed tickets and authoritative metadata.

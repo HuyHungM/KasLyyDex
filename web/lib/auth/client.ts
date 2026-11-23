@@ -1,11 +1,19 @@
 "use client";
 
-import { createAuthClient } from "@neon/auth/next";
+import { handleAuthCallback, login, oauthLogin, signup } from "@netlify/identity";
 
-export const authClient = createAuthClient();
-
-// Managed Better Auth owns provider configuration; Google credentials are set in
-// the Neon branch, never in the browser bundle.
-export function signInWithGoogle(callbackURL = "/") {
-  return authClient.signIn.social({ provider: "google", callbackURL });
+export async function signIn(email: string, password: string) {
+  return login(email, password);
 }
+
+export async function signUp(email: string, password: string, name?: string) {
+  return signup(email, password, name ? { data: { full_name: name } } : undefined);
+}
+
+export function signInWithGoogle(): void {
+  oauthLogin("google");
+}
+
+// Sign-out goes through /api/auth/sign-out so the server clears the Identity
+// cookies behind the route's Origin check; the adapter calls SDK logout there.
+export { handleAuthCallback };

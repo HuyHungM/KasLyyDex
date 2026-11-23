@@ -6,7 +6,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { getDatabase, type AppDatabase } from "./db/client";
 import * as tables from "./db/schema";
 import { AuthConfigurationError, getAuth } from "./auth/server";
-import { identityFromSession, type AccountIdentity } from "./auth/identity";
+import type { AccountIdentity } from "./auth/identity";
 import { serverContent } from "./content-server";
 import type { ContentClient } from "./contracts";
 import { errorEnvelope } from "./contracts";
@@ -486,9 +486,7 @@ export function productionProgressionApi(): ProgressionApi {
     db: () => getDatabase(),
     identity: async () => {
       try {
-        const { data, error } = await getAuth().getSession();
-        if (error) return null;
-        return identityFromSession(data);
+        return await getAuth().getSession();
       } catch (error) {
         if (error instanceof AuthConfigurationError) throw error;
         throw new ServiceError(503, "AUTH_UNAVAILABLE", "Managed authentication is temporarily unavailable.");

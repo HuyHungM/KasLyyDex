@@ -6,13 +6,13 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { startNext, stop } from "./test-helpers.mjs";
 
-// Task 7 RED/GREEN harness. SQL runs in embedded PGlite via the checked-in
-// migrations; identity comes from the real Neon SDK against a loopback auth
-// fixture. No application code accepts a fake header, env bypass or role field.
+// Task 5 RED/GREEN harness. SQL runs in embedded PGlite via the checked-in
+// migrations; identity comes from a Netlify-shaped user mapped by the same
+// helper the production adapter uses. No fake header, env bypass or role field.
 const community = await import("../lib/moderation.ts");
 const { createCommunityApi } = await import("../lib/community/handlers.ts");
 const validators = await import("../lib/validators.ts");
-const { identityFromSession } = await import("../lib/auth/identity.ts");
+const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
 const { AuthConfigurationError } = await import("../lib/auth/server.ts");
 const schema = await import("../lib/db/schema.ts");
 
@@ -120,50 +120,29 @@ function chapter(id, chapterNumber, publishAt) {
   };
 }
 
-let authFixture;
-let configuredNext;
 let unconfiguredNext;
 let fixtureSession;
 
 before(async () => {
   unconfiguredNext = await startNext();
-  const { startHttpServer: http } = await import("./test-helpers.mjs");
-  authFixture = await http((req, res) => {
-    if (req.url?.includes("get-session")) {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        session: { id: "session-opaque", userId: "google|sdk-identity", expiresAt: new Date(now + DAY).toISOString() },
-        user: {
-          id: "google|sdk-identity", name: "SDK Reader", email: "reader@example.com",
-          emailVerified: true, image: null, role: "admin", level: 999, totalXp: 999_999,
-        },
-      }));
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-  });
-  configuredNext = await startNext({
-    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
-    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
-  });
-  const signIn = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
-  });
-  assert.equal(signIn.status, 200);
-  const response = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`, {
-    headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
-  });
-  fixtureSession = await response.json();
-  assert.equal(fixtureSession.user.id, "google|sdk-identity");
+  // Raw Netlify Identity user, including fields a client must never be able to
+  // turn into privileges. The production mapping reads none of them.
+  fixtureSession = {
+    id: "google|sdk-identity",
+    email: "reader@example.com",
+    email_verified: true,
+    confirmed_at: "2026-07-01T00:00:00.000Z",
+    name: "SDK Reader",
+    user_metadata: { full_name: "SDK Reader" },
+    app_metadata: { roles: ["moderator"] },
+    role: "admin",
+    level: 999,
+    totalXp: 999_999,
+  };
 });
 
 after(async () => {
-  await stop(configuredNext?.child);
   await stop(unconfiguredNext?.child);
-  await authFixture?.close();
 });
 
 test("migration owns comment, report, notification and rate tables without auth schemas", async () => {
@@ -218,11 +197,12 @@ test("migration owns comment, report, notification and rate tables without auth 
   }
 });
 
-test("real SDK session identity owns comments; client role fields grant nothing", async () => {
+test("Netlify session identity owns comments; client role fields grant nothing", async () => {
   const { pg, db } = await migratedDb();
   try {
-    const resolved = identityFromSession(fixtureSession);
+    const resolved = identityFromNetlifyUser(fixtureSession);
     assert.equal(resolved.id, "google|sdk-identity");
+    assert.deepEqual(Object.keys(resolved).sort(), ["email", "emailVerified", "id", "image", "name", "sessionId"]);
     const handle = api(db, resolved);
     const created = await postComment(handle, {
       targetType: "manga", targetId: "m1", body: "  from sdk  ", spoiler: true,
@@ -234,6 +214,27 @@ test("real SDK session identity owns comments; client role fields grant nothing"
 
     const moderator = await handle.moderationReportsGet(request("/api/v1/moderation/reports?limit=5"));
     assert.equal(moderator.status, 403, "SDK reader is not a moderator");
+  } finally {
+    await pg.close();
+  }
+});
+
+test("forged role and totalXp in a body grant nothing without a session identity", async () => {
+  const { pg, db } = await migratedDb();
+  try {
+    const guest = api(db, null);
+    const forged = {
+      targetType: "manga", targetId: "m1", body: "forged", spoiler: false,
+      role: "moderator", level: 999, totalXp: 999_999, percent: 100,
+    };
+    const comment = await guest.commentPost(jsonRequest("/api/v1/comments", "POST", forged));
+    assert.equal(comment.status, 401);
+    assert.equal((await comment.json()).error.code, "UNAUTHENTICATED");
+
+    const queue = await guest.moderationReportsGet(request("/api/v1/moderation/reports?limit=5"));
+    assert.equal(queue.status, 403);
+    assert.equal((await queue.json()).error.code, "FORBIDDEN");
+    assert.equal((await db.select().from(schema.comments)).length, 0);
   } finally {
     await pg.close();
   }
@@ -895,7 +896,7 @@ test("public comment reads tolerate missing auth configuration but still need th
   try {
     const injected = createCommunityApi({
       db: () => db,
-      identity: async () => { throw new AuthConfigurationError("AUTH_NOT_CONFIGURED", "not configured", ["NEON_AUTH_BASE_URL"]); },
+      identity: async () => { throw new AuthConfigurationError("AUTH_NOT_CONFIGURED", "not configured", ["Identity"]); },
       now: () => now,
       allowlist: [],
       content: notificationContent([]),

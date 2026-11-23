@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { authClient, signInWithGoogle } from "@/lib/auth/client";
+import { useEffect, useState } from "react";
+import { handleAuthCallback, signIn, signInWithGoogle, signUp } from "@/lib/auth/client";
 import { signOutAccount, useAccountSession } from "@/lib/account/client";
 
 type Mode = "sign-in" | "sign-up";
@@ -15,6 +15,20 @@ export default function AuthPanel() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        await handleAuthCallback();
+      } catch {
+        // No callback in the URL, or Identity is unavailable: load the session as usual.
+      } finally {
+        if (active) void refresh();
+      }
+    })();
+    return () => { active = false; };
+  }, [refresh]);
 
   if (session.status === "loading") return <div className="surface account-card">Đang kiểm tra phiên đăng nhập…</div>;
 
@@ -79,10 +93,10 @@ export default function AuthPanel() {
     setBusy(true);
     setMessage(null);
     try {
-      const result = mode === "sign-in"
-        ? await authClient.signIn.email({ email, password })
-        : await authClient.signUp.email({ email, password, name: name || email.split("@")[0] });
-      if (result?.error) throw new Error(result.error.message ?? "Đăng nhập thất bại.");
+      const user = mode === "sign-in"
+        ? await signIn(email, password)
+        : await signUp(email, password, name || email.split("@")[0]);
+      if (!user) throw new Error("Đăng nhập thất bại.");
       await refresh();
       setPassword("");
     } catch (error) {
@@ -92,18 +106,12 @@ export default function AuthPanel() {
     }
   }
 
-  async function google() {
-    setBusy(true);
+  function google() {
     setMessage(null);
     try {
-      const result = await signInWithGoogle("/tai-khoan");
-      if (result?.error) throw new Error(result.error.message ?? "Google đăng nhập thất bại.");
-      if (result?.data?.url) window.location.assign(result.data.url);
-      else await refresh();
+      signInWithGoogle();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Google đăng nhập thất bại.");
-    } finally {
-      setBusy(false);
     }
   }
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useSyncExternalStore, useState } from "react";
-import { authClient } from "@/lib/auth/client";
 import { RemoteResourceController } from "@/lib/account/resource";
 
 export type AccountUser = {
@@ -72,7 +71,7 @@ async function loadSession(): Promise<void> {
         publish({
           status: "unconfigured",
           user: null,
-          message: "Chưa cấu hình đăng nhập. Cần NEON_AUTH_BASE_URL và NEON_AUTH_COOKIE_SECRET trên máy chủ.",
+          message: "Chưa cấu hình đăng nhập. Cần bật Netlify Identity cho site này.",
         });
         return;
       }
@@ -189,7 +188,6 @@ export function useRemoteResource<T>(path: string | null, identityKey = ""): Rem
 }
 
 export async function signOutAccount(): Promise<void> {
-  const result = await authClient.signOut();
-  if (result?.error) throw new Error(result.error.message ?? "Không thể đăng xuất.");
+  await accountMutate("/api/auth/sign-out", "POST");
   await refreshSession();
 }

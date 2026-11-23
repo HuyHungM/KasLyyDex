@@ -3,7 +3,7 @@ import "server-only";
 import type { AppDatabase } from "../db/client";
 import { DatabaseConfigurationError, getDatabase } from "../db/client";
 import { AuthConfigurationError, getAuth } from "../auth/server";
-import { identityFromSession, type AccountIdentity } from "../auth/identity";
+import { identityFromNetlifyUser, type AccountIdentity } from "../auth/identity";
 import type { ContentClient } from "../contracts";
 import { errorEnvelope } from "../contracts";
 import { logErrorEvent, withObservedRoute } from "../observability";
@@ -200,7 +200,7 @@ export function createCommunityApi(deps: CommunityDeps) {
 export type CommunityApi = ReturnType<typeof createCommunityApi>;
 
 export function resolveSessionIdentity(data: unknown): AccountIdentity | null {
-  return identityFromSession(data);
+  return identityFromNetlifyUser(data);
 }
 
 function readOperatorAllowlist(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -217,9 +217,7 @@ export function productionCommunityApi(): CommunityApi {
     db: () => getDatabase(),
     identity: async () => {
       try {
-        const { data, error } = await getAuth().getSession();
-        if (error) return null;
-        return identityFromSession(data);
+        return await getAuth().getSession();
       } catch (error) {
         if (error instanceof AuthConfigurationError) throw error;
         throw new ServiceError(503, "AUTH_UNAVAILABLE", "Managed authentication is temporarily unavailable.");
