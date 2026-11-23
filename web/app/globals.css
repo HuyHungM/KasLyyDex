@@ -138,6 +138,7 @@ button:disabled { cursor: default; }
 .feature-meta strong { color: var(--feature-lime); }
 .feature-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; max-width: 49ch; margin-top: 10px; color: #d4dbcf; font-size: .8125rem; }
 .feature .btn { margin-top: 17px; padding-inline: 16px; --solid: var(--feature-lime); --solid-ink: #202a0a; }
+.feature .search-form { max-width: 420px; margin-top: 17px; }
 .feature-fallback .feature-copy { max-width: 620px; }
 .feature-fallback p { margin-top: 10px; }
 .home-columns { display: grid; align-items: start; gap: 18px; }

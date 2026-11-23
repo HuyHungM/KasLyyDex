@@ -4,13 +4,9 @@ use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use contracts::{parse_search_query, ApiError, ApiErrorEnvelope, ChapterDto};
-use manga_core::comick::{is_comick_chapter_id, is_comick_manga_id, ComickChapter};
-use manga_core::fallback::{
-    chapter_metadata as fallback_metadata, chapter_pages, enrich_chapters, ContentState,
-};
+use contracts::{parse_search_query, ApiError, ApiErrorEnvelope};
 use manga_core::mangadex::is_uuid;
-use manga_core::{Comick, Md};
+use manga_core::Md;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -211,38 +207,22 @@ async fn ready() -> Response {
     }
 }
 
-async fn popular(State(state): State<ContentState>) -> Result<Response, Err> {
-    Ok(json_cached(state.md.popular().await.map_err(bad)?, 60))
+async fn popular(State(state): State<Md>) -> Result<Response, Err> {
+    Ok(json_cached(state.popular().await.map_err(bad)?, 60))
 }
 
-async fn latest(State(state): State<ContentState>) -> Result<Response, Err> {
-    Ok(json_cached(state.md.latest().await.map_err(bad)?, 60))
-}
-
-fn content_unavailable() -> Err {
-    api_error(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "CONTENT_UNAVAILABLE",
-        "Comick catalog unavailable.",
-    )
-}
-
-fn search_error(error: String) -> Err {
-    if error == manga_core::search::CONTENT_UNAVAILABLE {
-        content_unavailable()
-    } else {
-        bad(error)
-    }
+async fn latest(State(state): State<Md>) -> Result<Response, Err> {
+    Ok(json_cached(state.latest().await.map_err(bad)?, 60))
 }
 
 async fn search(
-    State(state): State<ContentState>,
+    State(state): State<Md>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Err> {
     let q = parse_search_query(q).map_err(validation_error)?;
-    let response = manga_core::search::search_all(&state.md, state.comick.as_ref(), &q)
+    let response = manga_core::search::search_all(&state, &q)
         .await
-        .map_err(search_error)?;
+        .map_err(bad)?;
     Ok(json_cached(response, 60))
 }
 
@@ -300,12 +280,12 @@ fn parse_notification_feed_query(q: HashMap<String, String>) -> Result<Notificat
     })
 }
 
-async fn tags(State(state): State<ContentState>) -> Result<Response, Err> {
-    Ok(json_cached(state.md.tags().await.map_err(bad)?, 86_400))
+async fn tags(State(state): State<Md>) -> Result<Response, Err> {
+    Ok(json_cached(state.tags().await.map_err(bad)?, 86_400))
 }
 
 async fn rank(
-    State(state): State<ContentState>,
+    State(state): State<Md>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Err> {
     let kind = q.get("kind").map(String::as_str).unwrap_or("follows");
@@ -316,39 +296,10 @@ async fn rank(
             "Kiểu xếp hạng không hợp lệ.",
         ));
     }
-    Ok(json_cached(state.md.rank(kind).await.map_err(bad)?, 300))
+    Ok(json_cached(state.rank(kind).await.map_err(bad)?, 300))
 }
 
-fn comick_chapter_dto(chapter: ComickChapter) -> ChapterDto {
-    ChapterDto {
-        id: chapter.id.into(),
-        chapter: chapter.chapter,
-        volume: None,
-        title: chapter.title,
-        lang: chapter.lang,
-        // Page count is only known through the chapter pages endpoint.
-        pages: 0,
-        external_url: None,
-        publish_at: chapter.publish_at,
-        group: chapter.group,
-        source: "comick".into(),
-        source_label: "Comick".into(),
-        readable: false,
-    }
-}
-
-async fn manga(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
-    if is_comick_manga_id(&id) {
-        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
-        return match comick.detail(&id).await {
-            Ok(detail) => Ok(json_cached(detail, 3600)),
-            // Search stays reachable when Comick challenges the detail route.
-            Err(error) => match comick.cached(&id) {
-                Some(hit) => Ok(json_cached(hit, 3600)),
-                None => Err(bad(error)),
-            },
-        };
-    }
+async fn manga(State(state): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
     if !is_uuid(&id) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -356,28 +307,10 @@ async fn manga(State(state): State<ContentState>, Path(id): Path<String>) -> Res
             "Mã truyện không hợp lệ.",
         ));
     }
-    Ok(json_cached(state.md.manga(&id).await.map_err(bad)?, 3600))
+    Ok(json_cached(state.manga(&id).await.map_err(bad)?, 3600))
 }
 
-async fn chapters(
-    State(state): State<ContentState>,
-    Path(id): Path<String>,
-) -> Result<Response, Err> {
-    if is_comick_manga_id(&id) {
-        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
-        let (vi, en) = tokio::join!(comick.chapters(&id, "vi"), comick.chapters(&id, "en"));
-        // Comick's chapter route can be challenged even when search stays up.
-        // Degrade to an explained empty list instead of a hard 502.
-        let notice = (vi.is_err() || en.is_err()).then(|| {
-            "Comick hiện chặn API danh sách chapter. Mở truyện trên Comick để đọc chapter mới nhất.".to_owned()
-        });
-        let response = contracts::ChaptersResponse {
-            vi: vi.unwrap_or_default().into_iter().map(comick_chapter_dto).collect(),
-            en: en.unwrap_or_default().into_iter().map(comick_chapter_dto).collect(),
-            notice,
-        };
-        return Ok(json_cached(response, 60));
-    }
+async fn chapters(State(state): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
     if !is_uuid(&id) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -385,23 +318,16 @@ async fn chapters(
             "Mã truyện không hợp lệ.",
         ));
     }
-    let primary = state.md.chapters(&id).await.map_err(bad)?;
-    let enriched = match state.md.manga(&id).await {
-        Ok(manga) => enrich_chapters(&state, &manga, (*primary).clone())
-            .await
-            .unwrap_or_else(|_| (*primary).clone()),
-        Err(_) => (*primary).clone(),
-    };
-    Ok(json_cached(enriched, 60))
+    Ok(json_cached(state.chapters(&id).await.map_err(bad)?, 60))
 }
 
 /// Single-chapter metadata for the BFF ticket. Capped public chapter lists
 /// cannot prove ownership past 2000 entries; this entity lookup can.
 async fn chapter_metadata(
-    State(state): State<ContentState>,
+    State(state): State<Md>,
     Path(id): Path<String>,
 ) -> Result<Response, Err> {
-    if !is_uuid(&id) && !is_comick_chapter_id(&id) {
+    if !is_uuid(&id) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
             "VALIDATION_ERROR",
@@ -409,12 +335,12 @@ async fn chapter_metadata(
         ));
     }
     Ok(json_no_store(
-        fallback_metadata(&state, &id).await.map_err(bad)?,
+        state.chapter_metadata(&id).await.map_err(bad)?,
     ))
 }
 
 async fn notification_feed(
-    State(state): State<ContentState>,
+    State(state): State<Md>,
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Err> {
@@ -427,7 +353,6 @@ async fn notification_feed(
     }
     let query = parse_notification_feed_query(q)?;
     let page = state
-        .md
         .notification_feed(
             &id,
             &query.lang,
@@ -440,27 +365,24 @@ async fn notification_feed(
     Ok(json_no_store(page))
 }
 
-async fn pages(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
-    if !is_uuid(&id) && !is_comick_chapter_id(&id) {
+async fn pages(State(state): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+    if !is_uuid(&id) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
             "VALIDATION_ERROR",
             "Mã chương không hợp lệ.",
         ));
     }
-    Ok(json_cached(
-        chapter_pages(&state, &id).await.map_err(bad)?,
-        120,
-    ))
+    Ok(json_cached(state.pages(&id).await.map_err(bad)?, 120))
 }
 
 /// Same-origin image proxy: disk-cached, host allowlist enforced in core.
 async fn img(
-    State(state): State<ContentState>,
+    State(state): State<Md>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Err> {
     let raw = q.get("u").cloned().unwrap_or_default();
-    let path = manga_core::imgcache::ensure(&state.md.http, &raw)
+    let path = manga_core::imgcache::ensure(&state.http, &raw)
         .await
         .map_err(bad)?;
     let ctype = if path.extension().map(|e| e == "png").unwrap_or(false) {
@@ -524,7 +446,7 @@ async fn static_cache_headers(
 
 /// Browser-facing content namespace. Legacy /api/* paths remain registered
 /// below for existing native/UI clients; both share these handlers and state.
-fn content_routes() -> Router<ContentState> {
+fn content_routes() -> Router<Md> {
     Router::new()
         .route("/api/content/popular", get(popular))
         .route("/api/content/latest", get(latest))
@@ -544,10 +466,7 @@ fn content_routes() -> Router<ContentState> {
 
 #[tokio::main]
 async fn main() {
-    let state = ContentState {
-        md: Md::new(manga_core::dns::PublicDns::client()),
-        comick: Some(Comick::new()),
-    };
+    let state = Md::new(manga_core::dns::PublicDns::client());
     let dist = std::env::var("DIST_DIR").unwrap_or_else(|_| "crates/ui/dist".into());
     let spa = ServeDir::new(&dist).fallback(ServeFile::new(format!("{dist}/index.html")));
 
@@ -622,31 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_comick_adapter_maps_to_structured_503() {
-        let (status, Json(body)) = search_error(manga_core::search::CONTENT_UNAVAILABLE.to_owned());
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
-        let (status, _) = search_error("Comick catalog unavailable".into());
-        assert_eq!(status, StatusCode::BAD_GATEWAY);
-    }
-
-    #[tokio::test]
-    async fn comick_manga_ids_dispatch_before_validation_and_report_unavailable() {
-        let state = ContentState {
-            md: Md::new(manga_core::dns::PublicDns::client()),
-            comick: None,
-        };
-        for result in [
-            manga(State(state.clone()), Path("comick:comic-1".into())).await,
-            chapters(State(state.clone()), Path("comick:comic-1".into())).await,
-        ] {
-            let (status, Json(body)) = result.unwrap_err();
-            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
-        }
-    }
-
-    #[test]
     fn notification_feed_query_bounds_language_limit_offset_and_since() {
         let parsed = parse_notification_feed_query(HashMap::from([
             ("lang".into(), "vi".into()),
@@ -682,10 +576,7 @@ mod tests {
 
     #[tokio::test]
     async fn content_handlers_reject_invalid_ids_before_any_upstream_call() {
-        let state = ContentState {
-            md: Md::new(manga_core::dns::PublicDns::client()),
-            comick: None,
-        };
+        let state = Md::new(manga_core::dns::PublicDns::client());
         for (result, message) in [
             (
                 manga(State(state.clone()), Path("not-a-uuid".into())).await,
@@ -700,7 +591,7 @@ mod tests {
                 "pages",
             ),
             (
-                chapter_metadata(State(state), Path("comick:".into())).await,
+                chapter_metadata(State(state), Path("bad:id".into())).await,
                 "chapter_metadata",
             ),
         ] {

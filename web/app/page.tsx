@@ -65,12 +65,34 @@ function RankSkeleton() {
   );
 }
 
+function HeroSearch() {
+  return (
+    <form className="search-form" role="search" action="/search" method="get">
+      <button type="submit" className="search-btn" aria-label="Tìm kiếm">
+        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+      </button>
+      <input
+        className="search-input"
+        type="search"
+        name="q"
+        maxLength={200}
+        placeholder="Nhập tên truyện…"
+        aria-label="Tìm truyện"
+      />
+    </form>
+  );
+}
+
 function FeatureFallback() {
   return (
     <section className="feature feature-fallback">
       <div className="feature-copy">
         <h1>Khám phá truyện</h1>
         <p>Tìm manga theo tên, thể loại hoặc xem các chương vừa cập nhật.</p>
+        <HeroSearch />
         <Link href="/search" className="btn btn-primary">Tìm truyện →</Link>
       </div>
     </section>
@@ -101,6 +123,7 @@ async function Featured() {
           {manga.status ? <span>{statusText(manga.status)}</span> : null}
         </p>
         {manga.description ? <p className="feature-description">{manga.description}</p> : null}
+        <HeroSearch />
         <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
       </div>
     </section>

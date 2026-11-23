@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sourceLabel } from "../lib/contracts.ts";
 
-test("sourceLabel maps known sources and falls back to MangaDex", () => {
+test("sourceLabel is always MangaDex", () => {
   assert.equal(sourceLabel(), "MangaDex");
-  assert.equal(sourceLabel("comick"), "Comick");
+  assert.equal(sourceLabel("mangadex"), "MangaDex");
   assert.equal(sourceLabel("unknown"), "MangaDex");
 });
 

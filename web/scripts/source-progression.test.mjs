@@ -21,7 +21,6 @@ const validators = await import("../lib/validators.ts");
 const MANGA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CHAPTER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc";
-const COMICK_CHAPTER = "comick:chapter-opaque-abc123";
 const SECRET = "fixture-reader-secret-with-at-least-32-chars";
 const T0 = Date.parse("2026-11-21T10:00:00.000Z");
 let now = T0;
@@ -135,14 +134,12 @@ test("additive migration adds reader_sessions.source defaulting to mangadex", as
   }
 });
 
-test("content id validator accepts MangaDex UUID and comick:<opaque>, rejects the rest", () => {
+test("content id validator accepts only MangaDex UUIDs", () => {
   const parse = (value) => validators.parseContentId(value, "chapterId");
   assert.deepEqual(parse(CHAPTER), { id: CHAPTER, source: "mangadex" });
-  assert.deepEqual(parse(COMICK_CHAPTER), { id: COMICK_CHAPTER, source: "comick" });
-  for (const bad of ["not-a-uuid", "comick:", "comick:has space", "comick:has/slash", "", 42]) {
+  for (const bad of ["not-a-uuid", "opaque-id", "", 42]) {
     assert.throws(() => parse(bad), (error) => error.code === "INVALID_INPUT", `accepted ${String(bad)}`);
   }
-  assert.equal(validators.parseContentSource("comick"), "comick");
   assert.equal(validators.parseContentSource("mangadex"), "mangadex");
   assert.throws(() => validators.parseContentSource("webtoon"), (error) => error.code === "INVALID_INPUT");
 });
@@ -164,46 +161,6 @@ test("MangaDex UUID ticket works and signs source=mangadex with a paired label",
   }
 });
 
-test("Comick chapter with authoritative pages can create a ticket", async () => {
-  const { pg, db } = await migratedDb();
-  try {
-    const handler = api(db, realIdentity);
-    const session = await openSession(handler, realIdentity, { chapterId: COMICK_CHAPTER });
-    assert.equal(session.chapterId, COMICK_CHAPTER);
-    assert.equal(session.source, "comick");
-    assert.equal(session.source_label, "Comick");
-    const claims = await apiModule.verifyTicket(session.ticket, SECRET, now);
-    assert.equal(claims.cid, COMICK_CHAPTER);
-    assert.equal(claims.source, "comick");
-  } finally {
-    await pg.close();
-  }
-});
-
-test("Comick chapter completes once, persists source, and never double-awards", async () => {
-  const { pg, db } = await migratedDb();
-  try {
-    const handler = api(db, realIdentity);
-    const session = await openSession(handler, realIdentity, { chapterId: COMICK_CHAPTER });
-    await validCoverage(handler, session.ticket);
-    now = T0 + 16_000;
-    const first = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: session.ticket })));
-    assert.equal(first.status, 200, JSON.stringify(first.body));
-    assert.equal(first.body.awarded, true);
-    assert.equal(first.body.xp, 100);
-    const retry = await json(await handler.completePost(request("/api/v1/progress/complete", { ticket: session.ticket })));
-    assert.equal(retry.body.awarded, false);
-    assert.equal(retry.body.totalXp, 100);
-    const rows = await db.select().from(schema.readerSessions).where(eq(schema.readerSessions.chapterId, COMICK_CHAPTER)).limit(1);
-    assert.equal(rows[0].source, "comick");
-    const completions = await pg.query("select count(*)::int as n from reading_completions where chapter_id = $1", [COMICK_CHAPTER]);
-    assert.equal(completions.rows[0].n, 1);
-    now = T0;
-  } finally {
-    await pg.close();
-  }
-});
-
 test("a re-signed ticket with a different source claim is rejected", async () => {
   const { pg, db } = await migratedDb();
   try {
@@ -211,8 +168,8 @@ test("a re-signed ticket with a different source claim is rejected", async () =>
     const claims = await apiModule.verifyTicket(session.ticket, SECRET, now);
     assert.equal(claims.source, "mangadex");
     // Re-sign with the real secret but a different source: the persisted row
-    // is bound to mangadex, so loadSession must refuse the comick claim.
-    const swapped = await apiModule.signTicket(SECRET, { ...claims, source: "comick" });
+    // is bound to mangadex, so loadSession must refuse the foreign claim.
+    const swapped = await apiModule.signTicket(SECRET, { ...claims, source: "webtoon" });
     const res = await json(await api(db, realIdentity).checkpointPost(
       request("/api/v1/progress/checkpoint", { ticket: swapped, pages: [1] })));
     assert.equal(res.status, 401);
@@ -235,14 +192,14 @@ test("a tampered ticket signature is rejected", async () => {
   }
 });
 
-test("Comick id with MangaDex-only metadata is rejected", async () => {
+test("chapter id with mismatched MangaDex metadata is rejected", async () => {
   const { pg, db } = await migratedDb();
   try {
     const handler = api(db, realIdentity, {
       content: () => content({ metadata: { id: OTHER, manga_id: MANGA, pages: 10 } }),
     });
     const res = await json(await handler.sessionPost(request("/api/v1/reader-sessions", {
-      chapterId: COMICK_CHAPTER, mangaId: MANGA, lang: "vi",
+      chapterId: CHAPTER, mangaId: MANGA, lang: "vi",
     })));
     assert.equal(res.status, 409);
     assert.equal(res.body.error.code, "CONTENT_MISMATCH");
@@ -251,15 +208,15 @@ test("Comick id with MangaDex-only metadata is rejected", async () => {
   }
 });
 
-test("a client source that disagrees with the id is rejected", async () => {
+test("a client source outside the MangaDex-only allowlist is rejected", async () => {
   const { pg, db } = await migratedDb();
   try {
     const handler = api(db, realIdentity);
     const res = await json(await handler.sessionPost(request("/api/v1/reader-sessions", {
-      chapterId: CHAPTER, mangaId: MANGA, lang: "vi", source: "comick", source_label: "Comick",
+      chapterId: CHAPTER, mangaId: MANGA, lang: "vi", source: "webtoon", source_label: "Webtoon",
     })));
-    assert.equal(res.status, 409);
-    assert.equal(res.body.error.code, "CONTENT_MISMATCH");
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error.code, "INVALID_INPUT");
   } finally {
     await pg.close();
   }
@@ -347,7 +304,7 @@ test("an injected completion failure rolls back XP, progress and the event toget
     const handler = api(db, realIdentity, { hooks: {
       beforeCommit: async () => { if (fail) throw new Error("injected database failure"); },
     } });
-    const session = await openSession(handler, realIdentity, { chapterId: COMICK_CHAPTER });
+    const session = await openSession(handler, realIdentity);
     await validCoverage(handler, session.ticket);
     now = T0 + 16_000;
     fail = true;

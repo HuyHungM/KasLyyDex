@@ -49,7 +49,7 @@ function rowTitles(html) {
 const sourceManga = {
   id: "m1",
   title: "Slime",
-  cover_file: "https://meo.comick.pictures/comic-1-cover.jpg",
+  cover_file: "cover.jpg",
   status: "ongoing",
   year: 2026,
   description: "desc",
@@ -60,8 +60,8 @@ const sourceManga = {
   rating: 8.5,
   follows: 12,
   latest_chapter: "1",
-  source: "comick",
-  source_label: "Comick",
+  source: "mangadex",
+  source_label: "MangaDex",
 };
 const sourceFixture = {
   rank: [sourceManga],
@@ -70,10 +70,7 @@ const sourceFixture = {
     chapters: [{ id: "c1", chapter: "1", lang: "vi", publish_at: "2026-11-20T00:00:00Z" }],
   }],
   manga: sourceManga,
-  chapters: {
-    vi: [chapter({ id: "comick:chap-1", source: "comick", source_label: "Comick" })],
-    en: [],
-  },
+  chapters: { vi: [], en: [] },
 };
 
 // Async Server Components need a stubbed content boundary: `serverContent()`
@@ -122,17 +119,10 @@ function renderPage(relativePath, props) {
 
 test("titleWithSource appends the exact source label", () => {
   assert.equal(titleWithSource("Slime", "mangadex"), "Slime (MangaDex)");
-  assert.equal(titleWithSource("Slime", "comick"), "Slime (Comick)");
   assert.equal(titleWithSource("Slime"), "Slime (MangaDex)");
 });
 
-test("chapter rows show (Comick) only for fallback chapters", () => {
-  const fallback = render("components/chapter-list.tsx", {
-    mangaId: "m1",
-    chapters: { vi: [chapter({ id: "comick:chap-1", source: "comick", source_label: "Comick" })], en: [] },
-  });
-  assert.deepEqual(rowTitles(fallback), ["Fallback 1 (Comick)"]);
-
+test("chapter rows never add a source suffix", () => {
   const readable = render("components/chapter-list.tsx", {
     mangaId: "m1",
     chapters: {
@@ -141,25 +131,24 @@ test("chapter rows show (Comick) only for fallback chapters", () => {
     },
   });
   assert.deepEqual(rowTitles(readable), ["Fallback 1"]);
-  assert.doesNotMatch(readable, /Comick/);
 });
 
-test("reader toolbar back title marks a fallback chapter", () => {
+test("reader toolbar back title has no source suffix", () => {
   const props = {
     mangaId: "m1",
     mangaTitle: "Slime",
-    chapterId: "comick:chap-1",
-    chapters: [chapter({ id: "comick:chap-1", source: "comick", source_label: "Comick" })],
+    chapterId: "ch-1",
+    chapters: [chapter({ id: "ch-1", source: "mangadex", source_label: "MangaDex" })],
     settings: { mode: "vertical", bg: "light", fit: true, speed: 1 },
     running: false,
     fullscreenSupported: false,
   };
   const html = render("components/reader/ReaderToolbar.tsx", props);
   const backLink = html.match(/<a class="back-link"[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? "";
-  assert.equal(backLink, "← Slime (Comick)");
+  assert.equal(backLink, "← Slime");
 });
 
-const badge = /<span class="source-badge" role="img" aria-label="Nguồn: Comick">Comick<\/span>/;
+const badge = /<span class="source-badge" role="img" aria-label="Nguồn: MangaDex">MangaDex<\/span>/;
 
 test("manga card cover shows the source badge and keeps its link", () => {
   const html = render("components/manga-card.tsx", { manga: sourceManga, rank: 1 }, "MangaCard");

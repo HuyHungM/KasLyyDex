@@ -7,6 +7,9 @@
 - Các luồng chính đã được kiểm tra trên Chromium với cửa sổ desktop và mô phỏng điện thoại rộng 375px. Vuốt trong chế độ lật ngang, đổi nền và vị trí đọc được giữ khi tải lại.
 - WASM release là 825.669 byte, cao hơn mục tiêu dung lượng tệp gốc trong thiết kế. Axum truyền 324.627 byte với Brotli. Đo qua HTTP tại `localhost:3100`.
 - Trang chủ nhận chương mới từ nguồn cập nhật gần đây. Tủ truyện kiểm tra toàn bộ danh sách theo dõi khi mở, tối đa bốn yêu cầu đồng thời.
+- The "Khám phá truyện" hero has a GET `/search` form (`q`, accessible name
+  "Tìm truyện") in both its featured and fallback states. The web client is
+  MangaDex-only; no alternate catalog or prefixed content IDs are accepted.
 
 ## Checklist bản web ban đầu
 
@@ -98,17 +101,12 @@ measurements above. Full commands and counts are in
 Exact commands, counts and rulings are in
 `docs/superpowers/sdd/kaslyydex-multi-source-ux/task-10-report.md`.
 
-- Source fallback: MangaDex is the primary catalog; per chapter that is
-  external-only or unreadable, the Axum service searches Comick by normalized
-  title and returns proxied Comick pages when a match exists. When there is no
-  match, Comick fails, or the chapter is out of scope, the original external
-  link is kept unchanged. Source labels (`MangaDex` default, `Comick`) render
-  after titles on home/detail cards, chapter rows and the reader toolbar;
-  legacy DTOs without `source` still work.
-- `COMICK_API_ORIGIN` is a test/local-only override for the Comick catalog
-  origin (default `https://api.comick.dev`); source-fallback fixtures run fully
-  on loopback through it. No credentials are involved and live provider/ToS
-  verification is still a manual release gate — not claimed here.
+- The web client is MangaDex-only: all content ids are MangaDex UUIDs, covers
+  resolve through the Axum image proxy, and `source=mangadex` is the sole
+  provider filter alongside `all`. Source badges render as `MangaDex` on
+  home/detail cards and covers, with no alternate-provider labels.
+- No provider credentials are involved; live MangaDex catalog and ToS
+  verification remain a manual release gate — not claimed here.
 - Reader theme defaults to `auto` (follows the site theme, no flash on load);
   manual `light`/`sepia`/`dark` persist over it. Custom dropdown replaces
   native selects everywhere with full keyboard support (Arrow/Home/End/Enter/
@@ -117,33 +115,30 @@ Exact commands, counts and rulings are in
   broken reader images are released from the fade gate instead of staying behind
   a permanent skeleton. The existing retry panel covers chapter/WASM page-load
   failures (`pageError`/`wasmError`), not individual images.
-- Regression gate: `web/package.json` `test:aggregate` now includes
-  `source-contracts`, `source-fallback`, `source-ui`, `source-progression`,
-  `select`, `skeleton-motion` and `reader-theme`; a dedicated `test:source`
-  runs the same seven. Pretest hooks run `cargo build -p server` before
+- Regression gate: `web/package.json` `test:aggregate` includes
+  `source-contracts`, `source-ui`, `source-progression`, `select`,
+  `skeleton-motion` and `reader-theme`; `test:source` runs the same set.
+  Pretest hooks run `cargo build -p server` before
   aggregate/browser suites spawn the Axum binary (ordering fix; without it
   fixture tests false-RED on the missing binary). CI runs the same order.
 - Whitespace gate is baselined: 783 pre-existing findings in committed
   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` are listed in
-  `web/scripts/whitespace-baseline.txt`; any new finding still fails. The two
-  pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with
-  `cargo fmt -p core` and `core` joined the scoped `cargo fmt --check` set.
+  `web/scripts/whitespace-baseline.txt`; any new finding still fails.
 - No deployment, push, merge, or live provider verification was performed.
 
 ## Advanced search UX + final local gate (Task 7)
 
-- Advanced search: `/search` ("Khám phá") now keeps `source`
-  (`all`/`mangadex`/`comick`), `lang` (`all`/`vi`/`en`) and `year`
-  (1900…current+1) in the same GET form as `q`/tags/status/sort/page. Axum
-  dispatches to MangaDex and/or Comick, keeps provider duplicates separate,
-  sorts deterministically and returns at most 24 results per page. When a
-  filter can only be applied locally or a provider fails, `partial=true` makes
-  the UI show a short warning instead of implying a complete result.
+- Advanced search: `/search` ("Khám phá") keeps `source` (`all`/`mangadex`),
+  `lang` (`all`/`vi`/`en`) and `year` (1900…current+1) in the same GET form as
+  `q`/tags/status/sort/page. Axum searches MangaDex, sorts deterministically
+  and returns at most 24 results per page. When a filter can only be applied
+  locally or the provider fails, `partial=true` makes the UI show a short
+  warning instead of implying a complete result.
 - Genre browsing moved into the same page: four grouped tag sections with a
   four-group skeleton; the standalone Next `/the-loai` route and nav link are
   gone.
-- Cover badges replace title suffixes: `MangaDex`/`Comick` with accessible name
-  `Nguồn: <label>` on cards, feed, ranking and detail covers.
+- Cover badges replace title suffixes: `MangaDex` with accessible name
+  `Nguồn: MangaDex` on cards, feed, ranking and detail covers.
 - `/bxh` has a route-level loading shell with 12 shape-matched rows and
   `rank-top rank-1/2/3` frames for the top three rows; tab changes re-show the
   skeleton and skeleton/loaded row boxes stay within 2px, with shimmer disabled
@@ -155,9 +150,9 @@ Exact commands, counts and rulings are in
   prebuild hooks are unchanged.
 - Local gate results: `build:wasm`/`build` pass; aggregate 203 pass / 0 fail;
   browser 23 pass / 0 fail; `cargo build -p server` pass; workspace tests
-  90 pass / 0 fail; clippy `-D warnings`, scoped fmt (including `core`),
+  90 pass / 0 fail; clippy `-D warnings`, scoped fmt,
   typecheck, lint (0 errors, 7 pre-existing `@next/next/no-img-element`
   warnings), whitespace (0 new findings), secrets (0 candidates) and
   `git diff --check` all pass.
 - No deployment, push, merge or live provider verification was done. Live
-  MangaDex/Comick catalog and ToS checks remain manual release gates.
+  MangaDex catalog and ToS checks remain manual release gates.

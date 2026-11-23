@@ -86,14 +86,14 @@ test("advanced form exposes source, language and year dropdowns and submits them
   assert.equal(await year.count(), 1, "missing year dropdown");
 
   await source.click();
-  await page.getByRole("option", { name: "Comick", exact: true }).click();
+  await page.getByRole("option", { name: "MangaDex", exact: true }).click();
   await lang.click();
   await page.getByRole("option", { name: "Tiếng Anh", exact: true }).click();
   await year.click();
   await page.getByRole("option", { name: "2025", exact: true }).click();
   await filters.getByRole("button", { name: "Áp dụng" }).click();
 
-  await page.waitForURL((url) => url.searchParams.get("source") === "comick");
+  await page.waitForURL((url) => url.searchParams.get("source") === "mangadex");
   const submitted = new URL(page.url()).searchParams;
   assert.equal(submitted.get("q"), "Fixture", "q must stay bookmarkable");
   assert.equal(submitted.get("tags"), TAGS[0].id, "tags must stay bookmarkable");

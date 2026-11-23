@@ -91,12 +91,7 @@ async function MangaContent({ params }: Props) {
       <section className="surface chapters-panel">
         <SectionTitle>Danh sách chapter</SectionTitle>
         {chapters.notice ? (
-          <div className="source-notice" role="status">
-            <span>{chapters.notice}</span>
-            {manga.source_url ? (
-              <a href={manga.source_url} target="_blank" rel="noopener noreferrer">Mở trên Comick ↗</a>
-            ) : null}
-          </div>
+          <div className="source-notice" role="status"><span>{chapters.notice}</span></div>
         ) : null}
         <ChapterList mangaId={manga.id} chapters={chapters} />
       </section>

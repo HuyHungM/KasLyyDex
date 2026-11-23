@@ -30,7 +30,7 @@ const SORTS = [
 ] as const;
 
 const STATUSES = ["ongoing", "completed", "hiatus", "cancelled"] as const;
-const SOURCES = [["all", "Tất cả"], ["mangadex", "MangaDex"], ["comick", "Comick"]] as const;
+const SOURCES = [["all", "Tất cả"], ["mangadex", "MangaDex"]] as const;
 const LANGS = [["all", "Tất cả"], ["vi", "Tiếng Việt"], ["en", "Tiếng Anh"]] as const;
 const MIN_YEAR = 1900;
 const MAX_YEAR = new Date().getUTCFullYear() + 1;

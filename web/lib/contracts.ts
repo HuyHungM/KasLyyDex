@@ -132,8 +132,8 @@ export type ChapterDto = {
   readable?: boolean;
 };
 
-export function sourceLabel(source?: string): string {
-  return source === "comick" ? "Comick" : "MangaDex";
+export function sourceLabel(_source?: string): string {
+  return "MangaDex";
 }
 
 /// Single-chapter authority from Axum/MangaDex entity metadata. The public
@@ -264,18 +264,6 @@ export function coverImageUrl(
   size = 256,
 ): string | null {
   if (!manga.cover_file) return null;
-  if (manga.source === "comick") {
-    // Comick normalization supplies a full CDN URL; only the proxy allowlist's
-    // HTTPS host may pass through.
-    let upstream: URL;
-    try {
-      upstream = new URL(manga.cover_file);
-    } catch {
-      return null;
-    }
-    if (upstream.protocol !== "https:" || upstream.hostname !== "meo.comick.pictures") return null;
-    return contentImageUrl(upstream.href);
-  }
   return contentImageUrl(
     `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover_file}.${size}.jpg`,
   );

@@ -2,8 +2,6 @@ use percent_encoding::percent_decode_str;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
-const COMICK_CDN_HOST: &str = "meo.comick.pictures";
-
 /// Persistent cache dir (survives rebuilds): %LOCALAPPDATA%/TruyenViet/cache
 pub fn cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CACHE_DIR") {
@@ -16,7 +14,7 @@ pub fn cache_dir() -> PathBuf {
 }
 
 fn allowed_host(host: &str) -> bool {
-    host == "uploads.mangadex.org" || host.ends_with(".mangadex.network") || host == COMICK_CDN_HOST
+    host == "uploads.mangadex.org" || host.ends_with(".mangadex.network")
 }
 
 /// Decode repeatedly: b2key path segments are opaque and may still hide `%2f`,
@@ -118,24 +116,13 @@ mod tests {
     }
 
     #[test]
-    fn allows_verified_comick_cdn_https() {
+    fn rejects_non_allowlisted_hosts_and_non_https() {
         for raw in [
-            "https://meo.comick.pictures/a.jpg",
-            "https://meo.comick.pictures/chapters/123/456.png",
-        ] {
-            assert!(allowed_request(raw).is_some(), "{raw}");
-        }
-    }
-
-    #[test]
-    fn rejects_spoofed_comick_host_and_non_https() {
-        for raw in [
-            "http://meo.comick.pictures/a.jpg",
-            "https://meo.comick.pictures.example.com/a.jpg",
-            "https://meo.comick.pictures.evil.test/a.jpg",
+            "http://uploads.mangadex.org/a.jpg",
+            "https://uploads.mangadex.org.example.com/a.jpg",
+            "https://uploads.mangadex.org.evil.test/a.jpg",
             "https://evil.example/a.jpg",
             "https://127.0.0.1/a.jpg",
-            "https://meo-comick-pictures.xyz/a.jpg",
         ] {
             assert!(allowed_request(raw).is_none(), "{raw}");
         }
@@ -144,8 +131,8 @@ mod tests {
     #[test]
     fn rejects_credentials_and_nonstandard_port() {
         for raw in [
-            "https://user:secret@meo.comick.pictures/a.jpg",
-            "https://meo.comick.pictures:8080/a.jpg",
+            "https://user:secret@uploads.mangadex.org/a.jpg",
+            "https://uploads.mangadex.org:8080/a.jpg",
         ] {
             assert!(allowed_request(raw).is_none(), "{raw}");
         }
@@ -154,14 +141,14 @@ mod tests {
     #[test]
     fn rejects_encoded_traversal_in_proxy_path() {
         for raw in [
-            "https://meo.comick.pictures/%2e%2e/%2e%2e/etc/passwd",
-            "https://meo.comick.pictures/%2E%2E%2Fsecret.jpg",
-            "https://meo.comick.pictures/a%2fb.jpg",
-            "https://meo.comick.pictures/a%5cb.jpg",
-            "https://meo.comick.pictures/a%3Fb.jpg",
-            "https://meo.comick.pictures/a%23b.jpg",
-            "https://meo.comick.pictures/%252e%252e%252fsecret.jpg",
-            "https://uploads.mangadex.org/%2e%2e/a.jpg",
+            "https://uploads.mangadex.org/%2e%2e/%2e%2e/etc/passwd",
+            "https://uploads.mangadex.org/%2E%2E%2Fsecret.jpg",
+            "https://uploads.mangadex.org/a%2fb.jpg",
+            "https://uploads.mangadex.org/a%5cb.jpg",
+            "https://uploads.mangadex.org/a%3Fb.jpg",
+            "https://uploads.mangadex.org/a%23b.jpg",
+            "https://uploads.mangadex.org/%252e%252e%252fsecret.jpg",
+            "https://example.mangadex.network/%2e%2e/a.jpg",
         ] {
             assert!(allowed_request(raw).is_none(), "{raw}");
         }

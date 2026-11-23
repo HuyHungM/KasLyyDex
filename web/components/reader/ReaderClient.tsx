@@ -273,9 +273,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
   // language or account switch invalidates the generation and all timers.
   useEffect(() => {
     const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
-    // Trust the DTO's source, but never let it contradict the authoritative id
-    // prefix (a legacy DTO may omit `source`).
-    const chapterSource = chapter.source === "comick" || chapter.id.startsWith("comick:") ? "comick" : "mangadex";
+    const chapterSource = "mangadex" as const;
     const track = xp.current;
     const generation = ++track.generation;
     track.ticket = null;

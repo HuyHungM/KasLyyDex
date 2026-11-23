@@ -38,7 +38,7 @@ port aligned with that value.
 The volume must be writable and attached on every deployment so the image cache
 survives redeploys. `DIST_DIR` is optional for the content API; set it only if
 the service also serves UI assets from a mounted path. Optional upstream
-overrides are `MANGADEX_API_ORIGIN` and `COMICK_API_ORIGIN`. Inject every value
+upstream override is `MANGADEX_API_ORIGIN`. Inject every value
 in Northflank service settings; none belongs in the tracked image or repository.
 
 ## Content origin on Netlify

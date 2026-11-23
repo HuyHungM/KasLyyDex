@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -127,7 +128,8 @@ test("current tracked source and docs have no removed platform references", asyn
     .split("\0")
     .filter(Boolean)
     .filter((file) => /\.(?:md|mjs|js|ts|tsx|json|yml|yaml|sql|toml|example|txt)$/.test(file) || file.endsWith(".env.example"))
-    .filter((file) => !SWEEP_EXEMPT.some((exempt) => file.startsWith(exempt)));
+    .filter((file) => !SWEEP_EXEMPT.some((exempt) => file.startsWith(exempt)))
+    .filter((file) => existsSync(rootFile(file)));
   const offenders = [];
   for (const file of files) {
     const text = await readFile(fileURLToPath(new URL(`../../${file}`, import.meta.url)), "utf8");

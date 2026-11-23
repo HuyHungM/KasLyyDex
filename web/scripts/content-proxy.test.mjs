@@ -176,13 +176,6 @@ test("Next proxy passes Axum's structured rejection for malformed content IDs", 
   assert.equal(typeof body.error.message, "string");
 });
 
-test("Next proxy does not double-encode provider-prefixed content IDs", async () => {
-  const res = await fetch(`${proxied.baseUrl}/api/content/manga/${encodeURIComponent("comick:comic-1")}`);
-  const body = await res.json();
-  assert.notEqual(res.status, 400, `prefixed ID was rejected before dispatch: ${JSON.stringify(body)}`);
-  assert.notEqual(body.error?.code, "VALIDATION_ERROR");
-});
-
 test("missing content origin returns a structured 503 without breaking public routes", async () => {
   const res = await fetch(`${unconfigured.baseUrl}/api/content/latest`);
   assert.equal(res.status, 503);

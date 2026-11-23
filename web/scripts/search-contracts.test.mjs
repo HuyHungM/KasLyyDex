@@ -8,9 +8,9 @@ test("searchQuery omits defaults so legacy URLs stay unchanged", () => {
 });
 
 test("searchQuery serializes source, lang and year", () => {
-  const query = searchQuery({ source: "comick", lang: "vi", year: 2024 });
+  const query = searchQuery({ source: "mangadex", lang: "vi", year: 2024 });
   const params = new URLSearchParams(query);
-  assert.equal(params.get("source"), "comick");
+  assert.equal(params.get("source"), "mangadex");
   assert.equal(params.get("lang"), "vi");
   assert.equal(params.get("year"), "2024");
 });

@@ -92,14 +92,6 @@ fn default_source_label() -> String {
     "MangaDex".to_owned()
 }
 
-/// Display label for a source id; unknown sources keep the primary label.
-pub fn source_label(source: &str) -> &'static str {
-    match source {
-        "comick" => "Comick",
-        _ => "MangaDex",
-    }
-}
-
 /// Single-chapter authority for the BFF reader ticket. Manga ownership comes
 /// from the chapter's manga relationship, not from a client-supplied list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -212,7 +204,7 @@ pub fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Api
         return Err(invalid("Trạng thái"));
     }
     let source = value("source").unwrap_or("all");
-    if !matches!(source, "all" | "mangadex" | "comick") {
+    if !matches!(source, "all" | "mangadex") {
         return Err(invalid("Nguồn"));
     }
     let lang = value("lang").unwrap_or("all");
@@ -322,7 +314,7 @@ mod tests {
 
     #[test]
     fn search_query_accepts_valid_source_lang_year() {
-        for (source, lang) in [("all", "all"), ("mangadex", "en"), ("comick", "vi")] {
+        for (source, lang) in [("all", "all"), ("mangadex", "en"), ("mangadex", "vi")] {
             let query = parse_search_query(HashMap::from([
                 ("source".into(), source.into()),
                 ("lang".into(), lang.into()),
@@ -339,6 +331,7 @@ mod tests {
     fn search_query_rejects_invalid_source_lang_year() {
         for (name, value) in [
             ("source", "bad"),
+            ("source", "other"),
             ("lang", "fr"),
             ("year", "0"),
             ("year", "abc"),
@@ -492,16 +485,9 @@ mod tests {
             "author": "Author",
             "artist": "Artist"
         });
-        let manga: MangaSummaryDto = serde_json::from_value(legacy.clone()).unwrap();
+        let manga: MangaSummaryDto = serde_json::from_value(legacy).unwrap();
         assert_eq!(manga.source, "mangadex");
         assert_eq!(manga.source_label, "MangaDex");
-
-        let mut comick = legacy;
-        comick["source"] = json!("comick");
-        comick["source_label"] = json!("Comick");
-        let manga: MangaSummaryDto = serde_json::from_value(comick).unwrap();
-        assert_eq!(manga.source, "comick");
-        assert_eq!(manga.source_label, "Comick");
     }
 
     #[test]
@@ -517,21 +503,8 @@ mod tests {
             "publish_at": "2026-11-20T00:00:00Z",
             "group": "Group"
         });
-        let chapter: ChapterDto = serde_json::from_value(legacy.clone()).unwrap();
+        let chapter: ChapterDto = serde_json::from_value(legacy).unwrap();
         assert_eq!(chapter.source, "mangadex");
         assert_eq!(chapter.source_label, "MangaDex");
-
-        let mut comick = legacy;
-        comick["source"] = json!("comick");
-        let chapter: ChapterDto = serde_json::from_value(comick).unwrap();
-        assert_eq!(chapter.source, "comick");
-        assert_eq!(source_label(&chapter.source), "Comick");
-    }
-
-    #[test]
-    fn source_label_maps_known_sources() {
-        assert_eq!(source_label("mangadex"), "MangaDex");
-        assert_eq!(source_label("comick"), "Comick");
-        assert_eq!(source_label("unknown"), "MangaDex");
     }
 }

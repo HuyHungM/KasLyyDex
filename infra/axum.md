@@ -49,56 +49,44 @@ origin case returns 503.
 `cargo fmt --check` still reports pre-existing formatting differences in unrelated
 files; the two Rust files touched by Task 4 were formatted with `rustfmt --edition 2021`.
 
-## Multi-source fallback (Tasks 2–4, gated in Task 10)
+## Chapter enrichment (Tasks 2–4, gated in Task 10)
 
-- MangaDex stays the primary catalog. For each chapter that is external-only or
-  unreadable, `enrich_chapters` searches Comick (`/v1.0/search/` by normalized
-  title), fetches `/v1.0/comic/{hid}/chapters` (page 1, limit 12) and rewrites
-  the chapter to a provider-prefixed `comick:{hid}` ID with proxied page URLs.
-  No match, a Comick error, or an out-of-scope chapter keeps the original
-  external link; the MangaDex response shape is unchanged and legacy `/api/*`
+- MangaDex is the only content source. Chapter lists come straight from the
+  MangaDex adapter; external-only and unreadable chapters keep their original
+  external link. There is no alternate provider fallback and no provider-prefixed
+  ID rewriting. The MangaDex response shape is unchanged and legacy `/api/*`
   aliases behave the same.
-- `COMICK_API_ORIGIN` overrides the Comick catalog origin (default
-  `https://api.comick.dev`) and is used by `web/scripts/source-fallback.test.mjs`
-  to run the real Axum binary against loopback MangaDex/Comick fixtures — no
-  remote call, credential, or deployment. Live catalog/ToS verification of both
-  providers remains a manual release gate and is not claimed as done.
-- The image proxy allowlists the verified Comick CDN host
-  (`meo.comick.pictures`, HTTPS/443, no credentials) with raw and decoded
-  path-traversal rejection; the browser only ever receives same-origin
-  `/api/img` URLs.
-- Source labels (`MangaDex` default for legacy DTOs, `Comick` for
-  provider-prefixed chapters) come from the shared contracts and are rendered by
-  the web UI; reader tickets and progression records bind the chapter source.
+- `MANGADEX_API_ORIGIN` overrides the MangaDex origin (default
+  `https://api.mangadex.org`) and lets the Axum content tests run against a
+  loopback fixture — no remote call, credential, or deployment.
+- The image proxy allowlists only the verified MangaDex image origins
+  (`uploads.mangadex.org` and `*.mangadex.network`, HTTPS/443, no credentials)
+  with raw and decoded path-traversal rejection; the browser only ever receives
+  same-origin `/api/img` URLs.
+- Source labels come from the shared contracts and default to `MangaDex` for
+  legacy DTOs; reader tickets and progression records bind the chapter source.
 
 ## Advanced search (Tasks 1–3, gated in Task 7)
 
 - `contracts::SearchQuery` is the single parser for `/api/content/search` and
-  its legacy `/api/search` alias. It accepts `source` (`all`/`mangadex`/
-  `comick`, default `all`), `lang` (`all`/`vi`/`en`, default `all`), `year`
+  its legacy `/api/search` alias. It accepts `source` (`all`/`mangadex`, default
+  `all`), `lang` (`all`/`vi`/`en`, default `all`), `year`
   (1900…current year + 1), and keeps the existing `q`/`tags`/`status`/`sort`/
   `page` validation. `SearchResponse.partial` defaults to `false` for older DTOs.
-- The handler calls `core::search_all`. `source=mangadex` and `source=comick`
-  dispatch to one provider; `source=all` calls both concurrently, keeps
-  same-title hits from different providers as separate results, sorts by
+- The handler calls `core::search_all`, which queries MangaDex, sorts by
   `sort` → source label → title → id and slices to at most 24 items per page.
-  A filter the provider cannot apply (`lang`, `year`) is applied locally and
-  marks the response `partial: true`, as does a failing provider; successful
-  full responses are cached under a key containing every query field.
-  `comick`-only queries with no configured `Comick` adapter return a structured
-  `503 CONTENT_UNAVAILABLE` instead of panicking.
-- `COMICK_API_ORIGIN` keeps `web/scripts/search-source.test.mjs` on loopback
-  MangaDex/Comick fixtures. It asserts provider dispatch, merged `source_label`
-  values, `partial=true` on a Comick 500, structured 400s for bad filters and
-  cache-key changes per `source`/`lang`/`year`. No remote call or credential is
-  involved; live catalog/ToS verification of both providers is still a manual
-  release gate and is not claimed.
+  `lang` is applied by MangaDex through `availableTranslatedLanguage[]`; year
+  has no upstream filter and is applied locally, marking the response
+  `partial: true`. Successful full responses are cached under a key containing
+  every query field. Upstream failures yield a structured 502.
+- The local MangaDex fixture override keeps the search tests on loopback; no
+  remote call or credential is involved.
 
 ## Gate notes (Task 10)
 
-- `cargo fmt -p core` fixed the two known pre-existing rustfmt hunks in
-  `crates/core/src/comick.rs` (lines ~119 and ~159); `core` is now part of the
-  scoped `cargo fmt --check` set in CI. Full-workspace fmt still carries older
+- `cargo fmt -p core` fixed the known pre-existing rustfmt hunks in the core
+  sources; `core` is now part of the scoped `cargo fmt --check` set in CI.
+  Full-workspace fmt still carries older
   Leptos debt, so it stays out of scope.
 - The tracked-file whitespace gate runs with
   `web/scripts/whitespace-baseline.txt` (783 pre-existing findings in committed
