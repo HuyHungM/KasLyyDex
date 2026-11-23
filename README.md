@@ -110,16 +110,9 @@ Thêm `--liveness-only` cho môi trường chưa cấu hình DB/auth.
 Xem `web/.env.example`:
 
 ```
-NEON_AUTH_BASE_URL
-NEON_AUTH_COOKIE_SECRET
-DATABASE_URL
-READER_TICKET_SECRET
-OPERATOR_EMAIL_ALLOWLIST (optional)
-GOOGLE_CLIENT_ID
-GOOGLE_CLIENT_SECRET
+NETLIFY_DB_URL
 RUST_CONTENT_API_ORIGIN
-COMICK_API_ORIGIN (optional, test override only)
-NEXT_PUBLIC_APP_URL
+READER_TICKET_SECRET
 ```
 
 `READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là progression API
@@ -144,14 +137,13 @@ checkout, nhưng 1130 finding đã commit trong
 finding mới vẫn fail.
 
 Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
-CI scoped như trên. Xem
-`infra/deployment.md` cho runbook, caveat first-deploy-is-production, chặn
-402 fair-use trước đây, migration/rollback Neon và các external gate chưa chạy.
+CI scoped như trên. Xem `infra/deployment.md` và `infra/netlify.md` cho runbook, migration/rollback
+cơ sở dữ liệu và các external gate chưa chạy.
 Live Comick/MangaDex provider verification và kiểm tra ToS vẫn là manual gate;
 không có deploy/push/merge nào được thực hiện cho các thay đổi này.
 
 Observability: structured JSON logs có `correlationId`, redaction cho Cookie/
-Authorization/ticket/password/email/DATABASE_URL/upstream key; metric names
+Authorization/ticket/password/email/connection string/upstream key; metric names
 `kaslyydex.user_requests` và `kaslyydex.user_request.duration_ms` chỉ với label
-`operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Vercel
+`operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Netlify
 chưa được xác minh và paid Observability không được bật tự động.
