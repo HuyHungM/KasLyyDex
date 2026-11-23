@@ -107,5 +107,10 @@ export async function forwardGet(request: Request, target: URL): Promise<Respons
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
   }
+  // The CDN cache key ignores `?u=`, so forwarding Axum's immutable header
+  // would serve the first image for every cover and page.
+  if (target.pathname === "/api/content/img" || target.pathname === "/api/img") {
+    responseHeaders.set("cache-control", "no-store");
+  }
   return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
 }

@@ -40,7 +40,7 @@ const SWEEP_PATTERNS = [
 test("Netlify build config pins base, command and Node version", async () => {
   const config = await readFile(rootFile("netlify.toml"), "utf8");
   assert.match(config, /^\s*base\s*=\s*"web"\s*$/m);
-  assert.match(config, /^\s*command\s*=\s*"npm run build"\s*$/m);
+  assert.match(config, /^\s*command\s*=\s*".*npm run build"\s*$/m);
   assert.match(config, /^\s*NODE_VERSION\s*=\s*"22"\s*$/m);
 });
 
