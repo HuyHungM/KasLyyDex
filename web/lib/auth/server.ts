@@ -1,15 +1,9 @@
 import "server-only";
 
-import { createNeonAuth, type NeonAuth } from "@neon/auth/next/server";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { getIdentityConfig, getUser, login, logout, signup } from "@netlify/identity";
 import { errorEnvelope } from "../contracts";
 import { logErrorEvent } from "../observability";
-
-export type AuthConfig = {
-  baseUrl: string;
-  cookieSecret: string;
-  origin: string;
-};
+import { identityFromNetlifyUser, type AccountIdentity } from "./identity";
 
 type AuthErrorCode = "AUTH_NOT_CONFIGURED" | "AUTH_CONFIG_INVALID";
 
@@ -25,39 +19,6 @@ export class AuthConfigurationError extends Error {
   }
 }
 
-export function readAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
-  const baseUrl = env.NEON_AUTH_BASE_URL?.trim();
-  const cookieSecret = env.NEON_AUTH_COOKIE_SECRET?.trim();
-  const missing = [
-    ...(!baseUrl ? ["NEON_AUTH_BASE_URL"] : []),
-    ...(!cookieSecret ? ["NEON_AUTH_COOKIE_SECRET"] : []),
-  ];
-  if (missing.length > 0) {
-    throw new AuthConfigurationError(
-      "AUTH_NOT_CONFIGURED",
-      "Neon Managed Auth is not configured.",
-      missing,
-    );
-  }
-
-  let url: URL;
-  try {
-    url = new URL(baseUrl!);
-  } catch {
-    throw new AuthConfigurationError("AUTH_CONFIG_INVALID", "NEON_AUTH_BASE_URL must be a URL.");
-  }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-    throw new AuthConfigurationError("AUTH_CONFIG_INVALID", "NEON_AUTH_BASE_URL is invalid.");
-  }
-  if (cookieSecret!.length < 32) {
-    throw new AuthConfigurationError(
-      "AUTH_CONFIG_INVALID",
-      "NEON_AUTH_COOKIE_SECRET must be at least 32 characters.",
-    );
-  }
-  return { baseUrl: url.toString().replace(/\/$/, ""), cookieSecret: cookieSecret!, origin: url.origin };
-}
-
 export function authErrorResponse(error: unknown): Response | null {
   if (!(error instanceof AuthConfigurationError)) return null;
   logErrorEvent(error);
@@ -66,38 +27,61 @@ export function authErrorResponse(error: unknown): Response | null {
   return Response.json(errorEnvelope(error.code, error.message, details), { status: 503 });
 }
 
-let auth: NeonAuth | undefined;
+// Identity is provisioned by Netlify, so there is no application env config.
+// Tests inject this provider instead of depending on a deployed Identity site.
+export type IdentityProvider = {
+  config: () => { url: string } | null;
+  getUser: () => Promise<unknown>;
+  login: (email: string, password: string) => Promise<unknown>;
+  signup: (email: string, password: string) => Promise<unknown>;
+  logout: () => Promise<void>;
+};
 
-// createNeonAuth validates the cookie secret eagerly, so construct it only on
-// the first route that actually needs authentication.
-export function getAuth(): NeonAuth {
-  if (!auth) {
-    const config = readAuthConfig();
-    auth = createNeonAuth({
-      baseUrl: config.baseUrl,
-      cookies: { secret: config.cookieSecret, sameSite: "lax" },
-    });
-  }
-  return auth;
+const netlifyProvider: IdentityProvider = {
+  config: getIdentityConfig,
+  getUser,
+  login,
+  signup,
+  logout,
+};
+
+let provider: IdentityProvider = netlifyProvider;
+
+export function setIdentityProvider(next: IdentityProvider = netlifyProvider): void {
+  provider = next;
 }
 
-let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
-let jwksFor = "";
-
-export async function verifyNeonJwt(token: string) {
-  try {
-    const config = readAuthConfig();
-    if (!jwks || jwksFor !== config.baseUrl) {
-      jwks = createRemoteJWKSet(new URL(`${config.baseUrl}/.well-known/jwks.json`));
-      jwksFor = config.baseUrl;
-    }
-    const { payload } = await jwtVerify(token, jwks, {
-      algorithms: ["EdDSA"],
-      issuer: config.origin,
-      audience: config.origin,
-    });
-    return payload;
-  } catch {
-    return null;
+function requireProvider(): IdentityProvider {
+  if (!provider.config()) {
+    throw new AuthConfigurationError(
+      "AUTH_NOT_CONFIGURED",
+      "Netlify Identity is not available in this runtime.",
+    );
   }
+  return provider;
+}
+
+export type NetlifyIdentityAdapter = {
+  getSession(): Promise<AccountIdentity | null>;
+  signIn(email: string, password: string): Promise<AccountIdentity | null>;
+  signUp(email: string, password: string): Promise<AccountIdentity | null>;
+  signOut(): Promise<void>;
+};
+
+// Lazy so builds and unauthenticated public routes need no Identity runtime.
+export function getAuth(): NetlifyIdentityAdapter {
+  return {
+    async getSession() {
+      return identityFromNetlifyUser(await requireProvider().getUser());
+    },
+    async signIn(email, password) {
+      return identityFromNetlifyUser(await requireProvider().login(email, password));
+    },
+    async signUp(email, password) {
+      return identityFromNetlifyUser(await requireProvider().signup(email, password));
+    },
+    async signOut() {
+      await requireProvider().logout();
+    },
+  };
 }

@@ -37,6 +37,7 @@
   "dependencies": {
     "@neon/auth": "^0.8.2",
     "@netlify/database": "^2.0.3",
+    "@netlify/identity": "^2.0.1",
     "drizzle-orm": "^0.45.4",
     "jose": "^6.2.18",
     "next": "16.4.6",

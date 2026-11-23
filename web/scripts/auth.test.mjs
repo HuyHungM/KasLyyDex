@@ -1,176 +1,129 @@
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
+import { afterEach, test } from "node:test";
 
-// These tests exercise the real Neon SDK adapter against a local fixture upstream.
-// They are fixture-only: no Neon project, Google OAuth tenant, or live session is used.
-const { AuthConfigurationError, getAuth, readAuthConfig, verifyNeonJwt } = await import(
-  "../lib/auth/server.ts"
-);
+// Fixture-only: the Identity provider is injected below, so no live Netlify
+// project, OAuth tenant or credential is needed.
+const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const {
+  AuthConfigurationError,
+  authErrorResponse,
+  getAuth,
+  setIdentityProvider,
+} = await import("../lib/auth/server.ts");
+const route = await import("../app/api/auth/[...path]/route.ts");
 
-let unconfigured;
-let configuredFixture;
-let configuredNext;
+const fixtureUser = {
+  id: "identity-user-1",
+  email: "reader@example.com",
+  email_verified: true,
+  user_metadata: { full_name: "Reader" },
+};
 
-before(async () => {
-  unconfigured = await startNext();
-  configuredFixture = await startHttpServer((_req, res) => {
-    res.writeHead(200, {
-      "content-type": "application/json",
-      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
-    });
-    res.end(JSON.stringify({ ok: true }));
-  });
-  configuredNext = await startNext({
-    NEON_AUTH_BASE_URL: `${configuredFixture.baseUrl}/neondb/auth`,
-    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
+const configuredProvider = (user = fixtureUser) => ({
+  config: () => ({ url: "https://example.test/.netlify/identity" }),
+  getUser: async () => user,
+  login: async () => user,
+  signup: async () => user,
+  logout: async () => {},
+});
+
+const sessionRequest = new Request("https://example.test/api/auth/get-session");
+const sessionContext = { params: Promise.resolve({ path: ["get-session"] }) };
+
+afterEach(() => setIdentityProvider());
+
+test("a Netlify user maps into an AccountIdentity with verified email", () => {
+  assert.deepEqual(identityFromNetlifyUser(fixtureUser), {
+    id: fixtureUser.id,
+    email: fixtureUser.email,
+    emailVerified: true,
+    name: "Reader",
+    image: null,
+    sessionId: fixtureUser.id,
   });
 });
 
-after(async () => {
-  await stop(configuredNext?.child);
-  await stop(unconfigured?.child);
-  await configuredFixture?.close();
+test("unusable identity users are rejected", () => {
+  assert.equal(identityFromNetlifyUser({ ...fixtureUser, id: undefined }), null);
+  assert.equal(identityFromNetlifyUser({ ...fixtureUser, id: "x".repeat(257) }), null);
+  assert.equal(identityFromNetlifyUser({ ...fixtureUser, email_verified: false }), null);
 });
 
-test("auth config validates explicit server env and never invents credentials", () => {
-  assert.throws(
-    () => readAuthConfig({}),
+test("client-supplied privilege fields never reach the identity", () => {
+  const identity = identityFromNetlifyUser({
+    ...fixtureUser,
+    role: "admin",
+    level: 99,
+    totalXp: 1_000_000,
+    percent: 100,
+    pageCount: 999,
+    app_metadata: { role: "admin", roles: ["admin"] },
+    user_metadata: { ...fixtureUser.user_metadata, role: "admin", level: 99 },
+  });
+  assert.deepEqual(Object.keys(identity).sort(), [
+    "email", "emailVerified", "id", "image", "name", "sessionId",
+  ]);
+  assert.equal(identity.emailVerified, true);
+});
+
+test("unavailable Identity returns a structured AUTH_NOT_CONFIGURED 503", async () => {
+  setIdentityProvider({
+    ...configuredProvider(),
+    config: () => null,
+  });
+  await assert.rejects(
+    () => getAuth().getSession(),
     (error) => error instanceof AuthConfigurationError
-      && error.code === "AUTH_NOT_CONFIGURED"
-      && error.missing.includes("NEON_AUTH_BASE_URL")
-      && error.missing.includes("NEON_AUTH_COOKIE_SECRET"),
+      && error.code === "AUTH_NOT_CONFIGURED",
   );
-  assert.throws(
-    () => readAuthConfig({ NEON_AUTH_BASE_URL: "not a url", NEON_AUTH_COOKIE_SECRET: "x".repeat(40) }),
-    (error) => error.code === "AUTH_CONFIG_INVALID",
-  );
-  assert.throws(
-    () => readAuthConfig({ NEON_AUTH_BASE_URL: "https://auth.example.com", NEON_AUTH_COOKIE_SECRET: "short" }),
-    (error) => error.code === "AUTH_CONFIG_INVALID",
-  );
-  const config = readAuthConfig({
-    NEON_AUTH_BASE_URL: "https://ep-1.neonauth.example.com/neondb/auth",
-    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
-  });
-  assert.equal(config.origin, "https://ep-1.neonauth.example.com");
-  assert.equal(config.baseUrl, "https://ep-1.neonauth.example.com/neondb/auth");
+
+  const res = await route.GET(sessionRequest, sessionContext);
+  assert.equal(res.status, 503);
+  const body = await res.json();
+  assert.equal(body.error.code, "AUTH_NOT_CONFIGURED");
+  assert.equal(body.error.details.service, "auth");
+
+  const direct = authErrorResponse(new AuthConfigurationError("AUTH_NOT_CONFIGURED", "no identity"));
+  assert.equal(direct?.status, 503);
+  assert.equal((await direct.json()).error.details.service, "auth");
 });
 
-test("the real Neon SDK creates a lazy server instance only with valid config", () => {
-  const previous = process.env.NEON_AUTH_BASE_URL;
-  const previousSecret = process.env.NEON_AUTH_COOKIE_SECRET;
-  try {
-    process.env.NEON_AUTH_BASE_URL = "https://ep-1.neonauth.example.com/neondb/auth";
-    process.env.NEON_AUTH_COOKIE_SECRET = "fixture-secret-with-at-least-32-characters";
-    const auth = getAuth();
-    assert.equal(typeof auth.handler, "function");
-    assert.equal(typeof auth.getSession, "function");
-    assert.equal(typeof auth.signIn.email, "function");
-  } finally {
-    if (previous === undefined) delete process.env.NEON_AUTH_BASE_URL;
-    else process.env.NEON_AUTH_BASE_URL = previous;
-    if (previousSecret === undefined) delete process.env.NEON_AUTH_COOKIE_SECRET;
-    else process.env.NEON_AUTH_COOKIE_SECRET = previousSecret;
-  }
-});
+test("get-session keeps the existing session/user response shape", async () => {
+  setIdentityProvider(configuredProvider());
+  const identity = await getAuth().getSession();
+  assert.equal(identity.id, fixtureUser.id);
+  assert.equal(identity.sessionId, fixtureUser.id);
 
-test("missing auth config returns structured 503 only on auth routes", async () => {
-  for (const [path, init] of [
-    ["/api/auth/get-session", undefined],
-    ["/api/auth/sign-in/email", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: "reader@example.com", password: "secret" }),
-    }],
-  ]) {
-    const res = await fetch(`${unconfigured.baseUrl}${path}`, init);
-    assert.equal(res.status, 503, path);
-    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
-    const body = await res.json();
-    assert.equal(body.error.code, "AUTH_NOT_CONFIGURED", path);
-    assert.equal(body.error.details.service, "auth", path);
-    assert.deepEqual(body.error.details.missing?.split(",").sort(), [
-      "NEON_AUTH_BASE_URL",
-      "NEON_AUTH_COOKIE_SECRET",
-    ]);
-    assert.deepEqual(res.headers.getSetCookie(), [], "must not mint a fake session");
-  }
-
-  const health = await fetch(`${unconfigured.baseUrl}/api/v1/health`);
-  assert.equal(health.status, 200);
-});
-
-test("fixture-only SDK proxy forwards email/password and Google provider requests", async () => {
-  const emailRes = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
-  });
-  assert.equal(emailRes.status, 200);
-
-  const googleRes = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/social`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ provider: "google", callbackURL: "/api/auth/callback/google" }),
-  });
-  assert.equal(googleRes.status, 200);
-
-  assert.ok(configuredFixture.requests.some((r) => r.url.includes("sign-in/email")));
-  const googleRequest = configuredFixture.requests.find((r) => r.url.includes("sign-in/social"));
-  assert.ok(googleRequest);
-  assert.match(googleRequest.body, /"provider":"google"/);
-});
-
-test("fixture-only SDK proxy rewrites session cookies to Secure and HttpOnly in production", async () => {
-  const res = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`);
+  const res = await route.GET(sessionRequest, sessionContext);
   assert.equal(res.status, 200);
-  const cookies = res.headers.getSetCookie();
-  assert.ok(cookies.length > 0);
-  for (const cookie of cookies) {
-    assert.match(cookie, /__Secure-neon-auth/);
-    assert.match(cookie, /;\s*Secure\b/i, cookie);
-    assert.match(cookie, /;\s*HttpOnly\b/i, cookie);
-    assert.match(cookie, /SameSite=Lax/i, cookie);
-  }
+  assert.deepEqual(await res.json(), {
+    session: { id: fixtureUser.id },
+    user: {
+      id: fixtureUser.id,
+      email: fixtureUser.email,
+      emailVerified: true,
+      name: "Reader",
+      image: null,
+    },
+  });
 });
 
-test("fixture-only JWT/JWKS verifier checks EdDSA signature, issuer and audience", async () => {
-  const { publicKey, privateKey } = await generateKeyPair("EdDSA");
-  const jwk = await exportJWK(publicKey);
-  jwk.kid = "fixture-key";
-  jwk.use = "sig";
-  jwk.alg = "EdDSA";
-
-  const fixture = await startHttpServer((_req, res) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ keys: [jwk] }));
+test("cross-origin auth mutations are rejected", async () => {
+  setIdentityProvider(configuredProvider());
+  const request = new Request("https://example.test/api/auth/sign-out", {
+    method: "POST",
+    headers: { origin: "https://evil.test" },
   });
-  const previousBaseUrl = process.env.NEON_AUTH_BASE_URL;
-  const previousSecret = process.env.NEON_AUTH_COOKIE_SECRET;
-  try {
-    const baseUrl = `${fixture.baseUrl}/neondb/auth`;
-    process.env.NEON_AUTH_BASE_URL = baseUrl;
-    process.env.NEON_AUTH_COOKIE_SECRET = "fixture-secret-with-at-least-32-characters";
-    const origin = new URL(baseUrl).origin;
-    const sign = (issuer) => new SignJWT({ sub: "opaque-user-id" })
-      .setProtectedHeader({ alg: "EdDSA", kid: "fixture-key" })
-      .setIssuedAt()
-      .setExpirationTime("5m")
-      .setIssuer(issuer)
-      .setAudience(origin)
-      .sign(privateKey);
+  const res = await route.POST(request, { params: Promise.resolve({ path: ["sign-out"] }) });
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).error.code, "AUTH_REQUEST_REJECTED");
+});
 
-    const valid = await verifyNeonJwt(await sign(origin));
-    assert.equal(valid?.sub, "opaque-user-id");
-    assert.equal(await verifyNeonJwt(await sign("https://wrong-issuer.example.com")), null);
-    assert.ok(fixture.requests.some((r) => r.url.includes(".well-known/jwks.json")));
-  } finally {
-    if (previousBaseUrl === undefined) delete process.env.NEON_AUTH_BASE_URL;
-    else process.env.NEON_AUTH_BASE_URL = previousBaseUrl;
-    if (previousSecret === undefined) delete process.env.NEON_AUTH_COOKIE_SECRET;
-    else process.env.NEON_AUTH_COOKIE_SECRET = previousSecret;
-    await fixture.close();
+test("only GET and POST are allowed on the auth route", async () => {
+  for (const method of ["PUT", "PATCH", "DELETE"]) {
+    const request = new Request("https://example.test/api/auth/get-session", { method });
+    const res = await route[method](request, sessionContext);
+    assert.equal(res.status, 405, method);
+    assert.equal(res.headers.get("allow"), "GET, POST", method);
   }
 });

@@ -1,7 +1,6 @@
 import "server-only";
 
 import { Pool } from "pg";
-import { AuthConfigurationError, readAuthConfig } from "./auth/server";
 import { DatabaseConfigurationError, readDatabaseConfig } from "./db/client";
 
 export type ReadinessCheck = "ok" | "missing" | "invalid" | "unavailable" | "skipped";
@@ -76,15 +75,6 @@ export async function checkReadiness(env: NodeJS.ProcessEnv = process.env): Prom
       missing.push(...error.missing);
     } else {
       missing.push("NETLIFY_DB_URL");
-    }
-  }
-  try {
-    readAuthConfig(env);
-  } catch (error) {
-    if (error instanceof AuthConfigurationError && error.missing.length > 0) {
-      missing.push(...error.missing);
-    } else {
-      missing.push("NEON_AUTH_BASE_URL", "NEON_AUTH_COOKIE_SECRET");
     }
   }
   const ticket = env.READER_TICKET_SECRET?.trim();

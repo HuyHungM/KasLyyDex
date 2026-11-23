@@ -37,3 +37,24 @@ export function identityFromSession(data: unknown): AccountIdentity | null {
     sessionId: text(session.id) ?? "",
   };
 }
+
+// Netlify Identity exposes raw GoTrue fields and the normalized SDK fields.
+// Only verified users map into app identity; roles and other privilege fields
+// are deliberately never read.
+export function identityFromNetlifyUser(data: unknown): AccountIdentity | null {
+  const user = obj(data);
+  const id = text(user.id);
+  const verified = user.email_verified === true
+    || user.emailVerified === true
+    || (typeof user.confirmedAt === "string" && user.confirmedAt.length > 0);
+  if (!id || id.length > 256 || !verified) return null;
+  const metadata = obj(user.user_metadata ?? user.userMetadata);
+  return {
+    id,
+    email: text(user.email),
+    emailVerified: true,
+    name: text(metadata.full_name) ?? text(metadata.name) ?? text(user.name),
+    image: text(metadata.avatar_url) ?? text(user.pictureUrl),
+    sessionId: id,
+  };
+}
