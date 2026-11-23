@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const { logStructured, outcomeFor, redactSecrets, withObservedRoute, OBSERVED_OPERATIONS } = await import(
@@ -67,6 +68,11 @@ test("logStructured redacts arbitrary field values and stays valid JSON", () => 
   assert.equal(parsed.event, "error");
   assert.equal(parsed.level, "error");
   assert.equal(typeof parsed.message, "string");
+});
+
+test("observability source has no Vercel-only metric import", () => {
+  const source = readFileSync(new URL("../lib/observability.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /@vercel\/functions/);
 });
 
 test("metric outcomes are bounded and never echo request detail", () => {

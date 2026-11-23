@@ -2,7 +2,6 @@ import "server-only";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { metric } from "@vercel/functions";
 
 // Bounded label vocabulary. Never derive these from request paths, users or
 // upstream error strings: metric labels must stay low-cardinality and PII-free.
@@ -119,11 +118,11 @@ export function outcomeFor(status: number): string {
 }
 
 function emitMetrics(operation: ObservedOperation, outcome: string, durationMs: number): void {
-  // Local and non-Vercel runtimes are a no-op. Ingestion stays unverified until
-  // an operator explicitly enables paid Observability; no project setting changes here.
-  const attributes = { operation, outcome };
-  metric("kaslyydex.user_requests", 1, attributes);
-  metric("kaslyydex.user_request.duration_ms", durationMs, attributes);
+  // Platform-neutral: request metrics stay in the structured request logs above.
+  // Keep the call sites unchanged on every runtime.
+  void operation;
+  void outcome;
+  void durationMs;
 }
 
 /// Structured request/error logs and bounded business-operation metrics. Health,
