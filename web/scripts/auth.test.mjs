@@ -47,6 +47,17 @@ test("unusable identity users are rejected", () => {
   assert.equal(identityFromNetlifyUser({ ...fixtureUser, id: undefined }), null);
   assert.equal(identityFromNetlifyUser({ ...fixtureUser, id: "x".repeat(257) }), null);
   assert.equal(identityFromNetlifyUser({ ...fixtureUser, email_verified: false }), null);
+  assert.equal(identityFromNetlifyUser({
+    ...fixtureUser,
+    email_verified: false,
+    confirmedAt: "2026-01-01T00:00:00.000Z",
+  }), null);
+  assert.equal(identityFromNetlifyUser({
+    ...fixtureUser,
+    email_verified: true,
+    emailVerified: false,
+    confirmedAt: "2026-01-01T00:00:00.000Z",
+  }), null);
 });
 
 test("client-supplied privilege fields never reach the identity", () => {

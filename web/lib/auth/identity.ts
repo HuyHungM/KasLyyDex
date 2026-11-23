@@ -44,9 +44,11 @@ export function identityFromSession(data: unknown): AccountIdentity | null {
 export function identityFromNetlifyUser(data: unknown): AccountIdentity | null {
   const user = obj(data);
   const id = text(user.id);
-  const verified = user.email_verified === true
+  // An explicit unverified flag wins; confirmation metadata cannot upgrade it.
+  const unverified = user.email_verified === false || user.emailVerified === false;
+  const verified = !unverified && (user.email_verified === true
     || user.emailVerified === true
-    || (typeof user.confirmedAt === "string" && user.confirmedAt.length > 0);
+    || (typeof user.confirmedAt === "string" && user.confirmedAt.length > 0));
   if (!id || id.length > 256 || !verified) return null;
   const metadata = obj(user.user_metadata ?? user.userMetadata);
   return {
