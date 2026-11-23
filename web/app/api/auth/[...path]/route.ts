@@ -1,7 +1,7 @@
 import { AuthError, verifyRequestOrigin } from "@netlify/identity";
 import type { NextRequest } from "next/server";
 import type { AccountIdentity } from "@/lib/auth/identity";
-import { authErrorResponse, getAuth } from "@/lib/auth/server";
+import { authErrorResponse, getAuth, sessionFromJwt } from "@/lib/auth/server";
 import { errorEnvelope } from "@/lib/contracts";
 import { withObservedRoute } from "@/lib/observability";
 
@@ -45,7 +45,12 @@ async function handle(request: NextRequest, context: Context) {
       if (request.method !== "GET" && request.method !== "POST") return methodNotAllowed();
       const { path } = await context.params;
       const action = path[0];
-      if (action === "get-session") return sessionResponse(await getAuth().getSession());
+      if (action === "get-session") {
+        const cookie = /(?:^|;\s*)nf_jwt=([^;]+)/.exec(request.headers.get("cookie") ?? "");
+        const token = cookie ? decodeURIComponent(cookie[1]) : null;
+        const identity = token ? await sessionFromJwt(token) : null;
+        return sessionResponse(identity ?? await getAuth().getSession());
+      }
 
       if (request.method === "GET") {
         return Response.json(errorEnvelope("NOT_FOUND", "Unknown auth route."), { status: 404 });

@@ -45,7 +45,9 @@ export default function AuthPanel() {
       <div className="surface account-card">
         <h2>Đã đăng nhập</h2>
         <p className="account-hint">
-          {session.user?.email ?? "Tài khoản"} · {session.user?.emailVerified ? "email đã xác thực" : "email chưa xác thực"}
+          <strong>{session.user?.name ?? session.user?.email ?? "Tài khoản"}</strong>
+          {session.user?.name && session.user.email ? ` · ${session.user.email}` : ""}
+          {" · "}{session.user?.emailVerified ? "email đã xác thực" : "email chưa xác thực"}
         </p>
         <div className="actions">
           <Link href="/tai-khoan/cai-dat" className="btn">Cài đặt đọc</Link>
@@ -94,9 +96,11 @@ export default function AuthPanel() {
 
   function google() {
     setMessage(null);
+    setBusy(true);
     try {
       signInWithGoogle();
     } catch (error) {
+      setBusy(false);
       setMessage(error instanceof Error ? error.message : "Google đăng nhập thất bại.");
     }
   }
@@ -123,9 +127,11 @@ export default function AuthPanel() {
           {busy ? "Đang gửi…" : mode === "sign-in" ? "Đăng nhập" : "Tạo tài khoản"}
         </button>
       </form>
-      <button type="button" className="btn" disabled={busy} onClick={() => void google()}>Tiếp tục với Google</button>
+      <button type="button" className="btn" disabled={busy} onClick={() => void google()}>
+        {busy ? "Đang chuyển đến Google…" : "Tiếp tục với Google"}
+      </button>
       {message ? <p className="account-error" role="alert">{message}</p> : null}
-      <p className="account-hint">Không có email xác thực hoặc Google trong chế độ thử nghiệm local; lỗi từ nhà cung cấp sẽ hiển thị ở đây.</p>
+      <p className="account-hint">Sau khi xác thực ở Google, trang này sẽ tự động nhận phiên và hiển thị tài khoản của bạn.</p>
     </div>
   );
 }

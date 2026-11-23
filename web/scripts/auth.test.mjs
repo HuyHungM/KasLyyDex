@@ -133,6 +133,31 @@ test("get-session keeps the existing session/user response shape", async () => {
   assert.deepEqual(await res.json(), sessionBody);
 });
 
+test("get-session uses the nf_jwt cookie when the SDK has no server context", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), authorization: init?.headers?.authorization });
+    return new Response(JSON.stringify(fixtureUser), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    setIdentityProvider({ ...configuredProvider(), getUser: async () => null });
+    const request = new Request("https://example.test/api/auth/get-session", {
+      headers: { cookie: "nf_jwt=jwt-from-oauth-callback" },
+    });
+    const res = await route.GET(request, sessionContext);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), sessionBody);
+    assert.match(calls[0].url, /\/user$/);
+    assert.equal(calls[0].authorization, "Bearer jwt-from-oauth-callback");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("cross-origin auth mutations are rejected", async () => {
   setIdentityProvider(configuredProvider());
   const request = new Request("https://example.test/api/auth/sign-out", {

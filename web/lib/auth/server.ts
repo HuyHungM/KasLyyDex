@@ -61,6 +61,26 @@ function requireProvider(): IdentityProvider {
   return provider;
 }
 
+// Next route handlers do not always receive Netlify's Functions context, so the
+// SDK's server getUser() cannot see the browser-set nf_jwt cookie. Verify the
+// cookie directly against Identity instead of trusting the JWT payload.
+export async function sessionFromJwt(token: string): Promise<AccountIdentity | null> {
+  const config = requireProvider().config();
+  if (!config?.url) return null;
+  let response: Response;
+  try {
+    response = await fetch(`${config.url}/user`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  return identityFromNetlifyUser(await response.json().catch(() => null));
+}
+
 export type NetlifyIdentityAdapter = {
   getSession(): Promise<AccountIdentity | null>;
   signIn(email: string, password: string): Promise<AccountIdentity | null>;
