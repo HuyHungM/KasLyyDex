@@ -22,10 +22,12 @@ const FORBIDDEN = [
   "NEON_AUTH_COOKIE_SECRET",
 ];
 
-// SDD plans/specs record the pre-migration state verbatim; scanner tests and
-// this file must name the strings they reject. Neither is runtime config.
+// Historical SDD artifacts and the two migration records describe the removed
+// platforms; scanner tests and this file must name the strings they reject.
 const SWEEP_EXEMPT = [
-  "docs/superpowers/",
+  "docs/superpowers/sdd/",
+  "docs/superpowers/plans/2026-11-23-netlify-migration.md",
+  "docs/superpowers/specs/2026-11-23-netlify-migration-design.md",
   "web/scripts/env-validation.test.mjs",
   "web/scripts/observability.test.mjs",
   "web/scripts/secret-scan-lib.mjs",

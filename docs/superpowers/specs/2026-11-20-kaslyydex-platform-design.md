@@ -121,7 +121,7 @@ keyboard, fullscreen, fetch và local UI state.
 - Vercel Node runtime cho database routes; không đưa transaction user vào Edge
   runtime ở MVP.
 - Neon preview branch cho Vercel Preview deployments.
-- `DATABASE_URL`, auth secrets và Google credentials chỉ nằm trong Vercel
+- Connection string của database, auth secrets và Google credentials chỉ nằm trong Vercel
   environment variables; không commit secrets.
 
 Mỗi user BFF handler phải:
@@ -332,7 +332,7 @@ Error body thống nhất:
 - CSP, HSTS, Referrer-Policy, Permissions-Policy.
 - Sanitize comment rendering; spoiler content không render raw HTML.
 - Validate MangaDex responses tại Axum boundary.
-- Không log password, OAuth token, DATABASE_URL hoặc JWT.
+- Không log password, OAuth token, connection string của database hoặc JWT.
 
 ## 12. Phase gates
 

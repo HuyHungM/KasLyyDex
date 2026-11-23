@@ -88,7 +88,7 @@ The latest execution decisions and task-specific acceptance details live in
 - [ ] **Step 1: Write the failing repository checks**: a shell check must find no user-facing `TruyệnViệt` product title in the root/web metadata except migration notes, and `web/package.json` must exist while `legacy-next/package.json` must not.
 - [ ] **Step 2: Run the check** and record RED against the current layout.
 - [ ] **Step 3: Move/rename the web app and update product metadata** to `KasLyyDex`; do not alter behavior or UI in this task.
-- [ ] **Step 4: Add `.env.example` with variable names only**: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RUST_CONTENT_API_ORIGIN`, `NEXT_PUBLIC_APP_URL`. Values remain empty; Task 3 does not read or configure Neon/auth.
+- [ ] **Step 4: Add `.env.example` with variable names only**: database connection URL, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RUST_CONTENT_API_ORIGIN`, `NEXT_PUBLIC_APP_URL`. Values remain empty; Task 3 does not read or configure auth.
 - [ ] **Step 5: Run `npm ci`, `npm run build` from `web/` and `cargo test --workspace`; expected: existing behavior still builds.
 - [ ] **Step 6: Commit** `chore: establish KasLyyDex web workspace`.
 
@@ -147,14 +147,14 @@ The latest execution decisions and task-specific acceptance details live in
 - Create/update: `infra/vercel.md`, `infra/axum.md`
 
 **Interfaces:**
-- Auth uses Neon Managed Auth (`@neon/auth/next/server`, `@neon/auth/next`), email/password + Google. Do not create or migrate Neon-managed auth tables with Drizzle.
+- Auth uses a managed auth SDK's Next server/client entry points, email/password + Google. Do not create or migrate managed auth tables with Drizzle.
 - Drizzle owns application tables only; `profiles.user_id` stores opaque auth user ID text and does not assume UUID format.
 - Browser content requests use `/api/content/*` and proxy to `RUST_CONTENT_API_ORIGIN`.
 - Axum exposes the content namespace and rejects invalid content IDs with structured errors.
 
 - [ ] **Step 1: Write failing auth tests** for email/password, Google provider config, secure cookies, and JWT/JWKS availability; write a migration test that app schema does not own Neon Auth tables.
 - [ ] **Step 2: Configure Neon integration on the already-verified Vercel Preview branch.** Enable Neon Managed Auth for the development/preview branch and configure the Google OAuth provider using owner-supplied credentials; never write secrets into repository files.
-- [ ] **Step 3: Add `.env.example` names `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET`, `DATABASE_URL`, Google OAuth client values and `RUST_CONTENT_API_ORIGIN`. Implement Neon Auth server/client handlers using documented `@neon/auth/next/server` and `@neon/auth/next` entry points. Use Drizzle for application tables only; validate env on the server and never expose database credentials in client bundles.
+- [ ] **Step 3: Add `.env.example` names for the managed auth base URL and cookie secret, the database connection URL, Google OAuth client values and `RUST_CONTENT_API_ORIGIN`. Implement managed auth server/client handlers using documented Next entry points. Use Drizzle for application tables only; validate env on the server and never expose database credentials in client bundles.
 - [ ] **Step 4: Add an application-owned profile migration with opaque `user_id` text; do not migrate the `neon_auth` schema. Run the initial Drizzle migration only after verifying it targets the application schema/branch.
 - [ ] **Step 5: Write failing local proxy tests** for `/api/content/latest` and invalid content ID through Next→Axum; expected RED before proxy/route namespace changes.
 - [ ] **Step 6: Implement Next rewrites/proxy and Axum content route namespace without duplicating MangaDex logic in Next.
