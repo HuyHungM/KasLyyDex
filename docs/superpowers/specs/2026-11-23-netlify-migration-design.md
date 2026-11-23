@@ -11,7 +11,7 @@ reviewed and an implementation plan is approved.
 KasLyyDex currently runs as:
 
 - a Next.js 16.4.6 frontend in `web/`,
-- an Axum content API in `crates/server` (`RUST_CONTENT_API_ORIGIN`),
+- an Axum content API in `crates/server` (`RUST_CONTENT_API_ORIGIN`), targeted at Northflank as a containerized service,
 - Neon Managed Auth (`@neon/auth`, `NEON_AUTH_*`) for identity,
 - Neon Postgres (`DATABASE_URL`) via Drizzle + `pg` for application data,
 - `@vercel/functions` for metric emission in `web/lib/observability.ts`.
@@ -27,8 +27,9 @@ The operator wants to remove Vercel and Neon entirely:
 - replace Neon Managed Auth with Netlify Identity,
 - replace Neon Postgres with Netlify Database,
 - keep the Axum content API as a separate runtime,
-- keep placeholder `RUST_CONTENT_API_ORIGIN` local for now; no live content host
-  is selected in this change.
+- host the Axum content API on Northflank with a Dockerfile;
+- keep local `RUST_CONTENT_API_ORIGIN` as `http://127.0.0.1:3100` and leave the
+  public Northflank URL for the operator to supply at deploy time.
 
 ## Goals
 
@@ -36,14 +37,18 @@ The operator wants to remove Vercel and Neon entirely:
 2. No Neon runtime dependency in application code, env template, or docs.
 3. Next.js App Router, PPR, route handlers, and streaming keep working on
    Netlify.
-4. Existing application schema and Drizzle models remain the source of truth.
-5. CI quality gates stay green before any deploy.
-6. No credentials in tracked files.
+4. Axum builds and runs on Northflank as a long-lived container with a health
+   check and persistent cache volume.
+5. Existing application schema and Drizzle models remain the source of truth.
+6. CI quality gates stay green before any deploy.
+7. No credentials in tracked files.
 
 ## Non-goals
 
-- No Netlify login approval, site creation, or deploy in this change.
-- No migration of Axum onto Netlify Functions or containers.
+- No Netlify or Northflank login approval, project creation, or deploy in this
+  change.
+- No Axum on Netlify, no Kubernetes/BYOC cluster, and no Rust buildpack:
+  Northflank's documented Rust path is a Dockerfile.
 - No data copy from the existing Neon database. The only Neon data created so
   far was a smoke-test profile/library row that was deleted; no user data is
   being moved.
@@ -75,12 +80,27 @@ Add a minimal `netlify.toml` at the repository root:
 No `publish` is set: the adapter provisions the correct output. No adapter
 version is pinned.
 
-### Axum content boundary
+### Axum content boundary on Northflank
 
-`RUST_CONTENT_API_ORIGIN` remains a server-only env var. For this change its
-documented local value stays `http://127.0.0.1:3100`. The Netlify-deployed
-frontend will therefore not have live content until an operator supplies a real
-public Axum origin. This is an explicit, accepted limitation.
+Northflank supports Dockerfile builds and long-lived combined services from a
+linked Git repository. Rust is not in Northflank's documented buildpack stack
+list, so the backend ships as a multi-stage Dockerfile at repository root:
+
+- builder stage compiles the workspace release binary `server`;
+- runtime stage copies the binary and serves public HTTP on port `3100`;
+- liveness probe `GET /api/v1/health`, readiness probe `GET /api/v1/ready`;
+- a persistent volume is mounted at `CACHE_DIR` so the image cache survives
+  redeploys;
+- runtime secrets/variables are injected by Northflank (`CACHE_DIR`, `DIST_DIR`,
+  optional `MANGADEX_API_ORIGIN`/`COMICK_API_ORIGIN`).
+
+`RUST_CONTENT_API_ORIGIN` remains a server-only env var on Netlify. Its local
+value stays `http://127.0.0.1:3100`. At deploy time the operator sets it to the
+Northflank public URL; the browser keeps calling Next's same-origin
+`/api/content/*` BFF, so no CORS change is needed. Preview environments require
+a split build service + deployment services in a Northflank pipeline because
+combined services cannot be part of pipelines; that split is not part of this
+change.
 
 ### Observability
 
@@ -172,8 +192,10 @@ docs.
 ### Docs and CI
 
 - Rename `infra/vercel.md` to `infra/netlify.md`; rewrite it for Netlify CLI,
-  site link, env vars, Deploy Preview verification, rollback, and the explicit
-  Axum-origin limitation.
+  site link, env vars, Deploy Preview verification, rollback, and the Northflank
+  URL used as `RUST_CONTENT_API_ORIGIN`.
+- Create `infra/northflank.md` for the Dockerfile build, combined service, port
+  `3100`, health probes, `CACHE_DIR` volume, secrets, domain, and build rollback.
 - Update README and any SDD docs that instruct Vercel login/deploy. Historical
   SDD artifacts under `docs/superpowers/sdd/` remain unchanged as records.
 - `.github/workflows/ci.yml` has no Vercel step; keep it. Optionally add a
@@ -187,7 +209,7 @@ docs.
 2. Next.js route handlers → Netlify Identity for session/user verification.
 3. Next.js server code → Netlify Database (`NETLIFY_DB_URL`) via Drizzle/`pg`
    for profiles, library, progress, comments, notifications, XP.
-4. Next.js server code → external Axum origin for manga content.
+4. Next.js server code → Northflank Axum service public URL for manga content.
 5. Netlify deploys apply SQL migrations before publish; Deploy Previews use a
    database branch.
 
@@ -230,7 +252,9 @@ UI flows can be checked with `netlify dev` plus a local Axum server.
 
 ## Rollback
 
-- Application rollback: Netlify deploy history / previous published deploy.
+- Frontend rollback: Netlify deploy history / previous published deploy.
+- Backend rollback: Northflank build rollback / select a previous build; it does
+  not undo database migrations.
 - Database rollback: Netlify does not auto-revert schema. Any breaking schema
   change must use expand/contract across deploys. This change only relocates
   existing migrations; it introduces no new schema change.
@@ -245,7 +269,8 @@ UI flows can be checked with `netlify dev` plus a local Axum server.
   Vercel deploy commands outside historical SDD artifacts.
 - `netlify/database/migrations/` contains the eight migrations in order, with
   no `--> statement-breakpoint` markers.
-- `infra/netlify.md` exists and `infra/vercel.md` is gone.
+- `infra/netlify.md` and `infra/northflank.md` exist; `infra/vercel.md` is gone.
+- A root `Dockerfile` builds the Axum server and exposes port `3100`.
 - Local gates listed under Testing are green.
 - No Netlify login, site creation, migration execution against a live Netlify
   database, or deploy occurs during implementation of this spec.
@@ -258,7 +283,12 @@ UI flows can be checked with `netlify dev` plus a local Axum server.
   current docs before moving files.
 - Netlify Identity's user/session API differs from Neon Managed Auth; the
   existing UI call surface may need small adjustments.
-- Deployed content will be unavailable until a public Axum origin is supplied.
+- Deployed content will be unavailable until the Northflank public URL is
+  supplied as `RUST_CONTENT_API_ORIGIN`.
+- Northflank's free-tier card requirement conflict is unresolved in its own
+  docs; operator must confirm billing before project creation.
+- MangaDex/Comick egress-IP blocking from Northflank was not verified; if it
+  occurs, a static egress IP or provider allowlist is a separate decision.
 - Identity cannot be tested under `netlify dev`; Deploy Preview testing needs
   operator approval for Netlify login.
 - Removing Neon means the existing gitignored `.env.local` must be updated or

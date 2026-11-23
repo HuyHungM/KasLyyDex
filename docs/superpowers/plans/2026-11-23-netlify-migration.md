@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace Vercel and Neon with Netlify for frontend deployment, identity, and application data while preserving the existing Next/Axum product behavior.
+**Goal:** Replace Vercel and Neon with Netlify (frontend, identity, application data) and Northflank (Axum backend) while preserving the existing product behavior.
 
-**Architecture:** Next.js 16 stays in `web/` and deploys via Netlify's zero-config OpenNext adapter. Vercel-only metric emission becomes a local no-op. Neon Managed Auth becomes Netlify Identity behind the existing `/api/auth` surface; Neon Postgres becomes Netlify Database behind the existing Drizzle/`pg` boundary. Axum remains a separate runtime.
+**Architecture:** Next.js 16 stays in `web/` and deploys via Netlify's zero-config OpenNext adapter. Vercel-only metric emission becomes a local no-op. Neon Managed Auth becomes Netlify Identity behind the existing `/api/auth` surface; Neon Postgres becomes Netlify Database behind the existing Drizzle/`pg` boundary. Axum builds from a root `Dockerfile` and runs as a Northflank combined service with a persistent `CACHE_DIR` volume; Netlify sets `RUST_CONTENT_API_ORIGIN` to that service URL.
 
 **Tech Stack:** Next.js 16.4.6, Netlify Next.js adapter v5 (OpenNext), Netlify Identity + `@netlify/identity`, Netlify Database + `NETLIFY_DB_URL`, Drizzle ORM, `pg`, Node 22, existing Playwright/Node test harness.
 
@@ -15,7 +15,8 @@
 - `netlify.toml`: `base = "web"`, `command = "npm run build"`, `NODE_VERSION = "22"`. Do not pin the Next adapter or set `publish`.
 - No tracked source may import `@vercel/functions`, `@neon/auth`, or reference Neon/Vercel deploy commands (historical SDD artifacts excluded).
 - Env template names are exactly `NETLIFY_DB_URL`, `RUST_CONTENT_API_ORIGIN`, `READER_TICKET_SECRET`; `DATABASE_URL`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET` are removed.
-- `RUST_CONTENT_API_ORIGIN` local value stays `http://127.0.0.1:3100`; no live Axum host is chosen.
+- `RUST_CONTENT_API_ORIGIN` local value stays `http://127.0.0.1:3100`; at deploy time the operator supplies the Northflank public URL.
+- Axum runs on Northflank as a Dockerfile-based combined service on port `3100`, with liveness `/api/v1/health`, readiness `/api/v1/ready`, and a persistent volume mounted at `CACHE_DIR`.
 - Auth IDs remain opaque strings; `profiles.user_id` stays `text`. Client-supplied `role`, `level`, `totalXp`, `percent`, `pageCount` remain rejected.
 - Migrations live at repository-root `netlify/database/migrations/` with `<number>_<slug>.sql` names and no `--> statement-breakpoint` markers; relative order preserved.
 - No secrets in tracked files; `.env.local` stays gitignored and is not read by tests.
@@ -178,7 +179,32 @@
 
 - [ ] **Step 6: Commit** with `feat(auth): wire Netlify Identity through account UI and handlers`.
 
-### Task 6: Full gate and reference sweep
+### Task 6: Northflank Axum service packaging
+
+**Files:**
+- Create: `Dockerfile`
+- Create: `infra/northflank.md`
+- Modify: `web/.env.example`
+- Test: `web/scripts/env-validation.test.mjs`
+
+**Interfaces:**
+- Consumes: Axum workspace at `crates/server`, binary `server`, port `3100`, health routes `/api/v1/health` and `/api/v1/ready`, env `CACHE_DIR`/`DIST_DIR`.
+- Produces: a Dockerfile that builds and runs `server`; documented Northflank combined-service settings and `RUST_CONTENT_API_ORIGIN` value shape.
+
+- [ ] **Step 1: Write failing assertions** in `web/scripts/env-validation.test.mjs`:
+  - root `Dockerfile` exists and contains a Rust builder stage, a runtime stage, `EXPOSE 3100`, and no hardcoded secrets;
+  - `infra/northflank.md` exists and names the Dockerfile build type, combined service, public port `3100`, liveness `/api/v1/health`, readiness `/api/v1/ready`, `CACHE_DIR` volume, and build rollback;
+  - `web/.env.example` still contains `RUST_CONTENT_API_ORIGIN=` with no literal Northflank hostname.
+
+- [ ] **Step 2: Run the focused test and confirm FAIL.**
+
+- [ ] **Step 3: Create the multi-stage Dockerfile** and `infra/northflank.md` with the values pinned above. Document that preview pipelines need split build/deployment services and are out of scope.
+
+- [ ] **Step 4: Run the focused test and confirm PASS.**
+
+- [ ] **Step 5: Commit** with `chore: package Axum for Northflank deployment`.
+
+### Task 7: Full gate and reference sweep
 
 **Files:**
 - Test only: repository-wide assertions in `web/scripts/env-validation.test.mjs`
