@@ -49,6 +49,14 @@ with scheme and host, no path, query or trailing slash. The local value stays
 `http://127.0.0.1:3100`. The browser continues to call same-origin
 `/api/content/*` on Next, so no CORS change is needed.
 
+## Database migrations
+
+Drizzle's `out` is `netlify/database/migrations`, and its `meta/` journal and
+snapshots are committed beside the numbered SQL files. Netlify's scanner only
+picks up files matching `^\d+_.*`, so `meta/` is ignored. Future
+`drizzle-kit generate` output must have every `--> statement-breakpoint`
+marker stripped before Netlify applies it; the checked-in SQL is plain SQL.
+
 ## Preview environments
 
 Combined services cannot be part of Northflank pipelines. Preview pipelines

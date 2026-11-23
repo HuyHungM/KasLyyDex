@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { handleAuthCallback, signIn, signInWithGoogle, signUp } from "@/lib/auth/client";
+import { useState } from "react";
+import { signIn, signInWithGoogle, signUp } from "@/lib/auth/client";
 import { signOutAccount, useAccountSession } from "@/lib/account/client";
 
 type Mode = "sign-in" | "sign-up";
@@ -15,20 +15,6 @@ export default function AuthPanel() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      try {
-        await handleAuthCallback();
-      } catch {
-        // No callback in the URL, or Identity is unavailable: load the session as usual.
-      } finally {
-        if (active) void refresh();
-      }
-    })();
-    return () => { active = false; };
-  }, [refresh]);
 
   if (session.status === "loading") return <div className="surface account-card">Đang kiểm tra phiên đăng nhập…</div>;
 

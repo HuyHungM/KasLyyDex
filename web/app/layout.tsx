@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { Be_Vietnam_Pro, Bricolage_Grotesque } from "next/font/google";
 import "./globals.css";
+import AuthCallback from "@/components/auth-callback";
 import SiteShell from "@/components/site-shell";
 
 const beVietnam = Be_Vietnam_Pro({
@@ -29,6 +30,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="vi" className={`${beVietnam.variable} ${bricolage.variable}`}>
       <body>
+        <AuthCallback />
         <Suspense fallback={<div className="site-shell">{children}</div>}>
           <SiteShell>{children}</SiteShell>
         </Suspense>

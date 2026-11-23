@@ -31,7 +31,8 @@ async function freshDatabase() {
 }
 
 test("migrations are plain SQL in Netlify's numbered order", async () => {
-  const files = (await readdir(fileURLToPath(new URL("../../netlify/database/migrations/", import.meta.url)))).sort();
+  const entries = await readdir(fileURLToPath(new URL("../../netlify/database/migrations/", import.meta.url)), { withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
   assert.deepEqual(files, [
     "0000_application.sql",
     "0001_account_data.sql",
@@ -45,6 +46,20 @@ test("migrations are plain SQL in Netlify's numbered order", async () => {
   for (const url of migrationUrls) {
     assert.doesNotMatch(await readFile(fileURLToPath(url), "utf8"), /--> statement-breakpoint/);
   }
+});
+
+test("Drizzle journal and snapshots live beside the Netlify migrations", async () => {
+  const dir = new URL("../../netlify/database/migrations/", import.meta.url);
+  const journalUrl = new URL("meta/_journal.json", dir);
+  const journal = JSON.parse(await readFile(fileURLToPath(journalUrl), "utf8"));
+  assert.equal(journal.dialect, "postgresql");
+  assert.deepEqual(journal.entries.map((entry) => entry.tag), migrationUrls.map((url) => {
+    const name = url.pathname.split("/").at(-1);
+    return name.replace(/\.sql$/, "");
+  }));
+  const snapshots = (await readdir(fileURLToPath(new URL("meta/", dir)))).filter((name) => name.endsWith("_snapshot.json"));
+  assert.equal(snapshots.length, journal.entries.length);
+  await assert.rejects(readFile(fileURLToPath(new URL("../../web/drizzle/meta/_journal.json", import.meta.url))), { code: "ENOENT" });
 });
 
 test("application migrations own account tables and never touch Neon Auth tables", async () => {

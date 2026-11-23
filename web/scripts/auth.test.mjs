@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { afterEach, test } from "node:test";
 
 // Fixture-only: the Identity provider is injected below, so no live Netlify
@@ -29,6 +30,28 @@ const configuredProvider = (user = fixtureUser) => ({
 
 const sessionRequest = new Request("https://example.test/api/auth/get-session");
 const sessionContext = { params: Promise.resolve({ path: ["get-session"] }) };
+const sessionBody = {
+  session: { id: fixtureUser.id },
+  user: {
+    id: fixtureUser.id,
+    email: fixtureUser.email,
+    emailVerified: true,
+    name: "Reader",
+    image: null,
+  },
+};
+
+function post(action, body) {
+  return new Request(`https://example.test/api/auth/${action}`, {
+    method: "POST",
+    headers: { origin: "https://example.test", ...(body ? { "content-type": "application/json" } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+function context(action) {
+  return { params: Promise.resolve({ path: [action] }) };
+}
 
 afterEach(() => setIdentityProvider());
 
@@ -107,16 +130,7 @@ test("get-session keeps the existing session/user response shape", async () => {
 
   const res = await route.GET(sessionRequest, sessionContext);
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), {
-    session: { id: fixtureUser.id },
-    user: {
-      id: fixtureUser.id,
-      email: fixtureUser.email,
-      emailVerified: true,
-      name: "Reader",
-      image: null,
-    },
-  });
+  assert.deepEqual(await res.json(), sessionBody);
 });
 
 test("cross-origin auth mutations are rejected", async () => {
@@ -137,4 +151,56 @@ test("only GET and POST are allowed on the auth route", async () => {
     assert.equal(res.status, 405, method);
     assert.equal(res.headers.get("allow"), "GET, POST", method);
   }
+});
+
+test("sign-in, sign-up, sign-out and callback succeed with an injected provider", async () => {
+  const calls = [];
+  setIdentityProvider({
+    ...configuredProvider(),
+    login: async (...args) => { calls.push(["login", ...args]); return fixtureUser; },
+    signup: async (...args) => { calls.push(["signup", ...args]); return fixtureUser; },
+    logout: async () => { calls.push(["logout"]); },
+  });
+
+  for (const action of ["sign-in", "sign-up"]) {
+    const res = await route.POST(post(action, { email: fixtureUser.email, password: "secret123" }), context(action));
+    assert.equal(res.status, 200, action);
+    assert.deepEqual(await res.json(), sessionBody, action);
+  }
+
+  const out = await route.POST(post("sign-out"), context("sign-out"));
+  assert.equal(out.status, 200);
+  assert.deepEqual(await out.json(), { ok: true });
+
+  const callback = await route.POST(post("callback"), context("callback"));
+  assert.equal(callback.status, 200);
+  assert.deepEqual(await callback.json(), sessionBody);
+
+  assert.deepEqual(calls, [
+    ["login", fixtureUser.email, "secret123"],
+    ["signup", fixtureUser.email, "secret123"],
+    ["logout"],
+  ]);
+});
+
+test("callback tokens are handled globally, not only on the account page", async () => {
+  const [layout, handler, panel] = await Promise.all([
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/auth-callback.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/account/AuthPanel.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(layout, /import AuthCallback from "@\/components\/auth-callback"/);
+  assert.match(layout, /<AuthCallback \/>/);
+  assert.match(handler, /await handleAuthCallback\(\)/);
+  assert.match(handler, /AUTH_HASH/);
+  assert.match(handler, /refreshSession\(\)/);
+  assert.match(handler, /role="alert"/);
+  assert.doesNotMatch(panel, /handleAuthCallback/, "the account panel must not process callbacks twice");
+});
+
+test("client auth sends flat signup metadata and ignores the OAuth redirect throw", async () => {
+  const client = await readFile(new URL("../lib/auth/client.ts", import.meta.url), "utf8");
+  assert.match(client, /signup\(email, password, name \? \{ full_name: name \} : undefined\)/);
+  assert.doesNotMatch(client, /data:\s*\{\s*full_name/);
+  assert.match(client, /instanceof AuthError && error\.message === "Redirecting to OAuth provider"/);
 });
