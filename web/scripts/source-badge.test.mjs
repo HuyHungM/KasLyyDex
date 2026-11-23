@@ -7,7 +7,7 @@ import { coverImageUrl } from "../lib/contracts.ts";
 import { webDir } from "./test-helpers.mjs";
 
 const COMICK_COVER = "https://meo.comick.pictures/comic-1-cover.jpg";
-const COMICK_PROXY = `/api/content/img?u=${encodeURIComponent(COMICK_COVER)}`;
+const COMICK_PROXY = `/api/content/img?u=${encodeURIComponent(COMICK_COVER)}&v=2`;
 const BADGE = (label) => `<span class="source-badge" role="img" aria-label="Nguồn: ${label}">${label}</span>`;
 
 // RSC mode cannot render hooks, so render shipped components in a child process
@@ -124,7 +124,7 @@ test("home feature, feed and rank covers show badges without title suffixes", ()
   assert.match(feedLink, new RegExp(BADGE("Comick")));
   const rankCover = html.match(/<span class="rank-cover"><img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
   assert.match(rankCover, new RegExp(BADGE("Comick")));
-  assert.ok(html.includes(COMICK_PROXY));
+  assert.ok(html.includes(COMICK_PROXY.replace("&", "&amp;")));
 });
 
 test("ranking and detail covers show badges", () => {
@@ -144,7 +144,7 @@ test("Comick covers proxy through Axum while MangaDex stays unchanged", () => {
   assert.equal(coverImageUrl(manga), COMICK_PROXY);
   assert.equal(
     coverImageUrl({ id: "m1", cover_file: "cover.jpg" }),
-    `/api/content/img?u=${encodeURIComponent("https://uploads.mangadex.org/covers/m1/cover.jpg.256.jpg")}`,
+    `/api/content/img?u=${encodeURIComponent("https://uploads.mangadex.org/covers/m1/cover.jpg.256.jpg")}&v=2`,
   );
   assert.equal(coverImageUrl({ ...manga, cover_file: null }), null);
   assert.equal(coverImageUrl({ ...manga, cover_file: "http://meo.comick.pictures/cover.jpg" }), null);

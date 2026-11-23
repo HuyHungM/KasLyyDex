@@ -250,9 +250,13 @@ export class ContentClientError extends Error {
   }
 }
 
+/// Bump IMAGE_CACHE_VERSION when a bad CDN/browser cache must be invalidated
+/// for every cover and reader page at once.
+const IMAGE_CACHE_VERSION = 2;
+
 /// All MangaDex image bytes flow through Axum's `/api/content/img` handler.
 export function contentImageUrl(upstream: string): string {
-  return `${contentPath("img")}?u=${encodeURIComponent(upstream)}`;
+  return `${contentPath("img")}?u=${encodeURIComponent(upstream)}&v=${IMAGE_CACHE_VERSION}`;
 }
 
 export function coverImageUrl(
@@ -281,7 +285,7 @@ export function coverImageUrl(
 /// may still arrive from cached content. No upstream fetch happens here.
 export function normalizePageUrls(pages: string[]): string[] {
   return pages.map((page) => {
-    if (!page.startsWith("/api/img?")) return page;
+    if (!page.startsWith("/api/img?") && !page.startsWith("/api/content/img?")) return page;
     const upstream = new URL(page, "http://content.local").searchParams.get("u");
     return upstream ? contentImageUrl(upstream) : page;
   });

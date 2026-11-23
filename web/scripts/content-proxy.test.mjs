@@ -208,6 +208,7 @@ test("Axum page URLs use /api/content/img and Next forwards the real image bytes
   assert.equal(pages.length, 1);
   assert.ok(pages[0].startsWith("/api/content/img?u="), pages[0]);
   assert.equal(new URL(pages[0], proxied.baseUrl).searchParams.get("u"), IMAGE_URL);
+  assert.equal(new URL(pages[0], proxied.baseUrl).searchParams.get("v"), "2");
 
   const res = await fetch(`${proxied.baseUrl}${pages[0]}`);
   assert.equal(res.status, 200);
