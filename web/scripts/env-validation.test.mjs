@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { scanText } from "./secret-scan-lib.mjs";
 
 const example = await readFile(fileURLToPath(new URL("../.env.example", import.meta.url)), "utf8");
 const rootFile = (relativePath) => fileURLToPath(new URL(`../../${relativePath}`, import.meta.url));
@@ -69,4 +70,37 @@ test("configured values are shape-checked without being printed", () => {
   assert.equal(invalidDatabase("postgresql://reader@db.example.com/kaslyydex"), false);
   assert.equal(invalidDatabase("https://db.example.com"), true);
   assert.equal((process.env.READER_TICKET_SECRET ?? "").length >= 32 || !process.env.READER_TICKET_SECRET, true);
+});
+
+test("root Dockerfile builds and runs the Axum server without secrets", async () => {
+  const dockerfile = await readFile(rootFile("Dockerfile"), "utf8");
+  assert.match(dockerfile, /^FROM\s+rust:[^\s]+\s+AS\s+builder\s*$/im, "Rust builder stage");
+  assert.match(dockerfile, /^FROM\s+\S+\s+AS\s+runtime\s*$/im, "runtime stage");
+  assert.match(dockerfile, /^EXPOSE\s+3100\s*$/m, "public port 3100");
+  assert.match(dockerfile, /cargo build --release --locked -p server/, "server release build");
+  assert.match(dockerfile, /COPY --from=builder \S+ \/usr\/local\/bin\/server/, "binary copied to runtime");
+  assert.match(dockerfile, /^(?:ENTRYPOINT|CMD) \[/m, "runtime command");
+  assert.doesNotMatch(dockerfile, /^\s*(?:ENV|ARG)\s+[A-Z_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Z_]*=/im);
+  assert.deepEqual(scanText(dockerfile, "Dockerfile"), []);
+});
+
+test("Northflank runbook pins the combined-service settings", async () => {
+  const runbook = await readFile(rootFile("infra/northflank.md"), "utf8");
+  const required = [
+    ["Dockerfile build type", /Dockerfile/i],
+    ["combined service", /combined service/i],
+    ["public port 3100", /\b3100\b/],
+    ["liveness route", /\/api\/v1\/health/],
+    ["readiness route", /\/api\/v1\/ready/],
+    ["CACHE_DIR volume", /CACHE_DIR/],
+    ["build rollback", /build rollback/i],
+    ["preview pipelines out of scope", /preview pipeline/i],
+    ["out of scope", /out of scope/i],
+  ];
+  for (const [label, pattern] of required) assert.match(runbook, pattern, label);
+});
+
+test(".env.example keeps the content origin hostname-free", () => {
+  assert.match(example, /^RUST_CONTENT_API_ORIGIN=$/m);
+  assert.doesNotMatch(example, /northflank\.(?:net|io|app|com)/i);
 });
