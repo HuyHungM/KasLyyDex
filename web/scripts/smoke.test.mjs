@@ -112,7 +112,7 @@ test("security headers apply to pages and API with only the Google sign-in origi
     assert.match(csp, /script-src 'self'.*'wasm-unsafe-eval'/, path);
     assert.match(csp, /img-src 'self' data: blob:/, path);
     assert.match(csp, /script-src[^;]*https:\/\/accounts\.google\.com/, path);
-    assert.doesNotMatch(csp, /https?:\/\/(?!accounts\.google\.com)/, path);
+    assert.doesNotMatch(csp, /https?:\/\/(?!accounts\.google\.com|static\.cloudflareinsights\.com)/, path);
   }
 });
 
