@@ -7,6 +7,8 @@ import { coverImageUrl, type MangaSummaryDto } from "@/lib/contracts";
 
 type Bucket = "day" | "month" | "all";
 
+const formatFollows = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+
 const LABELS: Array<[Bucket, string]> = [
   ["day", "Top ngày"],
   ["month", "Top tháng"],
@@ -49,7 +51,7 @@ export default function RankTabs({ buckets }: { buckets: Record<Bucket, MangaSum
                 </span>
                 <span className="rank-title">
                   {manga.title}
-                  <small>{active === "day" ? "Cập nhật gần đây" : manga.follows ? `${manga.follows} theo dõi` : "Top điểm"}</small>
+                  <small>{active === "day" ? "Cập nhật gần đây" : manga.follows ? `${formatFollows(manga.follows)} theo dõi` : "Top điểm"}</small>
                 </span>
                 {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
               </Link>

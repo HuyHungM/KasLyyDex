@@ -175,7 +175,13 @@ export default function Home() {
         </div>
         <aside className="home-side">
           <section className="surface">
-            <div className="panel-heading"><h2>Bảng xếp hạng</h2><Link href="/bxh" className="text-link">Xem tất cả →</Link></div>
+            <div className="panel-heading rank-panel-heading">
+              <div>
+                <p className="auth-kicker">KasLyyDex / Ranking</p>
+                <h2>Bảng xếp hạng</h2>
+              </div>
+              <Link href="/bxh" className="text-link">Xem tất cả →</Link>
+            </div>
             <Suspense fallback={<RankSkeleton />}>
               <RankPanel />
             </Suspense>
