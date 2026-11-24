@@ -41,17 +41,17 @@
 
 :root[data-theme="black"] {
   color-scheme: dark;
-  --bg: #26262b;
-  --surface: #313138;
-  --rail: #2b2b31;
+  --bg: #1e1e22;
+  --surface: #29292f;
+  --rail: #232328;
   --text: #f5f4f8;
-  --muted: #b8b5c2;
-  --line: #484650;
+  --muted: #b0aeb9;
+  --line: #403e49;
   --accent: #d8b4fe;
   --solid: #c99bf5;
   --solid-ink: #241135;
-  --soft: #3e3650;
-  --hover: #383841;
+  --soft: #363046;
+  --hover: #302f38;
 }
 
 * { box-sizing: border-box; }
