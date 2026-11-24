@@ -112,7 +112,10 @@ async function ensureThread(
   return rows[0];
 }
 
-type CommentRow = typeof tables.comments.$inferSelect & { authorName: string | null };
+type CommentRow = typeof tables.comments.$inferSelect & {
+  authorName: string | null;
+  authorLevel: number | null;
+};
 
 function commentDto(row: CommentRow, replies: CommentDto[] = []): CommentDto {
   return {
@@ -122,6 +125,7 @@ function commentDto(row: CommentRow, replies: CommentDto[] = []): CommentDto {
     parentId: row.parentId,
     userId: row.userId,
     authorName: row.authorName ?? "Độc giả",
+    authorLevel: row.authorLevel ?? null,
     // Hidden and removed bodies never leave the service, even for the owner.
     body: row.status === "visible" ? row.body : null,
     spoiler: row.spoiler,
@@ -136,12 +140,13 @@ async function loadComment(db: Db, id: string): Promise<CommentRow | null> {
   const rows = await db.select({
     comment: tables.comments,
     authorName: tables.profiles.displayName,
+    authorLevel: tables.profiles.level,
   }).from(tables.comments)
     .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
     .where(eq(tables.comments.id, id))
     .limit(1);
   const row = rows[0];
-  return row ? { ...row.comment, authorName: row.authorName } : null;
+  return row ? { ...row.comment, authorName: row.authorName, authorLevel: row.authorLevel } : null;
 }
 
 function beforeCursor(time: number, id: string) {
@@ -165,6 +170,7 @@ export async function listComments(
   const roots = await db.select({
     comment: tables.comments,
     authorName: tables.profiles.displayName,
+    authorLevel: tables.profiles.level,
   }).from(tables.comments)
     .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
     .where(and(
@@ -184,6 +190,7 @@ export async function listComments(
     ? await db.select({
       comment: tables.comments,
       authorName: tables.profiles.displayName,
+    authorLevel: tables.profiles.level,
     }).from(tables.comments)
       .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
       .where(and(inArray(tables.comments.parentId, visibleRootIds), visibility))
@@ -194,13 +201,13 @@ export async function listComments(
   for (const row of replies) {
     const parentId = row.comment.parentId!;
     const list = grouped.get(parentId) ?? [];
-    list.push(commentDto({ ...row.comment, authorName: row.authorName }));
+    list.push(commentDto({ ...row.comment, authorName: row.authorName, authorLevel: row.authorLevel }));
     grouped.set(parentId, list);
   }
   const last = page.at(-1);
   return {
     items: page.map((row) => commentDto(
-      { ...row.comment, authorName: row.authorName },
+      { ...row.comment, authorName: row.authorName, authorLevel: row.authorLevel },
       grouped.get(row.comment.id) ?? [],
     )),
     nextCursor: hasMore && last
@@ -370,6 +377,7 @@ export async function listReports(
     report: tables.commentReports,
     comment: tables.comments,
     authorName: tables.profiles.displayName,
+    authorLevel: tables.profiles.level,
   }).from(tables.commentReports)
     .innerJoin(tables.comments, eq(tables.comments.id, tables.commentReports.commentId))
     .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
@@ -389,7 +397,7 @@ export async function listReports(
     items: page.map((row) => {
       // Privilege-specific DTO: only this authenticated moderator route may
       // expose a hidden body. Removal destroyed the body, so it stays null.
-      const publicComment = commentDto({ ...row.comment, authorName: row.authorName });
+      const publicComment = commentDto({ ...row.comment, authorName: row.authorName, authorLevel: row.authorLevel });
       const moderatorComment: CommentDto = {
         ...publicComment,
         body: row.comment.status === "removed" ? null : row.comment.body,

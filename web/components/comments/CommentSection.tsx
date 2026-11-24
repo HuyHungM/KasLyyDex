@@ -51,6 +51,14 @@ function Initial({ name }: { name: string }) {
   return <span className="comment-avatar" aria-hidden="true">{(name.trim()[0] ?? "?").toUpperCase()}</span>;
 }
 
+function titleForLevel(level: number | null | undefined) {
+  const value = level ?? 1;
+  if (value >= 20) return { label: "HUYỀN THOẠI", tier: "legend" };
+  if (value >= 10) return { label: "CAO THỦ", tier: "pro" };
+  if (value >= 5) return { label: "THÀNH THẠO", tier: "skilled" };
+  return { label: "TÂN THỦ", tier: "new" };
+}
+
 function ActionButton({ label, onClick, disabled, danger }: {
   label: string;
   onClick: () => void;
@@ -210,30 +218,35 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
       <article key={comment.id} className={`comment${isReply ? " comment-reply" : ""}`}>
         <Initial name={comment.authorName} />
         <div className="comment-content">
-          <div className="comment-head">
-            <strong>{comment.authorName}</strong>
+          <div className="comment-author-bar">
+            <strong className="comment-name">{comment.authorName}</strong>
+            <span className={`comment-badge comment-badge--${titleForLevel(comment.authorLevel).tier}`}>
+              {titleForLevel(comment.authorLevel).label}
+            </span>
             <time dateTime={new Date(comment.createdAt).toISOString()} title={new Date(comment.createdAt).toLocaleString("vi-VN")}>
               {relDate(new Date(comment.createdAt).toISOString())}
             </time>
             {comment.spoiler ? <span className="comment-flag">spoiler</span> : null}
           </div>
-          {editing ? (
-            <form className="comment-edit" onSubmit={(event) => {
-              event.preventDefault();
-              void updateComment(comment);
-            }}>
-              <textarea value={editDraft} maxLength={MAX_BODY} rows={3} onChange={(event) => setEditDraft(event.target.value)} />
-              <label className="comment-toggle">
-                <input type="checkbox" checked={editSpoiler} onChange={(event) => setEditSpoiler(event.target.checked)} />
-                Chứa spoiler
-              </label>
-              <div className="comment-actions">
-                <button type="submit" className="comment-send" disabled={busy || editDraft.trim().length === 0}>Lưu</button>
-                <ActionButton label="Hủy" onClick={() => setEditId(null)} />
-              </div>
-            </form>
-          ) : <CommentBody comment={comment} />}
-          {renderActions(comment, isReply)}
+          <div className="comment-bubble">
+            {editing ? (
+              <form className="comment-edit" onSubmit={(event) => {
+                event.preventDefault();
+                void updateComment(comment);
+              }}>
+                <textarea value={editDraft} maxLength={MAX_BODY} rows={3} onChange={(event) => setEditDraft(event.target.value)} />
+                <label className="comment-toggle">
+                  <input type="checkbox" checked={editSpoiler} onChange={(event) => setEditSpoiler(event.target.checked)} />
+                  Chứa spoiler
+                </label>
+                <div className="comment-actions">
+                  <button type="submit" className="comment-send" disabled={busy || editDraft.trim().length === 0}>Lưu</button>
+                  <ActionButton label="Hủy" onClick={() => setEditId(null)} />
+                </div>
+              </form>
+            ) : <CommentBody comment={comment} />}
+            {renderActions(comment, isReply)}
+          </div>
         </div>
       </article>
     );

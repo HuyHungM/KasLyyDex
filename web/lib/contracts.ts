@@ -180,6 +180,7 @@ export type CommentDto = {
   parentId: string | null;
   userId: string;
   authorName: string;
+  authorLevel: number | null;
   body: string | null;
   spoiler: boolean;
   status: CommentStatus;
