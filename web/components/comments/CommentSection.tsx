@@ -16,12 +16,33 @@ type Sort = "new" | "old";
 
 const MAX_BODY = 2000;
 
-function ArrowIcon() {
+const ACTION_ICONS = {
+  reply: "M9 14 4 9l5-5M4 9h9a6 6 0 0 1 0 12h-2",
+  edit: "M4 20h4L20 8l-4-4L4 16v4Z",
+  remove: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13",
+  report: "M5 21V4h14l-3.5 5L19 14H5",
+} as const;
+
+type ActionIconName = keyof typeof ACTION_ICONS;
+
+function Icon({ path, size = 14 }: { path: string; size?: number }) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <path d="M5 12h14M13 6l6 6-6 6" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={path} />
     </svg>
   );
+}
+
+function ArrowIcon() {
+  return <Icon path="M5 12h14M13 6l6 6-6 6" size={16} />;
+}
+
+function ChatIcon() {
+  return <Icon path="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 16 0Z" size={28} />;
+}
+
+function InfoIcon() {
+  return <Icon path="M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z" />;
 }
 
 function SpoilerText({ text }: { text: string }) {
@@ -29,6 +50,7 @@ function SpoilerText({ text }: { text: string }) {
   if (!shown) {
     return (
       <button type="button" className="spoiler-hide" aria-expanded="false" onClick={() => setShown(true)}>
+        <Icon path="M3 3l18 18M10.6 5.2A9 9 0 0 1 12 5c5 0 9 3.5 9 7a8.7 8.7 0 0 1-2 4.2M6.2 6.3A9.7 9.7 0 0 0 3 12c0 3.5 4 7 9 7 1 0 2-.1 2.9-.4M9.9 9.9a3 3 0 0 0 4.2 4.2" />
         Nội dung có spoiler — bấm để xem
       </button>
     );
@@ -42,14 +64,14 @@ function SpoilerText({ text }: { text: string }) {
 }
 
 function CommentBody({ comment }: { comment: CommentDto }) {
-  if (comment.status === "hidden") return <p className="comment-muted">Bình luận đã bị ẩn để kiểm duyệt.</p>;
-  if (comment.status === "removed") return <p className="comment-muted">Bình luận đã bị xóa.</p>;
+  if (comment.status === "hidden") {
+    return <p className="comment-muted comment-status"><InfoIcon /> Bình luận đã bị ẩn để kiểm duyệt.</p>;
+  }
+  if (comment.status === "removed") {
+    return <p className="comment-muted comment-status"><InfoIcon /> Bình luận đã bị xóa. Phản hồi vẫn được giữ lại.</p>;
+  }
   if (!comment.body) return <p className="comment-muted">Không có nội dung.</p>;
   return comment.spoiler ? <SpoilerText text={comment.body} /> : <p className="comment-body">{comment.body}</p>;
-}
-
-function Initial({ name }: { name: string }) {
-  return <span className="comment-avatar" aria-hidden="true">{(name.trim()[0] ?? "?").toUpperCase()}</span>;
 }
 
 // Each cultivation realm gets its own frame colour, readable in both themes.
@@ -77,14 +99,32 @@ function badgeForLevel(level: number | null | undefined) {
   };
 }
 
-function ActionButton({ label, onClick, disabled, danger }: {
+function formatCount(value: number) {
+  return new Intl.NumberFormat("vi-VN").format(value);
+}
+
+function Initial({ name, tone }: { name: string; tone?: string }) {
+  return (
+    <span
+      className="comment-avatar"
+      aria-hidden="true"
+      style={tone ? { borderColor: tone, color: tone } : undefined}
+    >
+      {(name.trim()[0] ?? "?").toUpperCase()}
+    </span>
+  );
+}
+
+function ActionButton({ label, icon, onClick, disabled, danger }: {
   label: string;
+  icon: ActionIconName;
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
 }) {
   return (
     <button type="button" className={`comment-action${danger ? " danger" : ""}`} disabled={disabled} onClick={onClick}>
+      <Icon path={ACTION_ICONS[icon]} size={13} />
       {label}
     </button>
   );
@@ -107,6 +147,7 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const reportRef = useRef<HTMLTextAreaElement>(null);
 
   const query = `/api/v1/comments?targetType=${encodeURIComponent(targetType)}&targetId=${encodeURIComponent(targetId)}&limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
   // The identity key is part of the resource key: switching accounts can never
@@ -132,6 +173,16 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
       });
     }
   }, [editId]);
+
+  useEffect(() => {
+    if (!reportId) return;
+    reportRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReportId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reportId]);
 
   function report(error: unknown) {
     setActionError(error instanceof Error ? error.message : "Yêu cầu không thành công.");
@@ -211,20 +262,20 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
     return (
       <div className="comment-actions">
         {!isReply && comment.status === "visible" && signedIn ? (
-          <ActionButton label="Trả lời" onClick={() => { setReplyTo(comment.id); setEditId(null); }} />
+          <ActionButton icon="reply" label="Trả lời" onClick={() => { setReplyTo(comment.id); setEditId(null); }} />
         ) : null}
         {owns && comment.status === "visible" ? (
           <>
-            <ActionButton label="Sửa" onClick={() => {
+            <ActionButton icon="edit" label="Sửa" onClick={() => {
               setEditId(comment.id);
               setEditDraft(comment.body ?? "");
               setEditSpoiler(comment.spoiler);
             }} />
-            <ActionButton label="Xóa" danger disabled={busy} onClick={() => void removeComment(comment)} />
+            <ActionButton icon="remove" label="Xóa" danger disabled={busy} onClick={() => void removeComment(comment)} />
           </>
         ) : null}
         {signedIn && !owns && comment.status === "visible" ? (
-          <ActionButton label="Báo cáo" onClick={() => { setReportId(comment.id); setReason(""); }} />
+          <ActionButton icon="report" label="Báo cáo" onClick={() => { setReportId(comment.id); setReason(""); }} />
         ) : null}
       </div>
     );
@@ -232,23 +283,20 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
 
   function renderComment(comment: CommentDto, isReply = false) {
     const editing = editId === comment.id;
+    const badge = badgeForLevel(comment.authorLevel);
     return (
-      <article key={comment.id} className={`comment${isReply ? " comment-reply" : ""}`}>
-        <Initial name={comment.authorName} />
+      <article key={comment.id} className={`comment${isReply ? " comment-reply" : ""}`} data-status={comment.status}>
+        <Initial name={comment.authorName} tone={badge.style.color} />
         <div className="comment-content">
           <div className="comment-author-bar">
             <strong className="comment-name">{comment.authorName}</strong>
-            {(() => {
-              const badge = badgeForLevel(comment.authorLevel);
-              return (
-                <span
-                  className="comment-badge"
-                  style={{ color: badge.style.color, background: badge.style.background, borderColor: badge.style.color }}
-                >
-                  {badge.label}
-                </span>
-              );
-            })()}
+            <span
+              className="comment-badge"
+              style={{ color: badge.style.color, background: badge.style.background, borderColor: badge.style.color }}
+            >
+              <Icon path="M12 3 19 11 12 21 5 11Z" size={11} />
+              {badge.label}
+            </span>
             <time dateTime={new Date(comment.createdAt).toISOString()} title={new Date(comment.createdAt).toLocaleString("vi-VN")}>
               {relDate(new Date(comment.createdAt).toISOString())}
             </time>
@@ -267,7 +315,7 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
                 </label>
                 <div className="comment-actions">
                   <button type="submit" className="comment-send" disabled={busy || editDraft.trim().length === 0}>Lưu</button>
-                  <ActionButton label="Hủy" onClick={() => setEditId(null)} />
+                  <ActionButton icon="reply" label="Hủy" onClick={() => setEditId(null)} />
                 </div>
               </form>
             ) : <CommentBody comment={comment} />}
@@ -281,9 +329,10 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
   return (
     <section className="surface comment-section" aria-label={label}>
       <header className="comment-section-head">
-        <div>
+        <div className="comment-heading">
           <p className="auth-kicker">KasLyyDex / Community</p>
-          <h2 className="section-title">{label}<span className="comment-total">{total}</span></h2>
+          <h2 className="section-title">{label}</h2>
+          <p className="comment-total" role="status" aria-atomic="true">{formatCount(total)} bình luận</p>
         </div>
         <div className="comment-sort" role="group" aria-label="Sắp xếp bình luận">
           <button type="button" aria-pressed={sort === "new"} className={sort === "new" ? "active" : undefined} onClick={() => setSort("new")}>Mới nhất</button>
@@ -349,11 +398,16 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
         {ordered.map((comment) => (
           <div key={comment.id} className="comment-thread">
             {renderComment(comment)}
-            {comment.replies.map((reply) => renderComment(reply, true))}
+            {comment.replies.length > 0 ? (
+              <div className="comment-replies">
+                {comment.replies.map((reply) => renderComment(reply, true))}
+              </div>
+            ) : null}
           </div>
         ))}
         {remote.data && comments.length === 0 && !remote.loading ? (
           <div className="comment-empty">
+            <ChatIcon />
             <strong>Chưa có bình luận nào.</strong>
             <span>Hãy là người đầu tiên chia sẻ suy nghĩ.</span>
           </div>
@@ -363,22 +417,29 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
       <div className="comment-pagination">
         {cursor ? <button type="button" className="comment-action" onClick={() => setCursor(null)}>Về trang đầu</button> : null}
         {remote.data?.nextCursor ? (
-          <button type="button" className="comment-more" onClick={() => setCursor(remote.data!.nextCursor)}>Xem thêm bình luận</button>
+          <button type="button" className="comment-more" onClick={() => setCursor(remote.data!.nextCursor)}>
+            Xem thêm bình luận <Icon path="m6 9 6 6 6-6" size={15} />
+          </button>
         ) : null}
       </div>
 
       {reportId ? (
-        <div className="report-dialog" role="dialog" aria-modal="true" aria-label="Báo cáo bình luận">
-          <form className="comment-composer" onSubmit={(event) => void submitReport(event)}>
-            <label htmlFor="report-reason">Lý do báo cáo</label>
-            <textarea id="report-reason" value={reason} maxLength={300} rows={3} placeholder="Nội dung spam, spoiler không đánh dấu…" onChange={(event) => setReason(event.target.value)} />
-            <div className="comment-composer-row">
-              <span className="comment-counter">{reason.length}/300</span>
-              <button type="submit" className="comment-send" disabled={busy || reason.trim().length === 0}>Gửi báo cáo</button>
-              <ActionButton label="Hủy" onClick={() => setReportId(null)} />
-            </div>
-          </form>
-        </div>
+        <>
+          <div className="comment-report-scrim" onClick={() => setReportId(null)} aria-hidden="true" />
+          <div className="report-dialog" role="dialog" aria-modal="true" aria-label="Báo cáo bình luận">
+            <h3>Báo cáo bình luận</h3>
+            <p>Đội kiểm duyệt sẽ xem xét. Vui lòng mô tả ngắn lý do.</p>
+            <form className="comment-composer" onSubmit={(event) => void submitReport(event)}>
+              <label htmlFor="report-reason">Lý do báo cáo</label>
+              <textarea id="report-reason" ref={reportRef} value={reason} maxLength={300} rows={3} placeholder="Nội dung spam, spoiler không đánh dấu…" onChange={(event) => setReason(event.target.value)} />
+              <div className="comment-composer-row">
+                <span className="comment-counter">{reason.length}/300</span>
+                <button type="submit" className="comment-send" disabled={busy || reason.trim().length === 0}>Gửi báo cáo</button>
+                <ActionButton icon="reply" label="Hủy" onClick={() => setReportId(null)} />
+              </div>
+            </form>
+          </div>
+        </>
       ) : null}
     </section>
   );
