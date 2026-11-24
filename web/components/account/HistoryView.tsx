@@ -6,6 +6,7 @@ import { coverImageUrl, type ProgressEntryDto } from "@/lib/contracts";
 import { chapterLabel } from "@/lib/format";
 import { getHistory, subscribe, type GuestHistory } from "@/lib/guest";
 import { useAccountSession, useRemoteResource } from "@/lib/account/client";
+import { AccountSkeleton } from "@/components/loaders";
 
 const NO_HISTORY: GuestHistory[] = [];
 
@@ -30,7 +31,7 @@ function SyncedHistory() {
     "/api/v1/me/progress",
     session.user?.id ?? "guest",
   );
-  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải lịch sử…</div>;
+  if (remote.loading && !remote.data) return <AccountSkeleton label="Đang tải lịch sử" />;
   if (remote.error || !remote.data) {
     return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được lịch sử."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;
   }

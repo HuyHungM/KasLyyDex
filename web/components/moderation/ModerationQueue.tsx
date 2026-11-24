@@ -4,6 +4,7 @@ import { useState } from "react";
 import Select from "@/components/ui/Select";
 import type { ReportDto, ReportListDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+import { AccountSkeleton } from "@/components/loaders";
 
 export default function ModerationQueue() {
   const { session } = useAccountSession();
@@ -42,7 +43,7 @@ export default function ModerationQueue() {
   if (!signedIn) {
     return <section className="surface account-card"><h1>Kiểm duyệt</h1><p className="account-hint">Cần đăng nhập để truy cập hàng đợi kiểm duyệt.</p></section>;
   }
-  if (queue.loading && !queue.data) return <section className="surface account-card">Đang tải hàng đợi…</section>;
+  if (queue.loading && !queue.data) return <AccountSkeleton label="Đang tải hàng đợi" />;
   if (queue.error) {
     return (
       <section className="surface account-card" role="alert">

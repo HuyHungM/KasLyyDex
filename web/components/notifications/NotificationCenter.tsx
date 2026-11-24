@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { NotificationDto, NotificationListDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
 import { refreshChapterNotifications } from "@/lib/community/client";
+import { LineSkeleton } from "@/components/loaders";
 
 type Props = { compact?: boolean; autoRefresh?: boolean };
 
@@ -155,7 +156,7 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
     <>
       {error ? <p className="account-error" role="alert">{error}</p> : null}
       {inbox.error ? <p className="account-error" role="alert">{inbox.error}</p> : null}
-      {inbox.loading && !inbox.data ? <p className="account-hint">Đang tải thông báo…</p> : null}
+      {inbox.loading && !inbox.data ? <LineSkeleton lines={2} label="Đang tải thông báo" /> : null}
       {partialWarning ? (
         <p className="account-error" role="status">Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.</p>
       ) : null}

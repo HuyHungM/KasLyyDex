@@ -6,6 +6,7 @@ import type { CommentDto, CommentListDto } from "@/lib/contracts";
 import { relDate } from "@/lib/format";
 import { realmForLevel } from "@/lib/progression";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+import { CommentSkeleton } from "@/components/loaders";
 
 type Props = {
   targetType: "manga" | "chapter";
@@ -399,7 +400,7 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
       {actionError ? <p className="account-error" role="alert">{actionError}</p> : null}
       {notice ? <p className="comment-notice" role="status">{notice}</p> : null}
       {remote.error ? <p className="account-error" role="alert">{remote.error}</p> : null}
-      {remote.loading && !remote.data ? <p className="account-hint">Đang tải bình luận…</p> : null}
+      {remote.loading && !remote.data ? <CommentSkeleton /> : null}
 
       <div className="comment-list">
         {ordered.map((comment) => (

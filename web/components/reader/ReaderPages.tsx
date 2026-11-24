@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { ReaderSettings } from "@/lib/guest";
 
 type Props = {
@@ -17,6 +17,23 @@ export default function ReaderPages({
   pages, settings, page, onPage, onTurn, onPause, containerRef,
 }: Props) {
   const pointerStart = useRef<{ x: number; y: number } | null>(null);
+  // The chapter already knows its page count. Render every slot up front, but
+  // only request a small forward window; the rest stay on the CSS skeleton.
+  const [admitted, setAdmitted] = useState<Set<number>>(
+    () => new Set(Array.from({ length: Math.min(pages.length, page + 3) }, (_, index) => index)),
+  );
+
+  useEffect(() => {
+    setAdmitted((current) => {
+      const upto = Math.min(pages.length - 1, page + 2);
+      let changed = false;
+      const next = new Set(current);
+      for (let index = 0; index <= upto; index += 1) {
+        if (!next.has(index)) { next.add(index); changed = true; }
+      }
+      return changed ? next : current;
+    });
+  }, [page, pages.length]);
 
   // Stable per chapter/mode: this observer only reports the page under the
   // reading line. It never scrolls, so natural scroll and auto-scroll are not
@@ -104,11 +121,11 @@ export default function ReaderPages({
         <img
           key={`${src}-${index}`}
           className="reader-page img-fade"
-          src={src}
           data-index={index}
           data-loaded="false"
           alt={`Trang ${index + 1}`}
-          loading={index < 2 || index === page ? "eager" : "lazy"}
+          src={admitted.has(index) ? src : undefined}
+          loading="eager"
           decoding="async"
           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
           onError={(event) => event.currentTarget.setAttribute("data-loaded", "true")}

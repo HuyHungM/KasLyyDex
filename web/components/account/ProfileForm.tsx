@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { AccountProfileDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+import { AccountSkeleton } from "@/components/loaders";
 
 function ProfileFields({ profile, onSaved }: { profile: AccountProfileDto; onSaved: () => void }) {
   const [username, setUsername] = useState(profile.username ?? "");
@@ -61,7 +62,7 @@ export default function ProfileForm() {
   );
 
   if (session.status !== "authenticated") return null;
-  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải hồ sơ…</div>;
+  if (remote.loading && !remote.data) return <AccountSkeleton label="Đang tải hồ sơ" />;
   if (remote.error || !remote.data) {
     return (
       <div className="surface account-card" role="alert">

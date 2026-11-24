@@ -5,6 +5,7 @@ import Select from "@/components/ui/Select";
 import type { ReaderSettingsDto } from "@/lib/validators";
 import { getSettings, saveSettings, type ReaderSettings } from "@/lib/guest";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
+import { AccountSkeleton } from "@/components/loaders";
 
 function SettingsFields({
   value,
@@ -97,9 +98,9 @@ export default function SettingsForm() {
     session.user?.id ?? "guest",
   );
 
-  if (session.status === "loading") return <div className="surface account-card">Đang kiểm tra phiên đăng nhập…</div>;
+  if (session.status === "loading") return <AccountSkeleton label="Đang kiểm tra phiên" />;
   if (session.status !== "authenticated") return <GuestSettings />;
-  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải cài đặt…</div>;
+  if (remote.loading && !remote.data) return <AccountSkeleton label="Đang tải cài đặt" />;
   if (remote.error || !remote.data) {
     return (
       <div className="surface account-card" role="alert">

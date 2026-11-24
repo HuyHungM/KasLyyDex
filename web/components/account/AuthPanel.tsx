@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { signIn, signInWithGoogle, signUp } from "@/lib/auth/client";
 import { signOutAccount, useAccountSession } from "@/lib/account/client";
+import { AuthSkeleton } from "@/components/loaders";
 
 type Mode = "sign-in" | "sign-up";
 
@@ -45,7 +46,7 @@ export default function AuthPanel() {
   const [message, setMessage] = useState<string | null>(null);
 
   if (session.status === "loading") {
-    return <AuthState eyebrow="Đang khôi phục phiên của bạn…" title="Một nhịp thôi.">Đang kiểm tra phiên đăng nhập…</AuthState>;
+    return <AuthSkeleton />;
   }
 
   if (session.status === "unconfigured") {

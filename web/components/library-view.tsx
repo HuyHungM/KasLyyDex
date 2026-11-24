@@ -6,6 +6,7 @@ import { coverImageUrl, type LibraryEntryDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
 import { refreshChapterNotifications } from "@/lib/community/client";
 import { getLibrary, subscribe, toggleLibrary, type GuestLibraryEntry } from "@/lib/guest";
+import { AccountSkeleton } from "@/components/loaders";
 
 const EMPTY: GuestLibraryEntry[] = [];
 
@@ -73,7 +74,7 @@ function SyncedLibrary() {
     return () => { alive = false; };
   }, [identityKey]);
 
-  if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải tủ truyện…</div>;
+  if (remote.loading && !remote.data) return <AccountSkeleton label="Đang tải tủ truyện" />;
   if (remote.error || !remote.data) {
     return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được tủ truyện."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;
   }

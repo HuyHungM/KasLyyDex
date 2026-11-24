@@ -299,6 +299,28 @@ test("theme choice survives a reload in localStorage", async () => {
   await context.close();
 });
 
+test("reader lazy-loads a small window and skeletons the rest", async () => {
+  const { context, page } = await openPage({ width: 375, height: 812 });
+  let imageRequests = 0;
+  page.on("request", (request) => { if (request.resourceType() === "image") imageRequests += 1; });
+  await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+  await page.locator("img[data-index]").first().waitFor();
+  const initial = await page.evaluate(() => ({
+    total: document.querySelectorAll("img[data-index]").length,
+    withSrc: document.querySelectorAll("img[data-index][src]").length,
+    skeletons: document.querySelectorAll('img[data-index][data-loaded="false"]').length,
+  }));
+  assert.ok(initial.withSrc < initial.total, `only a window should request images, got ${initial.withSrc}/${initial.total}`);
+  assert.ok(initial.skeletons > 0, "pending pages keep a skeleton frame");
+  await page.evaluate(() => window.scrollBy(0, 1600));
+  await page.waitForTimeout(600);
+  const after = await page.evaluate(() => document.querySelectorAll("img[data-index][src]").length);
+  assert.ok(after > initial.withSrc, `scrolling should admit more pages, got ${after}`);
+  assert.ok(imageRequests > 0, "admitted pages actually fetch images");
+  assert.equal(pageErrors.length, 0, `unexpected page errors: ${pageErrors.join(" | ")}`);
+  await context.close();
+});
+
 test("real WASM drives pages, progress, mode, background and chapter-local restoration", async () => {
   const { context, page } = await openPage({ width: 1280, height: 800 });
   await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
