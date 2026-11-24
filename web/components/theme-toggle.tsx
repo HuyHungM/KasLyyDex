@@ -7,11 +7,6 @@ import { NavIcon } from "@/components/site-shell";
 export default function ThemeToggle() {
   useEffect(() => {
     const apply = () => {
-      const preview = new URLSearchParams(window.location.search).get("theme");
-      if (preview === "draft-rose" || preview === "draft-lilac") {
-        document.documentElement.dataset.theme = preview;
-        return;
-      }
       document.documentElement.dataset.theme = getTheme();
     };
     apply();
@@ -25,7 +20,7 @@ export default function ThemeToggle() {
       type="button"
       aria-label="Đổi giao diện sáng/tối"
       onClick={() => {
-        const next = getTheme() === "dark" ? "light" : "dark";
+        const next = getTheme() === "light" ? "dark" : "light";
         saveTheme(next);
         document.documentElement.dataset.theme = next;
       }}

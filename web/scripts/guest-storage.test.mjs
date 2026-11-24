@@ -48,7 +48,7 @@ test("corrupt and unavailable storage stay non-fatal and keep guest data", () =>
   assert.deepEqual(guest.getHistory(), []);
   assert.deepEqual(guest.getLibrary(), []);
   assert.deepEqual(guest.getSettings(), guest.DEFAULT_SETTINGS);
-  assert.equal(guest.getTheme(), "dark");
+  assert.equal(guest.getTheme(), "light");
   assert.doesNotThrow(() => guest.pushHistory({ mangaId: "m", mangaTitle: "T", chapterId: "c", chapter: null, title: "", coverFile: null, lang: "vi" }));
 });
 

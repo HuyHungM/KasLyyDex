@@ -266,7 +266,7 @@ export function saveSettings(settings: ReaderSettings): void {
 }
 
 export function getTheme(): "dark" | "light" {
-  return readRaw(KEYS.theme) === "light" ? "light" : "dark";
+  return readRaw(KEYS.theme) === "dark" ? "dark" : "light";
 }
 
 export function saveTheme(theme: "dark" | "light"): void {

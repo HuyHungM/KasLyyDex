@@ -77,19 +77,19 @@ function CommentBody({ comment }: { comment: CommentDto }) {
 
 // Each cultivation realm gets its own frame colour, readable in both themes.
 const REALM_COLORS: Record<string, { color: string; background: string }> = {
-  mortal: { color: "#cbd5c1", background: "#2b3327" },
-  qi_refining: { color: "#67d5e5", background: "#0c3038" },
-  foundation_establishment: { color: "#8ec5ff", background: "#102b45" },
-  golden_core: { color: "#f2c94c", background: "#3a2f0b" },
-  nascent_soul: { color: "#d7a8ff", background: "#331a40" },
-  spirit_severing: { color: "#ff9ac7", background: "#401a2e" },
-  void_refinement: { color: "#a6b1ff", background: "#1c2145" },
-  body_integration: { color: "#5ee0c0", background: "#0b352e" },
-  mahayana: { color: "#ffb36b", background: "#40260f" },
-  tribulation_transcendence: { color: "#ff8a8a", background: "#3f1616" },
-  true_immortal: { color: "#8ff0a4", background: "#123b1c" },
-  immortal_king: { color: "#e3a8ff", background: "#2f1240" },
-  immortal_emperor: { color: "#ffe08a", background: "#3d2e08" },
+  mortal: { color: "#6d5b46", background: "#f3ede4" },
+  qi_refining: { color: "#256b4f", background: "#e2f4ec" },
+  foundation_establishment: { color: "#2c5e85", background: "#e3f0fa" },
+  golden_core: { color: "#8a6510", background: "#fbf1c7" },
+  nascent_soul: { color: "#6a3f93", background: "#ede2f7" },
+  spirit_severing: { color: "#9b3f5e", background: "#f9e2e9" },
+  void_refinement: { color: "#4c4fa0", background: "#e6e8fb" },
+  body_integration: { color: "#1f6d6a", background: "#dff3f2" },
+  mahayana: { color: "#9a5a20", background: "#fbe8d6" },
+  tribulation_transcendence: { color: "#a14436", background: "#fce3dd" },
+  true_immortal: { color: "#416b32", background: "#e5f2df" },
+  immortal_king: { color: "#80389a", background: "#f2e0f5" },
+  immortal_emperor: { color: "#8a6708", background: "#fdf0cf" },
 };
 
 function badgeForLevel(level: number | null | undefined) {
@@ -294,7 +294,7 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
               <strong className="comment-name">{comment.authorName}</strong>
               <span
                 className="comment-badge"
-                style={{ color: badge.style.color, background: badge.style.background, borderColor: badge.style.color }}
+                style={{ color: badge.style.color, background: badge.style.background }}
               >
                 <Icon path="M12 3 19 11 12 21 5 11Z" size={11} />
                 {badge.label}
