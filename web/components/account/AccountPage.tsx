@@ -13,8 +13,10 @@ export default function AccountPage() {
       <AuthPanel />
       {session.status === "authenticated" ? (
         <>
-          <CultivationBadge />
-          <ProfileForm />
+          <div className="profile-spread">
+            <div className="profile-page profile-page--left"><CultivationBadge /></div>
+            <div className="profile-page profile-page--right"><ProfileForm /></div>
+          </div>
           <GuestImportPanel />
         </>
       ) : null}

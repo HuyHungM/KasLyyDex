@@ -73,6 +73,7 @@ export default function ProfileForm() {
   const { profile } = remote.data;
   return (
     <div className="surface account-card">
+      <p className="profile-folio">Trang 02 · Hồ sơ</p>
       <h2>Hồ sơ</h2>
       <p className="account-hint">
         Cấp {profile.level} · {profile.totalXp} XP — điểm kinh nghiệm chỉ là giá trị giữ chỗ cho đến khi ghi nhận hoàn thành chương.
