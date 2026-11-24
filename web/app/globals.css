@@ -693,13 +693,16 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .comment-replies { display: grid; gap: 10px; margin-left: 23px; padding-left: 33px; border-left: 2px solid var(--line); }
 .comment-reply > .comment-avatar { width: 36px; height: 36px; font-size: .85rem; }
 .comment-content { display: grid; gap: 8px; min-width: 0; }
-.comment-author-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(90deg, var(--soft), color-mix(in srgb, var(--soft) 35%, transparent)); color: var(--text); font-size: .83rem; }
+.comment-author-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 15px; background: linear-gradient(90deg, var(--soft), color-mix(in srgb, var(--soft) 25%, transparent)); color: var(--text); font-size: .83rem; }
 .comment-name { font-weight: 800; letter-spacing: -.01em; }
 .comment-badge { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 3px 9px; border: 1px solid currentColor; border-radius: 7px; font-size: .66rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; box-shadow: 0 1px 5px #0003; white-space: nowrap; }
 .comment-author-bar time { margin-left: auto; color: var(--muted); font-size: .72rem; white-space: nowrap; }
-.comment-bubble { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 13px; background: var(--surface); }
+.comment-bubble { display: grid; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 13px; background: var(--surface); }
+.comment-divider { height: 1px; margin: 0; border: 0; background: var(--line); }
+.comment-body-panel { display: grid; gap: 10px; padding: 13px 15px; }
 .comment-replies .comment-bubble { background: var(--bg); }
-.comment-bubble .comment-actions { padding-top: 10px; border-top: 1px solid var(--line); }
+.comment-bubble .comment-actions { padding: 10px 15px 12px; border-top: 1px solid var(--line); }
+.comment-bubble .comment-actions:empty { display: none; }
 .comment-body { color: var(--text); font-size: .92rem; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .comment-muted { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: .82rem; }
 .comment-status { padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; background: var(--bg); }

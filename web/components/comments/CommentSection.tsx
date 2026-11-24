@@ -289,37 +289,40 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
       <article key={comment.id} className={`comment${isReply ? " comment-reply" : ""}`} data-status={comment.status}>
         <Initial name={comment.authorName} tone={badge.style.color} />
         <div className="comment-content">
-          <div className="comment-author-bar">
-            <strong className="comment-name">{comment.authorName}</strong>
-            <span
-              className="comment-badge"
-              style={{ color: badge.style.color, background: badge.style.background, borderColor: badge.style.color }}
-            >
-              <Icon path="M12 3 19 11 12 21 5 11Z" size={11} />
-              {badge.label}
-            </span>
-            <time dateTime={new Date(comment.createdAt).toISOString()} title={new Date(comment.createdAt).toLocaleString("vi-VN")}>
-              {relDate(new Date(comment.createdAt).toISOString())}
-            </time>
-            {comment.spoiler ? <span className="comment-flag">spoiler</span> : null}
-          </div>
           <div className="comment-bubble">
-            {editing ? (
-              <form className="comment-edit" onSubmit={(event) => {
-                event.preventDefault();
-                void updateComment(comment);
-              }}>
-                <textarea value={editDraft} maxLength={MAX_BODY} rows={3} onChange={(event) => setEditDraft(event.target.value)} />
-                <label className="comment-toggle">
-                  <input type="checkbox" checked={editSpoiler} onChange={(event) => setEditSpoiler(event.target.checked)} />
-                  Chứa spoiler
-                </label>
-                <div className="comment-actions">
-                  <button type="submit" className="comment-send" disabled={busy || editDraft.trim().length === 0}>Lưu</button>
-                  <ActionButton icon="reply" label="Hủy" onClick={() => setEditId(null)} />
-                </div>
-              </form>
-            ) : <CommentBody comment={comment} />}
+            <div className="comment-author-bar">
+              <strong className="comment-name">{comment.authorName}</strong>
+              <span
+                className="comment-badge"
+                style={{ color: badge.style.color, background: badge.style.background, borderColor: badge.style.color }}
+              >
+                <Icon path="M12 3 19 11 12 21 5 11Z" size={11} />
+                {badge.label}
+              </span>
+              <time dateTime={new Date(comment.createdAt).toISOString()} title={new Date(comment.createdAt).toLocaleString("vi-VN")}>
+                {relDate(new Date(comment.createdAt).toISOString())}
+              </time>
+              {comment.spoiler ? <span className="comment-flag">spoiler</span> : null}
+            </div>
+            <hr className="comment-divider" />
+            <div className="comment-body-panel">
+              {editing ? (
+                <form className="comment-edit" onSubmit={(event) => {
+                  event.preventDefault();
+                  void updateComment(comment);
+                }}>
+                  <textarea value={editDraft} maxLength={MAX_BODY} rows={3} onChange={(event) => setEditDraft(event.target.value)} />
+                  <label className="comment-toggle">
+                    <input type="checkbox" checked={editSpoiler} onChange={(event) => setEditSpoiler(event.target.checked)} />
+                    Chứa spoiler
+                  </label>
+                  <div className="comment-actions">
+                    <button type="submit" className="comment-send" disabled={busy || editDraft.trim().length === 0}>Lưu</button>
+                    <ActionButton icon="reply" label="Hủy" onClick={() => setEditId(null)} />
+                  </div>
+                </form>
+              ) : <CommentBody comment={comment} />}
+            </div>
             {renderActions(comment, isReply)}
           </div>
         </div>
