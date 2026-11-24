@@ -87,7 +87,8 @@ function fromHex(value: string): Uint8Array {
   return Uint8Array.from(value.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
 }
 
-const PBKDF2_ITERATIONS = 120_000;
+// Workers WebCrypto rejects iteration counts above 100000.
+const PBKDF2_ITERATIONS = 100_000;
 
 async function derive(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
   const base = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
