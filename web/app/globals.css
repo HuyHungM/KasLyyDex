@@ -139,6 +139,37 @@ button:disabled { cursor: default; }
 .feature-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; max-width: 49ch; margin-top: 10px; color: #d4dbcf; font-size: .8125rem; }
 .feature .btn { margin-top: 17px; padding-inline: 16px; --solid: var(--feature-lime); --solid-ink: #202a0a; }
 .feature .search-form { max-width: 420px; margin-top: 17px; }
+.feature-slider-controls {
+  position: absolute; z-index: 3; right: clamp(16px, 3vw, 36px); bottom: 18px;
+  display: flex; align-items: center; gap: 12px; padding: 6px 10px;
+  border: 1px solid #ffffff2e; border-radius: 999px; background: #0d120dc4;
+  color: #f9faf4; backdrop-filter: blur(10px);
+}
+.feature-slider-controls > button {
+  border: 0; background: transparent; color: inherit; padding: 2px 4px;
+  font-size: .9rem; line-height: 1;
+}
+.feature-slider-controls > button:hover { color: var(--feature-lime); }
+.feature-dots { display: flex; align-items: center; gap: 5px; }
+.feature-dots button {
+  width: 6px; height: 6px; padding: 0; border: 0; border-radius: 999px;
+  background: #ffffff70; transition: width var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out);
+}
+.feature-dots button.active { width: 18px; background: var(--feature-lime); }
+.feature-animate { animation: feature-fade var(--dur-base) var(--ease-out) both; }
+@keyframes feature-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.rank-switch {
+  display: flex; gap: 4px; margin: 12px 14px 4px; padding: 3px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+}
+.rank-switch button {
+  flex: 1; border: 0; border-radius: 999px; background: transparent;
+  color: var(--muted); padding: 7px 4px; font-size: .72rem; font-weight: 700;
+}
+.rank-switch button.active { background: var(--solid); color: var(--solid-ink); }
 .feature-fallback .feature-copy { max-width: 620px; }
 .feature-fallback p { margin-top: 10px; }
 .home-columns { display: grid; align-items: start; gap: 18px; }

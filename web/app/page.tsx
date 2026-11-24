@@ -2,10 +2,12 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
-import { chapterName, relDate, statusText } from "@/lib/format";
+import { chapterName, relDate } from "@/lib/format";
 import { CardSkeleton, MangaCard } from "@/components/manga-card";
 import { SourceBadge } from "@/components/source-badge";
 import ContinueReading from "@/components/continue-reading";
+import FeatureSlider from "@/components/home/FeatureSlider";
+import RankTabs from "@/components/home/RankTabs";
 
 async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
   try {
@@ -65,34 +67,12 @@ function RankSkeleton() {
   );
 }
 
-function HeroSearch() {
-  return (
-    <form className="search-form" role="search" action="/search" method="get">
-      <button type="submit" className="search-btn" aria-label="Tìm kiếm">
-        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <circle cx="11" cy="11" r="7" />
-          <path d="m20 20-3.5-3.5" />
-        </svg>
-      </button>
-      <input
-        className="search-input"
-        type="search"
-        name="q"
-        maxLength={200}
-        placeholder="Nhập tên truyện…"
-        aria-label="Tìm truyện"
-      />
-    </form>
-  );
-}
-
 function FeatureFallback() {
   return (
     <section className="feature feature-fallback">
       <div className="feature-copy">
         <h1>Khám phá truyện</h1>
         <p>Tìm manga theo tên, thể loại hoặc xem các chương vừa cập nhật.</p>
-        <HeroSearch />
         <Link href="/search" className="btn btn-primary">Tìm truyện →</Link>
       </div>
     </section>
@@ -100,34 +80,9 @@ function FeatureFallback() {
 }
 
 async function Featured() {
-  const [manga] = await withContent((client) => client.rank("follows"), [] as MangaSummaryDto[]);
-  if (!manga) return <FeatureFallback />;
-  const cover = coverImageUrl(manga, 512);
-  return (
-    <section className="feature" aria-labelledby="featured-title">
-      {cover && (
-        <div className="feature-art">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="feature-bleed" src={cover} alt="" />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="feature-poster" src={cover} alt="" fetchPriority="high" />
-          <SourceBadge source={manga.source} />
-        </div>
-      )}
-      <div className="feature-copy">
-        <p className="feature-label"><span aria-hidden="true" />Truyện nổi bật</p>
-        <h1 id="featured-title">{manga.title}</h1>
-        <p className="feature-meta">
-          {manga.rating && manga.rating > 0 ? <strong>★ {manga.rating.toFixed(1)}</strong> : null}
-          {manga.year ? <span>{manga.year}</span> : null}
-          {manga.status ? <span>{statusText(manga.status)}</span> : null}
-        </p>
-        {manga.description ? <p className="feature-description">{manga.description}</p> : null}
-        <HeroSearch />
-        <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
-      </div>
-    </section>
-  );
+  const list = await withContent((client) => client.rank("follows").then((rows) => rows.slice(0, 10)), [] as MangaSummaryDto[]);
+  if (list.length === 0) return <FeatureFallback />;
+  return <FeatureSlider items={list} />;
 }
 
 async function Popular() {
@@ -182,27 +137,12 @@ async function LatestFeed() {
 }
 
 async function RankPanel() {
-  const list = await withContent((client) => client.rank("follows").then((rows) => rows.slice(0, 5)), [] as MangaSummaryDto[]);
-  return (
-    <ol className="rank-list">
-      {list.map((manga, index) => (
-        <li key={manga.id}>
-          <Link href={`/manga/${manga.id}`} className="rank-row">
-            <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
-            <span className="rank-cover">
-              {coverImageUrl(manga, 256) && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={coverImageUrl(manga, 256) ?? ""} alt="" loading="lazy" />
-              )}
-              <SourceBadge source={manga.source} />
-            </span>
-            <span className="rank-title">{manga.title}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
-            {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
-          </Link>
-        </li>
-      ))}
-    </ol>
-  );
+  const [latest, follows, rating] = await Promise.all([
+    withContent((client) => client.latest().then((rows) => rows.slice(0, 5)), [] as MangaSummaryDto[]),
+    withContent((client) => client.rank("follows").then((rows) => rows.slice(0, 5)), [] as MangaSummaryDto[]),
+    withContent((client) => client.rank("rating").then((rows) => rows.slice(0, 5)), [] as MangaSummaryDto[]),
+  ]);
+  return <RankTabs buckets={{ day: latest, month: follows, all: rating }} />;
 }
 
 export default function Home() {

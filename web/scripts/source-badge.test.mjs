@@ -114,7 +114,7 @@ test("home feature, feed and rank covers show badges without title suffixes", ()
   assert.match(html, /<span class="rank-title">Slime<small>/);
   assert.doesNotMatch(html, /\(MangaDex\)/);
 
-  const featureStart = html.indexOf('class="feature-art"');
+  const featureStart = html.indexOf('class="feature-art feature-animate"');
   const feature = html.slice(featureStart, html.indexOf("</section>", featureStart));
   assert.ok(feature.includes(BADGE));
   const feedLink = html.match(/<a[^>]*class="feed-cover"[\s\S]*?<\/a>/)?.[0] ?? "";
@@ -125,14 +125,19 @@ test("home feature, feed and rank covers show badges without title suffixes", ()
   assert.ok(html.includes(`/api/content/img?u=${encodeURIComponent("https://uploads.mangadex.org/covers/m1/cover.jpg.256.jpg")}&amp;v=2`));
 });
 
-test("hero search is present in both the featured and fallback states", () => {
+test("home hero rotates top picks and ranking has day/month tabs, without hero search", () => {
   const featured = renderPage("app/page.tsx", {});
-  assert.match(featured, heroSearch);
-  assert.match(featured, /<h1 id="featured-title">Slime<\/h1>/);
+  assert.doesNotMatch(featured, heroSearch);
+  assert.match(featured, /class="feature feature-slider"/);
+  assert.match(featured, /Top 10 nổi bật/);
+  assert.match(featured, /aria-label="Top 10 truyện nổi bật · 1\/1"/);
+  assert.match(featured, /class="rank-switch"/);
+  assert.match(featured, /Top ngày/);
+  assert.match(featured, /Top tháng/);
 
   const fallback = renderPage("app/page.tsx", {}, { ...fixture, rank: [] });
   assert.match(fallback, /<h1>Khám phá truyện<\/h1>/);
-  assert.match(fallback, heroSearch);
+  assert.doesNotMatch(fallback, heroSearch);
 });
 
 test("ranking and detail covers show badges", () => {

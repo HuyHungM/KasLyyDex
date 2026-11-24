@@ -161,7 +161,7 @@ test("home feature, feed and rank covers show the source badge", () => {
   const html = renderPage("app/page.tsx", {});
   assert.match(html, /<h1 id="featured-title">Slime<\/h1>/);
   assert.match(html, /<h3><a href="\/manga\/m1">Slime<\/a><\/h3>/);
-  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
+  assert.match(html, /<span class="rank-title">Slime<small>Cập nhật gần đây<\/small><\/span>/);
   assert.equal(html.split(badge).length - 1, 4);
 });
 
