@@ -326,6 +326,10 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .rank-tabs .rank-list li:nth-child(2) .rank-row,
 .rank-tabs .rank-list li:nth-child(3) .rank-row { background: color-mix(in srgb, var(--muted) 6%, var(--surface)); }
 
+/* /bxh keeps the three filters on one row; home sidebar owns the grid rules above. */
+.ranking-page .rank-tabs { display: flex; flex-wrap: nowrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.ranking-page .rank-tabs a { flex: 1; min-width: 0; justify-content: center; white-space: nowrap; font-size: .78rem; padding-inline: 6px; }
+
 /* /bxh podium — flat editorial cards, scoped so home mini-rank stays untouched. */
 .rank-podium { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
 .rank-podium > li { grid-column: 1 / -1; min-width: 0; }
