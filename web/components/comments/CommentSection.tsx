@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import type { CommentDto, CommentListDto } from "@/lib/contracts";
 import { relDate } from "@/lib/format";
 import { realmForLevel } from "@/lib/progression";
@@ -331,8 +332,10 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
       <header className="comment-section-head">
         <div className="comment-heading">
           <p className="auth-kicker">KasLyyDex / Community</p>
-          <h2 className="section-title">{label}</h2>
-          <p className="comment-total" role="status" aria-atomic="true">{formatCount(total)} bình luận</p>
+          <div className="comment-title-row">
+            <h2 className="section-title">{label}</h2>
+            <p className="comment-total" role="status" aria-atomic="true">{formatCount(total)} bình luận</p>
+          </div>
         </div>
         <div className="comment-sort" role="group" aria-label="Sắp xếp bình luận">
           <button type="button" aria-pressed={sort === "new"} className={sort === "new" ? "active" : undefined} onClick={() => setSort("new")}>Mới nhất</button>
@@ -386,6 +389,7 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
         <div className="comment-guest">
           <Initial name="Khách" />
           <p className="account-hint">Đăng nhập để bình luận, phản hồi hoặc báo cáo.</p>
+          <Link href="/tai-khoan" className="btn btn-primary comment-guest-cta">Đăng nhập</Link>
         </div>
       )}
 
