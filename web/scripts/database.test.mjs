@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { getTableName } from "drizzle-orm";
 import { localD1 } from "./sqlite-harness.mjs";
 
-const { readDatabaseConfig, getDatabase } = await import("../lib/db/client.ts");
+const { readDatabaseConfig, getDatabase, isTransactionControl } = await import("../lib/db/client.ts");
 const { profiles } = await import("../lib/db/schema.ts");
 
 const migrationUrl = new URL("../migrations/0000_cloudflare_d1.sql", import.meta.url);
@@ -25,6 +25,14 @@ test("migration is a single numbered D1 baseline", async () => {
   assert.match(sql, /CREATE TABLE `auth_users`/);
   assert.match(sql, /CREATE TABLE `profiles`/);
   assert.doesNotMatch(sql, /CREATE\s+SCHEMA/i);
+});
+
+test("D1 facade skips transaction control statements", () => {
+  for (const sql of ["begin", "COMMIT;", "rollback", "savepoint sp0", "release savepoint sp0", "rollback to savepoint sp0"]) {
+    assert.equal(isTransactionControl(sql), true, sql);
+  }
+  assert.equal(isTransactionControl("select * from comments"), false);
+  assert.equal(isTransactionControl("insert into profiles (user_id) values ('u1')"), false);
 });
 
 test("Drizzle journal is the SQLite journal beside the D1 migration", async () => {

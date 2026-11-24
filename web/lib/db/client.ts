@@ -100,8 +100,16 @@ const deferredD1 = {
   },
 };
 
+/// D1 runs in auto-commit mode: BEGIN/COMMIT/ROLLBACK are rejected (error 7500).
+/// Drizzle's transaction wrapper still emits them, so treat those as no-ops and
+/// let the enclosed statements auto-commit individually.
+export function isTransactionControl(sql: string): boolean {
+  return /^\s*(begin|commit|rollback|savepoint|release\s+savepoint|rollback\s+to\s+savepoint)\b/i.test(sql);
+}
+
 function makeStatement(sql: string, params: unknown[]): Statement {
   async function invoke<T>(method: "all" | "run" | "raw" | "first"): Promise<T> {
+    if (method === "run" && isTransactionControl(sql)) return { success: true } as T;
     const binding = await resolveD1();
     const statement = binding.prepare(sql).bind(...params);
     if (method === "all") return statement.all() as Promise<T>;
