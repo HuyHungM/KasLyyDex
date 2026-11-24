@@ -564,8 +564,6 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .account-intro { padding-top: 6px; }
 .account-intro .auth-kicker { margin: 0 0 8px; }
 .account-intro h1 { font-size: clamp(2rem, 4vw, 3rem); }
-.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; max-width: 1040px; }
-.account-grid > .auth-shell { grid-column: 1 / -1; }
 .account-card {
   position: relative; display: grid; align-content: start; gap: 10px; width: 100%;
   padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface);
@@ -674,62 +672,47 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .auth-field .select-trigger { min-height: 50px; border-radius: 14px; }
 .auth-shell--state .auth-aside { min-height: 300px; }
 
-/* Reader profile: uneven comic panels separated by visible gutters. */
-.account-grid--comic {
-  grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr);
-  grid-template-areas: "head head" "identity form" "import form";
-  gap: 10px;
+/* Volume account: a masthead, a cover, then a chapter table of contents. */
+.volume { display: grid; gap: 18px; max-width: 1040px; }
+.volume-masthead { display: grid; gap: 8px; padding: 12px 0 20px; border-bottom: 3px double var(--line); }
+.volume-kicker { margin: 0; font: 700 .65rem/1 var(--display); letter-spacing: .22em; text-transform: uppercase; color: var(--accent); }
+.volume-masthead h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); line-height: 1; letter-spacing: -.05em; }
+.volume-sub { max-width: 62ch; color: var(--muted); font-size: .9rem; line-height: 1.65; }
+.volume-cover .auth-shell { border-radius: 20px; }
+.volume-toc { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.toc-row {
+  display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 18px;
+  align-items: start; padding: 24px 4px; border-bottom: 1px solid var(--line);
 }
-.comic-panel--head { grid-area: head; }
-.comic-panel--identity { grid-area: identity; }
-.comic-panel--form { grid-area: form; }
-.comic-panel--import { grid-area: import; }
-.comic-panel {
-  position: relative; min-width: 0; padding: 22px;
-  border: 1px solid var(--line); border-radius: 16px; background: var(--surface);
-}
-.comic-panel::after {
-  content: ""; position: absolute; inset: auto 0 0; height: 2px;
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-.chapter-mark {
-  display: inline-block; margin-bottom: 14px;
-  font: 700 .68rem/1 ui-monospace, SFMono-Regular, monospace;
-  letter-spacing: .1em; color: var(--accent);
-}
-.comic-panel .auth-shell { border: 0; border-radius: 12px; box-shadow: none; }
-.comic-panel .account-card,
-.comic-panel .cultivation-badge { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.comic-panel .account-card::before { display: none; }
-.comic-panel .cultivation-badge { display: grid; gap: 10px; }
-.comic-panel .cultivation-realm { font-size: clamp(1.6rem, 3vw, 2.2rem); }
-.comic-panel .cultivation-level { justify-self: start; }
-.comic-panel .cultivation-xp { margin-left: 0; font-family: ui-monospace, SFMono-Regular, monospace; }
-@keyframes comic-panel-in {
+.toc-no { font: 800 clamp(1.8rem, 4vw, 2.6rem)/1 var(--display); letter-spacing: -.05em; color: var(--accent); }
+.toc-label { padding-top: 8px; font: 700 .64rem/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.toc-body { min-width: 0; }
+.toc-body .account-card,
+.toc-body .cultivation-badge { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.toc-body .account-card::before { display: none; }
+.toc-body .cultivation-badge { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.toc-body .cultivation-realm { font-size: clamp(1.5rem, 3vw, 2rem); }
+.toc-body .cultivation-xp { margin-left: auto; font-family: ui-monospace, SFMono-Regular, monospace; }
+.toc-body .auth-form { max-width: 560px; }
+@keyframes toc-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .comic-panel--head { animation: comic-panel-in 300ms cubic-bezier(.22, 1, .36, 1) both; }
-  .comic-panel--identity { animation: comic-panel-in 320ms cubic-bezier(.22, 1, .36, 1) 60ms both; }
-  .comic-panel--form { animation: comic-panel-in 340ms cubic-bezier(.22, 1, .36, 1) 120ms both; }
-  .comic-panel--import { animation: comic-panel-in 360ms cubic-bezier(.22, 1, .36, 1) 180ms both; }
+  .toc-row:nth-child(1) { animation: toc-in 300ms cubic-bezier(.22, 1, .36, 1) both; }
+  .toc-row:nth-child(2) { animation: toc-in 320ms cubic-bezier(.22, 1, .36, 1) 60ms both; }
+  .toc-row:nth-child(3) { animation: toc-in 340ms cubic-bezier(.22, 1, .36, 1) 120ms both; }
 }
 
-@media (max-width: 860px) {
-  .account-grid { grid-template-columns: 1fr; }
-  .account-grid--comic { grid-template-columns: 1fr; grid-template-areas: "head" "identity" "form" "import"; }
-}
-
-@media (max-width: 760px) {
+@media (max-width: 640px) {
   .auth-shell { grid-template-columns: 1fr; }
   .auth-aside { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); gap: 16px; }
   .auth-mark { display: none; }
   .auth-title { font-size: 1.9rem; }
-  .cultivation-xp { margin-left: 0; }
   .account-card { padding: 20px; }
-  .account-grid--comic { grid-template-columns: 1fr; grid-template-areas: "head" "identity" "form" "import"; }
-  .comic-panel { padding: 20px; }
+  .toc-row { grid-template-columns: 48px minmax(0, 1fr); gap: 12px; padding: 20px 2px; }
+  .toc-label { grid-column: 2; padding-top: 0; }
+  .toc-body .cultivation-xp { margin-left: 0; }
 }
 .history-list { display: grid; gap: 10px; }
 .history-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
