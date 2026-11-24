@@ -8,30 +8,22 @@ import { statusText } from "@/lib/format";
 
 const ROTATE_MS = 6500;
 
-function PausePlay({ paused }: { paused: boolean }) {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      {paused ? <path d="M8 5v14l11-7L8 5Z" /> : <path d="M7 5h4v14H7V5Zm6 0h4v14h-4V5Z" />}
-    </svg>
-  );
-}
-
 export default function FeatureSlider({ items }: { items: MangaSummaryDto[] }) {
   const [index, setIndex] = useState(0);
-  const [paused, setPaused] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
   const [interacting, setInteracting] = useState(false);
 
   useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setPaused(true);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setReduceMotion(true);
   }, []);
 
   useEffect(() => {
-    if (items.length < 2 || paused || interacting) return;
+    if (items.length < 2 || reduceMotion || interacting) return;
     const timer = window.setInterval(() => {
       setIndex((current) => (current + 1) % items.length);
     }, ROTATE_MS);
     return () => window.clearInterval(timer);
-  }, [items.length, paused, interacting]);
+  }, [items.length, reduceMotion, interacting]);
 
   const manga = items[index];
   if (!manga) return null;
@@ -83,15 +75,6 @@ export default function FeatureSlider({ items }: { items: MangaSummaryDto[] }) {
               />
             ))}
           </div>
-          <button
-            type="button"
-            className={`feature-nav feature-pause${paused ? " is-paused" : ""}`}
-            aria-label={paused ? "Tiếp tục slide" : "Tạm dừng slide"}
-            aria-pressed={paused}
-            onClick={() => setPaused((value) => !value)}
-          >
-            <PausePlay paused={paused} />
-          </button>
         </div>
       )}
     </section>
