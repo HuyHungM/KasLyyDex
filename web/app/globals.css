@@ -630,7 +630,7 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .history-row small { color: var(--muted); }
 .history-row img { width: 42px; height: 56px; object-fit: cover; border-radius: 6px; }
 .history-row progress { width: 120px; accent-color: var(--solid); }
-.cultivation-badge { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.cultivation-badge { display: flex; flex-wrap: wrap; align-self: start; align-items: baseline; gap: 12px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .cultivation-realm { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
 .cultivation-level { color: var(--text); }
 .cultivation-xp { color: var(--muted); font-size: .9rem; }
