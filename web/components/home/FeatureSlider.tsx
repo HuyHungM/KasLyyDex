@@ -57,7 +57,7 @@ export default function FeatureSlider({ items }: { items: MangaSummaryDto[] }) {
           {manga.year ? <span>{manga.year}</span> : null}
           {manga.status ? <span>{statusText(manga.status)}</span> : null}
         </p>
-        {manga.description ? <p className="feature-description">{manga.description}</p> : null}
+        <p className="feature-description">{manga.description ?? ""}</p>
         <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
       </div>
 
