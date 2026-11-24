@@ -8,14 +8,6 @@ import { statusText } from "@/lib/format";
 
 const ROTATE_MS = 6500;
 
-function Chevron({ dir }: { dir: "left" | "right" }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d={dir === "left" ? "m15 18-6-6 6-6" : "m9 6 6 6-6 6"} />
-    </svg>
-  );
-}
-
 function PausePlay({ paused }: { paused: boolean }) {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -45,7 +37,6 @@ export default function FeatureSlider({ items }: { items: MangaSummaryDto[] }) {
   if (!manga) return null;
 
   const cover = coverImageUrl(manga, 512);
-  const move = (step: number) => setIndex((current) => (current + step + items.length) % items.length);
 
   return (
     <section
@@ -76,40 +67,33 @@ export default function FeatureSlider({ items }: { items: MangaSummaryDto[] }) {
         </p>
         {manga.description ? <p className="feature-description">{manga.description}</p> : null}
         <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
-
-        {items.length > 1 && (
-          <div className="feature-slider-controls" aria-label="Điều khiển slide">
-            <button type="button" className="feature-nav" aria-label="Truyện trước" onClick={() => move(-1)}>
-              <Chevron dir="left" />
-            </button>
-            <div className="feature-dots" role="group" aria-label="Chọn truyện">
-              {items.map((item, dot) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  aria-label={`Hiện truyện ${dot + 1}: ${item.title}`}
-                  aria-current={dot === index}
-                  className={dot === index ? "active" : undefined}
-                  onClick={() => setIndex(dot)}
-                />
-              ))}
-            </div>
-            <button type="button" className="feature-nav" aria-label="Truyện tiếp" onClick={() => move(1)}>
-              <Chevron dir="right" />
-            </button>
-            <span className="feature-control-sep" aria-hidden="true" />
-            <button
-              type="button"
-              className={`feature-nav feature-pause${paused ? " is-paused" : ""}`}
-              aria-label={paused ? "Tiếp tục slide" : "Tạm dừng slide"}
-              aria-pressed={paused}
-              onClick={() => setPaused((value) => !value)}
-            >
-              <PausePlay paused={paused} />
-            </button>
-          </div>
-        )}
       </div>
+
+      {items.length > 1 && (
+        <div className="feature-slider-controls" aria-label="Điều khiển slide">
+          <div className="feature-dots" role="group" aria-label="Chọn truyện">
+            {items.map((item, dot) => (
+              <button
+                key={item.id}
+                type="button"
+                aria-label={`Hiện truyện ${dot + 1}: ${item.title}`}
+                aria-current={dot === index}
+                className={dot === index ? "active" : undefined}
+                onClick={() => setIndex(dot)}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            className={`feature-nav feature-pause${paused ? " is-paused" : ""}`}
+            aria-label={paused ? "Tiếp tục slide" : "Tạm dừng slide"}
+            aria-pressed={paused}
+            onClick={() => setPaused((value) => !value)}
+          >
+            <PausePlay paused={paused} />
+          </button>
+        </div>
+      )}
     </section>
   );
 }
