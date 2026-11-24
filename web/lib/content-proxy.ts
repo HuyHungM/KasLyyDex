@@ -107,10 +107,10 @@ export async function forwardGet(request: Request, target: URL): Promise<Respons
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
   }
-  // The CDN cache key ignores `?u=`, so forwarding Axum's immutable header
-  // would serve the first image for every cover and page.
+  // The CDN cache key ignores `?u=`. Vary on it so each image gets its own
+  // edge entry instead of serving the first cover/page for every URL.
   if (target.pathname === "/api/content/img" || target.pathname === "/api/img") {
-    responseHeaders.set("cache-control", "no-store");
+    responseHeaders.set("netlify-vary", "query=u");
   }
   return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
 }

@@ -206,7 +206,8 @@ test("Axum page URLs use /api/content/img and Next forwards the real image bytes
   const res = await fetch(`${proxied.baseUrl}${pages[0]}`);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "image/png");
-  assert.equal(res.headers.get("cache-control"), "no-store");
+  assert.equal(res.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  assert.match(res.headers.get("netlify-vary") ?? "", /query=u/);
   assert.equal(res.headers.get("set-cookie"), null);
   assert.deepEqual(Buffer.from(await res.arrayBuffer()), PNG);
 });
@@ -216,7 +217,8 @@ test("legacy /api/img alias still forwards the same Axum bytes", async () => {
   const res = await fetch(alias);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "image/png");
-  assert.equal(res.headers.get("cache-control"), "no-store");
+  assert.equal(res.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  assert.match(res.headers.get("netlify-vary") ?? "", /query=u/);
   assert.deepEqual(Buffer.from(await res.arrayBuffer()), PNG);
 });
 

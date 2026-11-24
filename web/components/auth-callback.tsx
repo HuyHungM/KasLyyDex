@@ -2,21 +2,24 @@
 
 import { useEffect, useState } from "react";
 import { refreshSession } from "@/lib/account/client";
+import { authTokenParams } from "@/lib/auth/callback";
 import { handleAuthCallback } from "@/lib/auth/client";
-
-// Only Identity's own hash parameters are callbacks; plain anchors are not.
-const AUTH_HASH = /^#(access_token|confirmation_token|recovery_token|invite_token|email_change_token)=/;
 
 export default function AuthCallback() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash) {
-      const kind = hash.slice(1).split("=")[0] || "unknown";
-      void fetch(`/api/auth/get-session?authdebug=${encodeURIComponent(kind)}`, { cache: "no-store" }).catch(() => {});
+    const params = authTokenParams(window.location.hash, window.location.search);
+    if (!params) return;
+
+    // The browser SDK reads the hash only; normalize query-token callbacks.
+    if (!window.location.hash) {
+      window.history.replaceState(null, "", `${window.location.pathname}#${params.toString()}`);
     }
-    if (!AUTH_HASH.test(hash)) return;
+
+    const kind = params.keys().next().value ?? "unknown";
+    void fetch(`/api/auth/get-session?authdebug=${encodeURIComponent(kind)}`, { cache: "no-store" }).catch(() => {});
+
     let active = true;
     void (async () => {
       try {

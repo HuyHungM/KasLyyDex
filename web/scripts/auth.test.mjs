@@ -5,6 +5,7 @@ import { afterEach, test } from "node:test";
 // Fixture-only: the Identity provider is injected below, so no live Netlify
 // project, OAuth tenant or credential is needed.
 const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const { authTokenParams } = await import("../lib/auth/callback.ts");
 const {
   AuthConfigurationError,
   authErrorResponse,
@@ -64,6 +65,13 @@ test("a Netlify user maps into an AccountIdentity with verified email", () => {
     image: null,
     sessionId: fixtureUser.id,
   });
+});
+
+test("callback accepts Identity tokens from hash or query", () => {
+  assert.equal(authTokenParams("#access_token=abc&expires_in=1", "").get("access_token"), "abc");
+  assert.equal(authTokenParams("", "?access_token=abc&expires_in=1").get("access_token"), "abc");
+  assert.equal(authTokenParams("", "?q=one%20piece"), null);
+  assert.equal(authTokenParams("#section=intro", ""), null);
 });
 
 test("unusable identity users are rejected", () => {
@@ -217,7 +225,7 @@ test("callback tokens are handled globally, not only on the account page", async
   assert.match(layout, /import AuthCallback from "@\/components\/auth-callback"/);
   assert.match(layout, /<AuthCallback \/>/);
   assert.match(handler, /await handleAuthCallback\(\)/);
-  assert.match(handler, /AUTH_HASH/);
+  assert.match(handler, /authTokenParams\(/);
   assert.match(handler, /refreshSession\(\)/);
   assert.match(handler, /role="alert"/);
   assert.doesNotMatch(panel, /handleAuthCallback/, "the account panel must not process callbacks twice");
