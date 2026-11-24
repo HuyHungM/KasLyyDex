@@ -7,7 +7,7 @@ import { coverImageUrl, type MangaSummaryDto } from "@/lib/contracts";
 import { statusText } from "@/lib/format";
 
 const ROTATE_MS = 6500;
-const FADE_MS = 560;
+const FADE_MS = 700;
 
 type Layer = "in" | "out";
 

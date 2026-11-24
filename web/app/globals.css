@@ -185,9 +185,9 @@ button:disabled { cursor: default; }
 }
 .feature-dots button:hover { background: #ffffffcc; }
 .feature-dots button.active { width: 20px; background: var(--feature-accent); }
-.feature-animate[data-layer="in"] { animation: feature-enter 520ms cubic-bezier(.22, 1, .36, 1) both; }
+.feature-animate[data-layer="in"] { animation: feature-enter 480ms cubic-bezier(.22, 1, .36, 1) 160ms both; }
 .feature-art.feature-animate[data-layer="in"] { animation-name: feature-art-enter; }
-.feature-animate[data-layer="out"] { animation: feature-exit 320ms ease-in both; pointer-events: none; }
+.feature-animate[data-layer="out"] { animation: feature-exit 180ms ease-in both; pointer-events: none; }
 .feature-art.feature-animate[data-layer="out"] { animation-name: feature-art-exit; }
 @keyframes feature-enter {
   from { opacity: 0; transform: translateY(14px); }
