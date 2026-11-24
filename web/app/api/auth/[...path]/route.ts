@@ -40,6 +40,10 @@ async function credentials(request: NextRequest) {
 }
 
 async function handle(request: NextRequest, context: Context) {
+  const debug = new URL(request.url).searchParams.get("authdebug");
+  if (debug) {
+    console.info("[auth-debug] callback-url", JSON.stringify({ kind: debug.slice(0, 40) }));
+  }
   return withObservedRoute("auth", request, async () => {
     try {
       if (request.method !== "GET" && request.method !== "POST") return methodNotAllowed();

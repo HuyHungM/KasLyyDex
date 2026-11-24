@@ -11,7 +11,12 @@ export default function AuthCallback() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!AUTH_HASH.test(window.location.hash)) return;
+    const hash = window.location.hash;
+    if (hash) {
+      const kind = hash.slice(1).split("=")[0] || "unknown";
+      void fetch(`/api/auth/get-session?authdebug=${encodeURIComponent(kind)}`, { cache: "no-store" }).catch(() => {});
+    }
+    if (!AUTH_HASH.test(hash)) return;
     let active = true;
     void (async () => {
       try {
