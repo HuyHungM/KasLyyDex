@@ -39,6 +39,40 @@
   --hover: #f3ecfb;
 }
 
+/* Draft palettes for comparison only. Preview with ?theme=draft-rose or ?theme=draft-lilac. */
+:root[data-theme="draft-rose"] {
+  color-scheme: light;
+  --bg: #fff4de;
+  --surface: #fffaf2;
+  --rail: #fff0d9;
+  --text: #3b2530;
+  --muted: #7d5f6c;
+  --line: #e8c9cd;
+  --accent: #a8324b;
+  --solid: #b83a55;
+  --solid-ink: #fff;
+  --soft: #ffdddd;
+  --hover: #fff0d9;
+}
+:root[data-theme="draft-lilac"] {
+  color-scheme: light;
+  --bg: #fbefef;
+  --surface: #fffafa;
+  --rail: #f7e6ec;
+  --text: #2e2436;
+  --muted: #6d5f74;
+  --line: #e3cee0;
+  --accent: #6d4a8c;
+  --solid: #7d539f;
+  --solid-ink: #fff;
+  --soft: #f5cbcb;
+  --hover: #ffe2e2;
+}
+:root[data-theme="draft-rose"] .feature { --feature-accent: #ff9ab0; border-color: #5a3540; background: #2e1b24; }
+:root[data-theme="draft-lilac"] .feature { --feature-accent: #c9a8e8; border-color: #4a3858; background: #241a30; }
+:root[data-theme="draft-rose"] .feature-art::after { background: linear-gradient(90deg, #2e1b24 3%, #2e1b24 26%, #3a2230df 47%, #4a2a3a33 78%); }
+:root[data-theme="draft-lilac"] .feature-art::after { background: linear-gradient(90deg, #241a30 3%, #241a30 26%, #30223fdf 47%, #3a2a5033 78%); }
+
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 400 1rem/1.6 var(--font-be-vietnam), "Be Vietnam Pro", sans-serif; }
 h1, h2, h3, p { margin: 0; overflow-wrap: anywhere; }
