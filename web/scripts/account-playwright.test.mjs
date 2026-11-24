@@ -86,9 +86,9 @@ test("session sign-in through a loopback fixture reaches the account UI", async 
   await email.waitFor();
   await email.fill("reader@example.com");
   await page.locator('input[type="password"]').fill("fixture-password");
-  await page.getByRole("button", { name: "Đăng nhập", exact: true }).click();
+  await page.locator(".auth-submit").click();
   await page.getByText("Đã đăng nhập").waitFor({ timeout: 15_000 });
-  assert.ok((await page.locator(".account-card").first().innerText()).includes("reader@example.com"));
+  assert.ok((await page.locator(".auth-shell").first().innerText()).includes("reader@example.com"));
   await page.screenshot({ path: join(SHOT_DIR, "account-authenticated.png") });
 
   await page.getByRole("button", { name: "Đăng xuất" }).click();
