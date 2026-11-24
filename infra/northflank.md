@@ -41,21 +41,22 @@ the service also serves UI assets from a mounted path. Optional upstream
 upstream override is `MANGADEX_API_ORIGIN`. Inject every value
 in Northflank service settings; none belongs in the tracked image or repository.
 
-## Content origin on Netlify
+## Content origin on Cloudflare
 
-`RUST_CONTENT_API_ORIGIN` is set on the Netlify site, not on this service. Its
-value is this service's public origin only: `https://<northflank-service-host>`,
-with scheme and host, no path, query or trailing slash. The local value stays
-`http://127.0.0.1:3100`. The browser continues to call same-origin
-`/api/content/*` on Next, so no CORS change is needed.
+`RUST_CONTENT_API_ORIGIN` is set on the Cloudflare Worker, not on this service.
+Its value is this service's public origin only:
+`https://<northflank-service-host>`, with scheme and host, no path, query or
+trailing slash. The local value stays `http://127.0.0.1:3100`. The browser
+continues to call same-origin `/api/content/*` on the Worker, so no CORS change
+is needed.
 
 ## Database migrations
 
-Drizzle's `out` is `netlify/database/migrations`, and its `meta/` journal and
-snapshots are committed beside the numbered SQL files. Netlify's scanner only
-picks up files matching `^\d+_.*`, so `meta/` is ignored. Future
-`drizzle-kit generate` output must have every `--> statement-breakpoint`
-marker stripped before Netlify applies it; the checked-in SQL is plain SQL.
+The Worker uses D1; Drizzle's schema is SQLite and its `out` is `web/migrations`.
+The baseline `0000_cloudflare_d1.sql` and `meta/` journal are committed beside
+each other and the SQL was applied to D1 with `d1_query`. Future
+`drizzle-kit generate` output is numbered, additive SQL; never drop tables or
+columns as part of a rollback.
 
 ## Preview environments
 
@@ -67,4 +68,4 @@ is out of scope for this change and no preview URL is asserted here.
 
 Use Northflank build rollback (select a previous successful build) for the
 backend. It does not undo database migrations; coordinate any schema change
-with the Netlify rollback procedure in `infra/netlify.md`.
+with the Cloudflare rollback procedure in `infra/cloudflare.md`.

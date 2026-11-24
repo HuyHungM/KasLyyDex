@@ -17,7 +17,7 @@ import type { ContentClient } from "./contracts";
 type CommentTargetType = "manga" | "chapter";
 // Transactions from `db.transaction()` have no `$client`; every service call
 // runs unchanged on the pooled database or inside that transaction.
-type Db = Omit<AppDatabase, "$client">;
+type Db = Omit<AppDatabase, "$client" | "batch">;
 
 const COMMENT_LIMIT = 5;
 const COMMENT_WINDOW_MS = 60_000;
@@ -78,7 +78,6 @@ async function consumeRateLimit(
 ): Promise<void> {
   const max = action === "comment" ? COMMENT_LIMIT : REPORT_LIMIT;
   const windowMs = action === "comment" ? COMMENT_WINDOW_MS : REPORT_WINDOW_MS;
-  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${"community-rate:" + action + ":" + userId}))`);
   await db.delete(tables.actionEvents).where(and(
     eq(tables.actionEvents.userId, userId),
     eq(tables.actionEvents.action, action),
@@ -109,7 +108,6 @@ async function ensureThread(
     .onConflictDoNothing();
   const rows = await db.select().from(tables.commentThreads)
     .where(and(eq(tables.commentThreads.targetType, targetType), eq(tables.commentThreads.targetId, targetId)))
-    .for("update")
     .limit(1);
   return rows[0];
 }
@@ -590,13 +588,7 @@ export async function refreshFollowedChapters(
   now: number,
 ): Promise<{ checked: number; created: number; skipped: boolean; partial: boolean }> {
   return db.transaction(async (tx) => {
-    const acquired = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${'chapter-refresh:' + userId})) as acquired`);
-    const result = acquired as unknown as { rows?: Array<{ acquired: boolean }> };
-    const rows = result.rows ?? [];
-    if (rows[0]?.acquired === false) {
-      return { checked: 0, created: 0, skipped: true, partial: false };
-    }
-
+    // D1 already serializes writes for one database; no advisory lock needed.
     const followed = await tx.select({
       mangaId: tables.libraryEntries.mangaId,
       title: tables.libraryEntries.title,

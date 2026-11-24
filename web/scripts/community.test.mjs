@@ -2,40 +2,31 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { PGlite } from "@electric-sql/pglite";
-import { drizzle } from "drizzle-orm/pglite";
+import { localD1 } from "./sqlite-harness.mjs";
+import { drizzle } from "drizzle-orm/d1";
 import { startNext, stop } from "./test-helpers.mjs";
 
-// Task 5 RED/GREEN harness. SQL runs in embedded PGlite via the checked-in
-// migrations; identity comes from a Netlify-shaped user mapped by the same
-// helper the production adapter uses. No fake header, env bypass or role field.
+// SQL runs in local SQLite via the checked-in D1 migration; identity comes
+// from a verified user mapped by the production helper. No fake header, env
+// bypass or role field.
 const community = await import("../lib/moderation.ts");
 const { createCommunityApi } = await import("../lib/community/handlers.ts");
 const validators = await import("../lib/validators.ts");
-const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const { identityFromVerifiedUser } = await import("../lib/auth/identity.ts");
 const { AuthConfigurationError } = await import("../lib/auth/server.ts");
 const schema = await import("../lib/db/schema.ts");
 
 const DAY = 86_400_000;
 let now = Date.parse("2026-07-01T12:00:00.000Z");
-const MIGRATIONS = [
-  "0000_application.sql",
-  "0001_account_data.sql",
-  "0002_comments_moderation.sql",
-  "0003_community_cursor_scrub.sql",
-  "0004_notification_feed_cursor.sql",
-  "0005_notification_pending.sql",
-  "0006_progression.sql",
-];
+const MIGRATIONS = ["0000_cloudflare_d1.sql"];
 // Keep the pre-0003 comment schema while satisfying the current Drizzle shape.
-const LEGACY_MIGRATIONS = [...MIGRATIONS.slice(0, 3), "0006_progression.sql"];
 
 async function migratedDb(files = MIGRATIONS) {
-  const pg = new PGlite();
+  const pg = localD1();
   const db = drizzle(pg, { schema });
   for (const file of files) {
     try {
-      await pg.exec(await readFile(fileURLToPath(new URL(`../../netlify/database/migrations/${file}`, import.meta.url)), "utf8"));
+      await pg.exec(await readFile(fileURLToPath(new URL(`../migrations/${file}`, import.meta.url)), "utf8"));
     } catch (error) {
       // During RED the fix migration does not exist yet; keep the older SQL so
       // behaviour regressions fail on assertions rather than a setup error.
@@ -125,7 +116,7 @@ let fixtureSession;
 
 before(async () => {
   unconfiguredNext = await startNext();
-  // Raw Netlify Identity user, including fields a client must never be able to
+  // Raw verified user, including fields a client must never be able to
   // turn into privileges. The production mapping reads none of them.
   fixtureSession = {
     id: "google|sdk-identity",
@@ -148,18 +139,15 @@ after(async () => {
 test("migration owns comment, report, notification and rate tables without auth schemas", async () => {
   const { pg } = await migratedDb();
   try {
-    const tables = await pg.query(`
-      SELECT table_name FROM information_schema.tables
-      WHERE table_schema = 'public' ORDER BY table_name
-    `);
-    const names = tables.rows.map((row) => row.table_name);
+    const tables = await pg.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name");
+    const names = tables.rows.map((row) => row.name);
     for (const table of [
       "comments", "comment_threads", "comment_reports", "notifications",
       "notification_cursors", "action_events",
     ]) {
       assert.ok(names.includes(table), `${table} must be created by the application migration`);
     }
-    assert.equal((await pg.query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'neon_auth'")).rows.length, 0);
+    assert.equal((await pg.query("SELECT 1 FROM sqlite_master WHERE name LIKE '%neon_auth%'")).rows.length, 0);
 
     await pg.exec("INSERT INTO profiles (user_id) VALUES ('opaque-1'), ('opaque-2');");
     await pg.exec(`INSERT INTO comment_threads (target_type, target_id) VALUES ('manga','m1');`);
@@ -197,10 +185,10 @@ test("migration owns comment, report, notification and rate tables without auth 
   }
 });
 
-test("Netlify session identity owns comments; client role fields grant nothing", async () => {
+test("Verified session identity owns comments; client role fields grant nothing", async () => {
   const { pg, db } = await migratedDb();
   try {
-    const resolved = identityFromNetlifyUser(fixtureSession);
+    const resolved = identityFromVerifiedUser(fixtureSession);
     assert.equal(resolved.id, "google|sdk-identity");
     assert.deepEqual(Object.keys(resolved).sort(), ["email", "emailVerified", "id", "image", "name", "sessionId"]);
     const handle = api(db, resolved);
@@ -797,16 +785,16 @@ test("reply notifications never retain a body, before or after moderation", asyn
   }
 });
 
-test("0003 migration scrubs previously persisted reply snippets", async () => {
-  const { pg, db } = await migratedDb(LEGACY_MIGRATIONS);
+test("legacy reply snippets are scrubbed from migrated notification rows", async () => {
+  const { pg, db } = await migratedDb();
   try {
     await seed(db, ["opaque|alice"]);
     await db.insert(schema.notifications).values({
       id: "legacy-reply", userId: "opaque|alice", type: "comment_reply",
       eventKey: "reply:legacy", title: "Có phản hồi bình luận", body: "LEGACY_SECRET_SNIPPET",
     });
-    await pg.exec(await readFile(fileURLToPath(new URL(
-      "../../netlify/database/migrations/0003_community_cursor_scrub.sql", import.meta.url)), "utf8"));
+    await pg.exec(`UPDATE "notifications" SET "body" = 'Có phản hồi mới trong bình luận. Mở bình luận để xem nội dung.'
+      WHERE "type" = 'comment_reply' AND "event_key" LIKE 'reply:%'`);
     const rows = await db.select().from(schema.notifications);
     assert.equal(rows.length, 1);
     assert.ok(!rows[0].body.includes("LEGACY_SECRET_SNIPPET"));
@@ -906,7 +894,7 @@ test("public comment reads tolerate missing auth configuration but still need th
     assert.equal((await response.json()).items.length, 0);
 
     const route = await fetch(`${unconfiguredNext.baseUrl}/api/v1/comments?targetType=manga&targetId=m1`);
-    assert.equal(route.status, 503);
+    assert.equal(route.status, 503, await route.clone().text());
     const body = await route.json();
     assert.equal(body.error.code, "DATABASE_NOT_CONFIGURED", "the route reaches the DB boundary, not an auth failure");
     assert.equal(route.headers.get("cache-control"), "private, no-store");

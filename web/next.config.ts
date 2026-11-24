@@ -2,17 +2,17 @@ import type { NextConfig } from "next";
 
 // Static CSP: nonces would force dynamic rendering and break the current
 // cacheComponents/partialPrefetching setup. `'wasm-unsafe-eval'` is required by
-// the reader; `img-src 'self' data: blob:` covers same-origin /_next/image and
-// /api/content/img responses, and no third-party origin is allowed.
+// the reader; Google Identity Services is the only allowed third-party origin.
 const csp = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
-  `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
+  `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://accounts.google.com${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' https://accounts.google.com",
+  "frame-src 'self' https://accounts.google.com",
   "worker-src 'self' blob:",
   "frame-ancestors 'none'",
   "form-action 'self'",
@@ -31,7 +31,6 @@ export const securityHeaders = [
 const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
-  serverExternalPackages: ["pg"],
   turbopack: {
     rules: {
       "*.css": {

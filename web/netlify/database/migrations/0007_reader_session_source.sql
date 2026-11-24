@@ -1,1 +1,0 @@
-ALTER TABLE "reader_sessions" ADD COLUMN "source" text DEFAULT 'mangadex' NOT NULL;

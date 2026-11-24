@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { afterEach, test } from "node:test";
 
-// Fixture-only: the Identity provider is injected below, so no live Netlify
-// project, OAuth tenant or credential is needed.
-const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const { identityFromVerifiedUser } = await import("../lib/auth/identity.ts");
 const { authTokenParams } = await import("../lib/auth/callback.ts");
 const {
   AuthConfigurationError,
@@ -12,30 +10,43 @@ const {
   getAuth,
   setIdentityProvider,
 } = await import("../lib/auth/server.ts");
+const { cookieToken, createSessionToken, readSessionToken, SESSION_COOKIE } = await import("../lib/auth/session.ts");
 const route = await import("../app/api/auth/[...path]/route.ts");
 
+const SECRET = "fixture-session-secret-with-at-least-32-chars";
 const fixtureUser = {
-  id: "identity-user-1",
+  id: "google|identity-user-1",
   email: "reader@example.com",
   email_verified: true,
-  user_metadata: { full_name: "Reader" },
+  name: "Reader",
+  picture: null,
+};
+
+const identity = {
+  id: fixtureUser.id,
+  email: fixtureUser.email,
+  emailVerified: true,
+  name: "Reader",
+  image: null,
+  sessionId: fixtureUser.id,
 };
 
 const configuredProvider = (user = fixtureUser) => ({
-  config: () => ({ url: "https://example.test/.netlify/identity" }),
-  getUser: async () => user,
-  login: async () => user,
-  signup: async () => user,
-  logout: async () => {},
+  config: async () => ({ secret: SECRET, clientId: "google-client-id" }),
+  getSession: async () => identityFromVerifiedUser(user),
+  signIn: async () => identity,
+  signUp: async () => identity,
+  signOut: async () => {},
+  google: async () => identity,
 });
 
 const sessionRequest = new Request("https://example.test/api/auth/get-session");
 const sessionContext = { params: Promise.resolve({ path: ["get-session"] }) };
 const sessionBody = {
-  session: { id: fixtureUser.id },
+  session: { id: identity.sessionId },
   user: {
-    id: fixtureUser.id,
-    email: fixtureUser.email,
+    id: identity.id,
+    email: identity.email,
     emailVerified: true,
     name: "Reader",
     image: null,
@@ -56,114 +67,104 @@ function context(action) {
 
 afterEach(() => setIdentityProvider());
 
-test("a Netlify user maps into an AccountIdentity with verified email", () => {
-  assert.deepEqual(identityFromNetlifyUser(fixtureUser), {
-    id: fixtureUser.id,
-    email: fixtureUser.email,
-    emailVerified: true,
-    name: "Reader",
-    image: null,
-    sessionId: fixtureUser.id,
-  });
+test("a verified user maps into an AccountIdentity", () => {
+  assert.deepEqual(identityFromVerifiedUser(fixtureUser), identity);
 });
 
-test("callback accepts Identity tokens from hash or query", () => {
-  assert.equal(authTokenParams("#access_token=abc&expires_in=1", "").get("access_token"), "abc");
-  assert.equal(authTokenParams("", "?access_token=abc&expires_in=1").get("access_token"), "abc");
+test("callback accepts Google credentials from hash or query", () => {
+  assert.equal(authTokenParams("#credential=abc", "").get("credential"), "abc");
+  assert.equal(authTokenParams("", "?id_token=abc").get("id_token"), "abc");
   assert.equal(authTokenParams("", "?q=one%20piece"), null);
-  assert.equal(authTokenParams("#section=intro", ""), null);
 });
 
-test("unusable identity users are rejected", () => {
-  assert.equal(identityFromNetlifyUser({ ...fixtureUser, id: undefined }), null);
-  assert.equal(identityFromNetlifyUser({ ...fixtureUser, id: "x".repeat(257) }), null);
-  assert.equal(identityFromNetlifyUser({ ...fixtureUser, email_verified: false }), null);
-  assert.equal(identityFromNetlifyUser({
-    ...fixtureUser,
-    email_verified: false,
-    confirmedAt: "2026-01-01T00:00:00.000Z",
-  }), null);
-  assert.equal(identityFromNetlifyUser({
-    ...fixtureUser,
-    email_verified: true,
-    emailVerified: false,
-    confirmedAt: "2026-01-01T00:00:00.000Z",
-  }), null);
+test("unusable verified users are rejected", () => {
+  assert.equal(identityFromVerifiedUser({ ...fixtureUser, id: undefined, sub: undefined }), null);
+  assert.equal(identityFromVerifiedUser({ ...fixtureUser, id: "x".repeat(257) }), null);
+  assert.equal(identityFromVerifiedUser({ ...fixtureUser, email_verified: false }), null);
+  assert.equal(identityFromVerifiedUser({ ...fixtureUser, emailVerified: false }), null);
 });
 
 test("client-supplied privilege fields never reach the identity", () => {
-  const identity = identityFromNetlifyUser({
+  const resolved = identityFromVerifiedUser({
     ...fixtureUser,
     role: "admin",
     level: 99,
     totalXp: 1_000_000,
-    percent: 100,
-    pageCount: 999,
-    app_metadata: { role: "admin", roles: ["admin"] },
-    user_metadata: { ...fixtureUser.user_metadata, role: "admin", level: 99 },
+    app_metadata: { role: "admin" },
+    user_metadata: { role: "admin" },
   });
-  assert.deepEqual(Object.keys(identity).sort(), [
+  assert.deepEqual(Object.keys(resolved).sort(), [
     "email", "emailVerified", "id", "image", "name", "sessionId",
   ]);
-  assert.equal(identity.emailVerified, true);
+  assert.equal(resolved.emailVerified, true);
 });
 
-test("unavailable Identity returns a structured AUTH_NOT_CONFIGURED 503", async () => {
+test("unavailable session auth returns a structured AUTH_NOT_CONFIGURED 503", async () => {
   setIdentityProvider({
     ...configuredProvider(),
-    config: () => null,
+    config: async () => null,
+    getSession: async () => {
+      throw new AuthConfigurationError("AUTH_NOT_CONFIGURED", "Session authentication is not configured in this runtime.");
+    },
   });
   await assert.rejects(
     () => getAuth().getSession(),
-    (error) => error instanceof AuthConfigurationError
-      && error.code === "AUTH_NOT_CONFIGURED",
+    (error) => error instanceof AuthConfigurationError && error.code === "AUTH_NOT_CONFIGURED",
   );
 
   const res = await route.GET(sessionRequest, sessionContext);
   assert.equal(res.status, 503);
-  const body = await res.json();
-  assert.equal(body.error.code, "AUTH_NOT_CONFIGURED");
-  assert.equal(body.error.details.service, "auth");
+  assert.equal((await res.json()).error.code, "AUTH_NOT_CONFIGURED");
 
-  const direct = authErrorResponse(new AuthConfigurationError("AUTH_NOT_CONFIGURED", "no identity"));
+  const direct = authErrorResponse(new AuthConfigurationError("AUTH_NOT_CONFIGURED", "no secret"));
   assert.equal(direct?.status, 503);
   assert.equal((await direct.json()).error.details.service, "auth");
 });
 
-test("get-session keeps the existing session/user response shape", async () => {
-  setIdentityProvider(configuredProvider());
-  const identity = await getAuth().getSession();
-  assert.equal(identity.id, fixtureUser.id);
-  assert.equal(identity.sessionId, fixtureUser.id);
-
-  const res = await route.GET(sessionRequest, sessionContext);
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), sessionBody);
+test("missing GOOGLE_CLIENT_ID fails closed with a structured error", async () => {
+  setIdentityProvider({
+    ...configuredProvider(),
+    config: async () => ({ secret: SECRET, clientId: null }),
+    google: async () => {
+      throw new AuthConfigurationError("AUTH_CONFIG_INVALID", "Google sign-in is not configured.", ["GOOGLE_CLIENT_ID"]);
+    },
+  });
+  const res = await route.POST(post("callback", { credential: "id-token" }), context("callback"));
+  assert.equal(res.status, 503);
+  const body = await res.json();
+  assert.equal(body.error.code, "AUTH_CONFIG_INVALID");
+  assert.equal(body.error.details.missing, "GOOGLE_CLIENT_ID");
 });
 
-test("get-session uses the nf_jwt cookie when the SDK has no server context", async () => {
-  const originalFetch = globalThis.fetch;
-  const calls = [];
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), authorization: init?.headers?.authorization });
-    return new Response(JSON.stringify(fixtureUser), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  };
-  try {
-    setIdentityProvider({ ...configuredProvider(), getUser: async () => null });
-    const request = new Request("https://example.test/api/auth/get-session", {
-      headers: { cookie: "nf_jwt=jwt-from-oauth-callback" },
-    });
-    const res = await route.GET(request, sessionContext);
-    assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), sessionBody);
-    assert.match(calls[0].url, /\/user$/);
-    assert.equal(calls[0].authorization, "Bearer jwt-from-oauth-callback");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test("get-session keeps the existing session/user response shape", async () => {
+  setIdentityProvider(configuredProvider());
+  const response = await route.GET(sessionRequest, sessionContext);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), sessionBody);
+});
+
+test("signed session cookies are HttpOnly SameSite=Lax and resolve back to a session", async () => {
+  setIdentityProvider(configuredProvider());
+  const signIn = await route.POST(post("sign-in", { email: "reader@example.com", password: "secret123" }), context("sign-in"));
+  const cookie = signIn.headers.get("set-cookie");
+  assert.match(cookie ?? "", new RegExp(`^${SESSION_COOKIE}=`));
+  assert.match(cookie ?? "", /HttpOnly/);
+  assert.match(cookie ?? "", /SameSite=Lax/);
+
+  const token = cookieToken(cookie);
+  assert.equal((await readSessionToken(token, SECRET))?.id, identity.id);
+  const forged = await readSessionToken(token, "another-secret-with-at-least-32-chars!");
+  assert.equal(forged, null);
+
+  const session = await createSessionToken(identity, SECRET);
+  setIdentityProvider({
+    ...configuredProvider(),
+    getSession: async (request) => readSessionToken(cookieToken(request?.headers.get("cookie") ?? null), SECRET),
+  });
+  const res = await route.GET(new Request("https://example.test/api/auth/get-session", {
+    headers: { cookie: `${SESSION_COOKIE}=${encodeURIComponent(session)}` },
+  }), sessionContext);
+  assert.deepEqual(await res.json(), sessionBody);
 });
 
 test("cross-origin auth mutations are rejected", async () => {
@@ -186,13 +187,14 @@ test("only GET and POST are allowed on the auth route", async () => {
   }
 });
 
-test("sign-in, sign-up, sign-out and callback succeed with an injected provider", async () => {
+test("sign-in, sign-up, sign-out, Google callback and config keep their contracts", async () => {
   const calls = [];
   setIdentityProvider({
     ...configuredProvider(),
-    login: async (...args) => { calls.push(["login", ...args]); return fixtureUser; },
-    signup: async (...args) => { calls.push(["signup", ...args]); return fixtureUser; },
-    logout: async () => { calls.push(["logout"]); },
+    signIn: async (...args) => { calls.push(["signIn", ...args]); return identity; },
+    signUp: async (...args) => { calls.push(["signUp", ...args]); return identity; },
+    google: async (...args) => { calls.push(["google", ...args]); return identity; },
+    signOut: async () => { calls.push(["signOut"]); },
   });
 
   for (const action of ["sign-in", "sign-up"]) {
@@ -200,19 +202,22 @@ test("sign-in, sign-up, sign-out and callback succeed with an injected provider"
     assert.equal(res.status, 200, action);
     assert.deepEqual(await res.json(), sessionBody, action);
   }
+  const google = await route.POST(post("callback", { credential: "google-id-token" }), context("callback"));
+  assert.deepEqual(await google.json(), sessionBody);
 
   const out = await route.POST(post("sign-out"), context("sign-out"));
   assert.equal(out.status, 200);
   assert.deepEqual(await out.json(), { ok: true });
+  assert.match(out.headers.get("set-cookie") ?? "", /Max-Age=0/);
 
-  const callback = await route.POST(post("callback"), context("callback"));
-  assert.equal(callback.status, 200);
-  assert.deepEqual(await callback.json(), sessionBody);
+  const config = await route.GET(new Request("https://example.test/api/auth/config"), context("config"));
+  assert.deepEqual(await config.json(), { googleClientId: "google-client-id" });
 
   assert.deepEqual(calls, [
-    ["login", fixtureUser.email, "secret123"],
-    ["signup", fixtureUser.email, "secret123"],
-    ["logout"],
+    ["signIn", fixtureUser.email, "secret123"],
+    ["signUp", fixtureUser.email, "secret123", undefined],
+    ["google", "google-id-token"],
+    ["signOut"],
   ]);
 });
 
@@ -231,9 +236,10 @@ test("callback tokens are handled globally, not only on the account page", async
   assert.doesNotMatch(panel, /handleAuthCallback/, "the account panel must not process callbacks twice");
 });
 
-test("client auth sends flat signup metadata and ignores the OAuth redirect throw", async () => {
+test("client auth uses Google Identity Services credentials, not a managed SDK", async () => {
   const client = await readFile(new URL("../lib/auth/client.ts", import.meta.url), "utf8");
-  assert.match(client, /signup\(email, password, name \? \{ full_name: name \} : undefined\)/);
-  assert.doesNotMatch(client, /data:\s*\{\s*full_name/);
-  assert.match(client, /instanceof AuthError && error\.message === "Redirecting to OAuth provider"/);
+  assert.match(client, /accounts\.google\.com\/gsi\/client/);
+  assert.match(client, /\/api\/auth\/config/);
+  assert.match(client, /\/api\/auth\/callback/);
+  assert.doesNotMatch(client, /@netlify\/identity/);
 });

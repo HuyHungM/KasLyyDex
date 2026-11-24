@@ -96,14 +96,14 @@ test("GET /api/v1/ready is separate from liveness and lists missing config names
   assert.equal(body.status, "unavailable");
   assert.equal(body.checks.configuration, "missing");
   for (const name of [
-    "NETLIFY_DB_URL", "READER_TICKET_SECRET", "RUST_CONTENT_API_ORIGIN",
+    "DB", "READER_TICKET_SECRET", "RUST_CONTENT_API_ORIGIN",
   ]) {
     assert.ok(body.missing.includes(name), name);
   }
   assert.doesNotMatch(JSON.stringify(body), /postgres(?:ql)?:\/\//i);
 });
 
-test("security headers apply to pages and API without external CSP sources", async () => {
+test("security headers apply to pages and API with only the Google sign-in origin allowed", async () => {
   for (const path of ["/", "/api/v1/health"]) {
     const res = await fetch(`${baseUrl}${path}`);
     assert.equal(res.headers.get("x-content-type-options"), "nosniff", path);
@@ -111,7 +111,8 @@ test("security headers apply to pages and API without external CSP sources", asy
     const csp = res.headers.get("content-security-policy") ?? "";
     assert.match(csp, /script-src 'self'.*'wasm-unsafe-eval'/, path);
     assert.match(csp, /img-src 'self' data: blob:/, path);
-    assert.doesNotMatch(csp, /https?:\/\//, path);
+    assert.match(csp, /script-src[^;]*https:\/\/accounts\.google\.com/, path);
+    assert.doesNotMatch(csp, /https?:\/\/(?!accounts\.google\.com)/, path);
   }
 });
 

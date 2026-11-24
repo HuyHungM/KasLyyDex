@@ -6,12 +6,12 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
-import { PGlite } from "@electric-sql/pglite";
-import { drizzle } from "drizzle-orm/pglite";
+import { localD1 } from "./sqlite-harness.mjs";
+import { drizzle } from "drizzle-orm/d1";
 import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
 
 // End-to-end for Task 7 chapter notifications: real Axum content handler, real
-// Next typed client through the proxy, real SQL migrations/cursor in PGlite.
+// Next typed client through the proxy, real SQL migrations/cursor in SQLite.
 // The MangaDex origin is a deterministic loopback fixture with >2000 chapters.
 const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const BASE = Date.parse("2026-07-01T00:00:00.000Z");
@@ -70,18 +70,14 @@ function makeChapter(index, published) {
   };
 }
 
-const MIGRATIONS = [
-  "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
-  "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
-  "0005_notification_pending.sql", "0006_progression.sql",
-];
+const MIGRATIONS = ["0000_cloudflare_d1.sql"];
 
 async function migratedDb(files = MIGRATIONS) {
-  const pg = new PGlite();
+  const pg = localD1();
   const db = drizzle(pg, { schema });
   for (const file of files) {
     try {
-      await pg.exec(await readFile(fileURLToPath(new URL(`../../netlify/database/migrations/${file}`, import.meta.url)), "utf8"));
+      await pg.exec(await readFile(fileURLToPath(new URL(`../migrations/${file}`, import.meta.url)), "utf8"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
@@ -418,20 +414,18 @@ test("0005 backfill replays same-publish legacy rows without duplicate notificat
   const legacy = BASE + 148 * DAY;
   try {
     chapters = ["v", "w", "z"].map((suffix, index) => tied(`tie-${suffix}`, legacy, 9500 + index));
-    const { pg, db } = await migratedDb([...MIGRATIONS.slice(0, 5), "0006_progression.sql"]);
+    const { pg, db } = await migratedDb();
     try {
       await seedReader(db);
-      // Legacy cursor shape: migrations through 0004 have no cohort columns.
+      // Legacy backfill shape: the migration rewound scan_publish by one second.
       await pg.exec(`INSERT INTO notification_cursors
         (user_id, manga_id, language, last_publish, last_chapter_id, scan_publish, scan_offset)
-        VALUES ('opaque|reader', '${MANGA_ID}', 'vi', ${legacy}, 'tie-v', ${legacy}, 0)`);
+        VALUES ('opaque|reader', '${MANGA_ID}', 'vi', ${legacy}, 'tie-v', ${legacy - 1000}, 0)`);
       await db.insert(schema.notifications).values({
         id: "legacy-v", userId: "opaque|reader", type: "new_chapter",
         eventKey: `chapter:opaque|reader:${MANGA_ID}:tie-v:vi`,
         title: "Chương mới", body: "legacy",
       });
-      await pg.exec(await readFile(fileURLToPath(new URL(
-        "../../netlify/database/migrations/0005_notification_pending.sql", import.meta.url)), "utf8"));
       const notes = await drain(db, 10);
       const keys = notes.map((item) => item.eventKey);
       assert.equal(notes.length, 3);

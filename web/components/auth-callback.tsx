@@ -12,7 +12,7 @@ export default function AuthCallback() {
     const params = authTokenParams(window.location.hash, window.location.search);
     if (!params) return;
 
-    // The browser SDK reads the hash only; normalize query-token callbacks.
+    // Normalize query-token callbacks into the hash form the client helper reads.
     if (!window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}#${params.toString()}`);
     }

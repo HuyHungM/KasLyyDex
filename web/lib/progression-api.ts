@@ -25,7 +25,7 @@ import {
 
 // Pooled and transaction databases share these calls; `$client` exists only on
 // the pooled handle, exactly as in the Task 7 moderation services.
-type Db = Omit<AppDatabase, "$client">;
+type Db = Omit<AppDatabase, "$client" | "batch">;
 
 const ISSUER = "kaslyydex-reader";
 const AUDIENCE = "kaslyydex-reader";
@@ -149,7 +149,6 @@ async function consumeRateLimit(
   now: number,
   max: number,
 ): Promise<void> {
-  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${"progression-rate:" + action + ":" + userId}))`);
   await db.delete(tables.actionEvents).where(and(
     eq(tables.actionEvents.userId, userId),
     eq(tables.actionEvents.action, action),
@@ -374,9 +373,7 @@ export function createProgressionApi(deps: ProgressionDeps) {
 
       return deps.db().transaction(async (tx) => {
         await consumeRateLimit(tx, user.id, "reader_complete", now, COMPLETE_LIMIT);
-        // Serialize every chapter completion by the same account: concurrent
-        // sessions cannot read a stale total or emit duplicate level events.
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"progression-profile:" + user.id}))`);
+        // D1 serializes account writes; conflict keys dedupe level events.
         const seen = await observedPages(tx, session.id);
         const need = requiredPages(session.pageCount);
         if (seen.length < need) {
@@ -400,9 +397,9 @@ export function createProgressionApi(deps: ProgressionDeps) {
             // `page` is the ordinary reread position owned by PUT /me/progress;
             // completion evidence must never move it on conflict. Only the
             // monotone max page consumes this session's observed last page.
-            maxPage: sql`greatest(${tables.chapterProgress.maxPage}, ${excluded("page")})`,
+            maxPage: sql`max(${tables.chapterProgress.maxPage}, ${excluded("page")})`,
             total: excluded("total"),
-            lastReadAt: sql`greatest(${tables.chapterProgress.lastReadAt} + 1, ${excluded("last_read_at")})`,
+            lastReadAt: sql`max(${tables.chapterProgress.lastReadAt} + 1, ${excluded("last_read_at")})`,
             revision: sql`${tables.chapterProgress.revision} + 1`,
             updatedAt: date(now),
           },
@@ -415,7 +412,7 @@ export function createProgressionApi(deps: ProgressionDeps) {
         }).onConflictDoNothing().returning({ userId: tables.readingCompletions.userId });
 
         const profileRows = await tx.select({ totalXp: tables.profiles.totalXp, level: tables.profiles.level })
-          .from(tables.profiles).where(eq(tables.profiles.userId, user.id)).limit(1).for("update");
+          .from(tables.profiles).where(eq(tables.profiles.userId, user.id)).limit(1);
         const before = profileRows[0];
         if (!before) throw new ServiceError(404, "PROFILE_UNAVAILABLE", "Account profile is missing.");
         let totalXp = before.totalXp;

@@ -108,10 +108,9 @@ files; the two Rust files touched by Task 4 were formatted with `rustfmt --editi
 
 ## Unverified
 
-No Axum service was deployed, exposed publicly, or connected to live Neon/Google
-configuration in this task. Docker was unavailable, so no PostgreSQL container was
-created; the migration test used embedded PGlite as a dev/test-only engine and did
-not touch any pre-existing database.
+No Axum service was deployed, exposed publicly, or connected to live provider
+configuration in this task. The web migration tests use a local SQLite harness
+for D1-shaped queries; they never touch a pre-existing database.
 
 ## Task 9 hardening
 

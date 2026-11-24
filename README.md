@@ -110,13 +110,17 @@ Thêm `--liveness-only` cho môi trường chưa cấu hình DB/auth.
 Xem `web/.env.example`:
 
 ```
-NETLIFY_DB_URL
+SESSION_SECRET
+GOOGLE_CLIENT_ID
 RUST_CONTENT_API_ORIGIN
 READER_TICKET_SECRET
 ```
 
-`READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là progression API
-fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+D1 được gắn vào Worker qua binding `DB` trong `web/cloudflare.config.ts`, không
+phải biến môi trường. `SESSION_SECRET` (>=32 ký tự) ký session cookie;
+`GOOGLE_CLIENT_ID` là public client id cho Google Identity Services (không dùng
+client secret). `READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là
+progression API fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
 
 ## Release gates
 
@@ -137,7 +141,7 @@ checkout, nhưng 1130 finding đã commit trong
 finding mới vẫn fail.
 
 Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
-CI scoped như trên. Xem `infra/deployment.md` và `infra/netlify.md` cho runbook, migration/rollback
+CI scoped như trên. Xem `infra/deployment.md` và `infra/cloudflare.md` cho runbook, migration/rollback
 cơ sở dữ liệu và các external gate chưa chạy.
 Live Comick/MangaDex provider verification và kiểm tra ToS vẫn là manual gate;
 không có deploy/push/merge nào được thực hiện cho các thay đổi này.
@@ -145,5 +149,5 @@ không có deploy/push/merge nào được thực hiện cho các thay đổi n�
 Observability: structured JSON logs có `correlationId`, redaction cho Cookie/
 Authorization/ticket/password/email/connection string/upstream key; metric names
 `kaslyydex.user_requests` và `kaslyydex.user_request.duration_ms` chỉ với label
-`operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Netlify
+`operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Cloudflare
 chưa được xác minh và paid Observability không được bật tự động.

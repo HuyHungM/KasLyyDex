@@ -90,11 +90,26 @@ measurements above. Full commands and counts are in
 - API error paths: missing auth/content/DB/ticket config returns structured 503,
   malformed IDs return 400, upstream failures are generic 502 without
   credentials, and cross-origin mutations are rejected before writes.
-- Auth ownership: real SDK session fixtures show comments, library/progress and
+- Auth ownership: signed session fixtures show comments, library/progress and
   completion records scoped to the authenticated user; client role fields and
   ticket forgery never grant ownership or XP.
-- External Neon/Google/Vercel verification and live browser-to-Neon SQL remain
-  manual gates; no Preview or Production deployment was verified.
+- Cloudflare Worker/D1 and live Google ID-token verification remain manual
+  gates; no Preview or Production deployment was verified.
+
+## Cloudflare Worker / D1 migration
+
+- The web app targets Cloudflare Workers via vinext. D1 binding `DB` replaces the
+  previous managed Postgres connection; schema and migration are SQLite
+  (`web/migrations/0000_cloudflare_d1.sql`) and the baseline was applied to the
+  provisioned database.
+- Session auth is worker-native: password or Google ID-token sign-in writes a
+  D1 `auth_users` row, and a signed `HttpOnly` `SameSite=Lax` cookie carries the
+  session. Google ID tokens are verified against Google's JWKS; no client
+  secret is used. Missing `GOOGLE_CLIENT_ID` fails closed with a structured
+  error.
+- `npm run build:vinext`, `npm run build` and `npm run test:aggregate` are the
+  local gates; local SQL tests run on a SQLite harness rather than an embedded
+  Postgres engine.
 
 ## Multi-source reading UX + final local gate (Task 10)
 

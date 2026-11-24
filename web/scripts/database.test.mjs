@@ -2,133 +2,62 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import { getTableName } from "drizzle-orm";
+import { localD1 } from "./sqlite-harness.mjs";
 
 const { readDatabaseConfig, getDatabase } = await import("../lib/db/client.ts");
 const { profiles } = await import("../lib/db/schema.ts");
 
-const migrationUrls = [
-  new URL("../../netlify/database/migrations/0000_application.sql", import.meta.url),
-  new URL("../../netlify/database/migrations/0001_account_data.sql", import.meta.url),
-  new URL("../../netlify/database/migrations/0002_comments_moderation.sql", import.meta.url),
-  new URL("../../netlify/database/migrations/0003_community_cursor_scrub.sql", import.meta.url),
-  new URL("../../netlify/database/migrations/0004_notification_feed_cursor.sql", import.meta.url),
-  new URL("../../netlify/database/migrations/0005_notification_pending.sql", import.meta.url),
-  new URL("../../netlify/database/migrations/0006_progression.sql", import.meta.url),
-  new URL("../../netlify/database/migrations/0007_reader_session_source.sql", import.meta.url),
-];
+const migrationUrl = new URL("../migrations/0000_cloudflare_d1.sql", import.meta.url);
 
 async function freshDatabase() {
-  const db = new PGlite();
-  let sql = "";
-  for (const url of migrationUrls) {
-    const next = await readFile(fileURLToPath(url), "utf8");
-    sql += `${next}\n`;
-    await db.exec(next);
-  }
+  const db = localD1();
+  const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
+  await db.exec(sql);
   return { db, sql };
 }
 
-test("migrations are plain SQL in Netlify's numbered order", async () => {
-  const entries = await readdir(fileURLToPath(new URL("../../netlify/database/migrations/", import.meta.url)), { withFileTypes: true });
-  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
-  assert.deepEqual(files, [
-    "0000_application.sql",
-    "0001_account_data.sql",
-    "0002_comments_moderation.sql",
-    "0003_community_cursor_scrub.sql",
-    "0004_notification_feed_cursor.sql",
-    "0005_notification_pending.sql",
-    "0006_progression.sql",
-    "0007_reader_session_source.sql",
-  ]);
-  for (const url of migrationUrls) {
-    assert.doesNotMatch(await readFile(fileURLToPath(url), "utf8"), /--> statement-breakpoint/);
-  }
+test("migration is a single numbered D1 baseline", async () => {
+  const entries = await readdir(fileURLToPath(new URL("../migrations/", import.meta.url)), { withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".sql")).map((entry) => entry.name).sort();
+  assert.deepEqual(files, ["0000_cloudflare_d1.sql"]);
+  const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
+  assert.match(sql, /CREATE TABLE `auth_users`/);
+  assert.match(sql, /CREATE TABLE `profiles`/);
+  assert.doesNotMatch(sql, /CREATE\s+SCHEMA/i);
 });
 
-test("Drizzle journal and snapshots live beside the Netlify migrations", async () => {
-  const dir = new URL("../../netlify/database/migrations/", import.meta.url);
-  const journalUrl = new URL("meta/_journal.json", dir);
-  const journal = JSON.parse(await readFile(fileURLToPath(journalUrl), "utf8"));
-  assert.equal(journal.dialect, "postgresql");
-  assert.deepEqual(journal.entries.map((entry) => entry.tag), migrationUrls.map((url) => {
-    const name = url.pathname.split("/").at(-1);
-    return name.replace(/\.sql$/, "");
-  }));
+test("Drizzle journal is the SQLite journal beside the D1 migration", async () => {
+  const dir = new URL("../migrations/", import.meta.url);
+  const journal = JSON.parse(await readFile(fileURLToPath(new URL("meta/_journal.json", dir)), "utf8"));
+  assert.equal(journal.dialect, "sqlite");
+  assert.deepEqual(journal.entries.map((entry) => entry.tag), ["0000_cloudflare_d1"]);
   const snapshots = (await readdir(fileURLToPath(new URL("meta/", dir)))).filter((name) => name.endsWith("_snapshot.json"));
   assert.equal(snapshots.length, journal.entries.length);
-  await assert.rejects(readFile(fileURLToPath(new URL("../../web/drizzle/meta/_journal.json", import.meta.url))), { code: "ENOENT" });
 });
 
-test("application migrations own account tables and never touch Neon Auth tables", async () => {
+test("migration owns only application and auth user tables", async () => {
   const { db, sql } = await freshDatabase();
   try {
-    assert.doesNotMatch(sql, /neon_auth/i, "Drizzle SQL must not manage Neon-owned identity tables");
-    assert.doesNotMatch(sql, /CREATE\s+SCHEMA/i);
-
-    const tables = await db.query(`
-      SELECT table_schema, table_name
-      FROM information_schema.tables
-      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-      ORDER BY table_schema, table_name
-    `);
+    assert.doesNotMatch(sql, /neon_auth/i, "SQL must not manage a managed-auth schema");
+    const tables = await db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
     assert.deepEqual(
-      tables.rows.map((row) => `${row.table_schema}.${row.table_name}`),
+      tables.rows.map((row) => row.name),
       [
-        "public.action_events",
-        "public.chapter_progress",
-        "public.comment_reports",
-        "public.comment_threads",
-        "public.comments",
-        "public.cultivation_realms",
-        "public.library_entries",
-        "public.notification_cursors",
-        "public.notification_pending",
-        "public.notifications",
-        "public.profiles",
-        "public.reader_checkpoints",
-        "public.reader_preferences",
-        "public.reader_sessions",
-        "public.reading_completions",
-        "public.user_roles",
-        "public.xp_events",
+        "action_events", "auth_users", "chapter_progress", "comment_reports", "comment_threads",
+        "comments", "cultivation_realms", "library_entries", "notification_cursors",
+        "notification_pending", "notifications", "profiles", "reader_checkpoints",
+        "reader_preferences", "reader_sessions", "reading_completions", "user_roles", "xp_events",
       ],
-      "only application-owned account tables may be created",
     );
-
-    const columns = await db.query(`
-      SELECT column_name, data_type, is_nullable
-      FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = 'profiles'
-      ORDER BY ordinal_position
-    `);
-    assert.deepEqual(columns.rows, [
-      { column_name: "user_id", data_type: "text", is_nullable: "NO" },
-      { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO" },
-      { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
-      { column_name: "username", data_type: "text", is_nullable: "YES" },
-      { column_name: "display_name", data_type: "text", is_nullable: "YES" },
-      { column_name: "avatar_url", data_type: "text", is_nullable: "YES" },
-      { column_name: "total_xp", data_type: "integer", is_nullable: "NO" },
-      { column_name: "level", data_type: "integer", is_nullable: "NO" },
+    const columns = await db.query("PRAGMA table_info(profiles)");
+    assert.deepEqual(columns.rows.map((row) => [row.name, row.type.toLowerCase(), row.notnull]), [
+      ["user_id", "text", 1], ["username", "text", 0], ["display_name", "text", 0],
+      ["avatar_url", "text", 0], ["total_xp", "integer", 1], ["level", "integer", 1],
+      ["created_at", "integer", 1], ["updated_at", "integer", 1],
     ]);
-
-    const pk = await db.query(`
-      SELECT a.attname
-      FROM pg_index i
-      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-      WHERE i.indrelid = 'public.profiles'::regclass AND i.indisprimary
-    `);
-    assert.deepEqual(pk.rows.map((row) => row.attname), ["user_id"]);
-
-    const authSchemas = await db.query(`
-      SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'neon_auth'
-    `);
-    assert.equal(authSchemas.rows.length, 0, "Neon Auth owns its own schema, not this migration");
   } finally {
-    await db.close();
+    db.close();
   }
 });
 
@@ -136,28 +65,25 @@ test("profiles accept opaque user ids and enforce uniqueness inside a transactio
   const { db } = await freshDatabase();
   try {
     const opaqueId = "google|not-a-uuid|opaque-123";
-    await db.exec(`
-      INSERT INTO profiles (user_id) VALUES ('${opaqueId}');
-    `);
-    const found = await db.query("SELECT user_id FROM profiles WHERE user_id = $1", [opaqueId]);
+    await db.exec(`INSERT INTO profiles (user_id) VALUES ('${opaqueId}');`);
+    const found = await db.query("SELECT user_id FROM profiles WHERE user_id = ?", [opaqueId]);
     assert.deepEqual(found.rows, [{ user_id: opaqueId }]);
 
     await assert.rejects(
       db.exec(`INSERT INTO profiles (user_id) VALUES ('${opaqueId}');`),
-      /duplicate key|unique/i,
+      /unique/i,
     );
-
     await assert.rejects(
       db.transaction(async (tx) => {
-        await tx.query("INSERT INTO profiles (user_id) VALUES ($1)", ["rollback-user"]);
+        await tx.query("INSERT INTO profiles (user_id) VALUES (?)", ["rollback-user"]);
         throw new Error("force rollback");
       }),
       /force rollback/,
     );
-    const rolledBack = await db.query("SELECT user_id FROM profiles WHERE user_id = $1", ["rollback-user"]);
+    const rolledBack = await db.query("SELECT user_id FROM profiles WHERE user_id = ?", ["rollback-user"]);
     assert.equal(rolledBack.rows.length, 0);
   } finally {
-    await db.close();
+    db.close();
   }
 });
 
@@ -179,16 +105,16 @@ test("application tables enforce ownership keys, unique usernames and cascade cl
 
     await assert.rejects(
       db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'Duplicate', 200);"),
-      /duplicate key|unique/i,
+      /unique/i,
     );
     await assert.rejects(
       db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 9, 9, 10, 200);"),
-      /duplicate key|unique/i,
+      /unique/i,
     );
     await db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-1';");
     await assert.rejects(
       db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-2';"),
-      /duplicate key|unique/i,
+      /unique/i,
     );
 
     await db.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
@@ -201,7 +127,7 @@ test("application tables enforce ownership keys, unique usernames and cascade cl
       assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
     }
   } finally {
-    await db.close();
+    db.close();
   }
 });
 
@@ -221,44 +147,27 @@ test("realm seed and XP ledger uniqueness match the progression contract", async
     await db.exec("INSERT INTO reading_completions (user_id, chapter_id, manga_id, language, page_count, last_page_seen, reader_session_id, completed_at) VALUES ('u1','c1','m1','vi',10,10,'s1',100);");
     await assert.rejects(
       db.exec("INSERT INTO reading_completions (user_id, chapter_id, manga_id, language, page_count, last_page_seen, reader_session_id, completed_at) VALUES ('u1','c1','m1','en',10,10,'s2',200);"),
-      /duplicate key|unique/i,
+      /unique/i,
     );
     await db.exec("INSERT INTO xp_events (id, user_id, event_type, chapter_id, amount, rule_version) VALUES ('x1','u1','chapter_complete','c1',100,'progression_v1');");
     await assert.rejects(
       db.exec("INSERT INTO xp_events (id, user_id, event_type, chapter_id, amount, rule_version) VALUES ('x2','u1','chapter_complete','c1',100,'progression_v1');"),
-      /duplicate key|unique/i,
+      /unique/i,
     );
   } finally {
-    await db.close();
+    db.close();
   }
 });
 
-test("getDatabase falls back to the Netlify connection string only on Netlify", () => {
-  const previous = { NETLIFY: process.env.NETLIFY, NETLIFY_DB_URL: process.env.NETLIFY_DB_URL };
-  delete process.env.NETLIFY_DB_URL;
-  try {
-    process.env.NETLIFY = "true";
-    assert.throws(() => getDatabase(), (error) => error.name === "MissingDatabaseConnectionError");
-    process.env.NETLIFY = "false";
-    assert.throws(
-      () => getDatabase(),
-      (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("NETLIFY_DB_URL"),
-    );
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-});
-
-test("Drizzle schema and database config stay application-only and lazy", () => {
+test("database config requires the D1 binding and getDatabase stays lazy", () => {
   assert.equal(getTableName(profiles), "profiles");
   const keys = Object.keys(profiles);
   assert.ok(keys.includes("userId"));
   assert.ok(!keys.some((key) => /auth|session|account/i.test(key)));
   assert.throws(
     () => readDatabaseConfig({}),
-    (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("NETLIFY_DB_URL"),
+    (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("DB"),
   );
+  assert.deepEqual(readDatabaseConfig({ DB: {} }), { binding: "DB" });
+  assert.equal(getDatabase(), getDatabase());
 });

@@ -49,7 +49,7 @@ test("auth-not-configured is explicit and guest account pages stay usable", asyn
   await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
   await page.getByText("Chưa bật đăng nhập").waitFor();
   assert.equal(await page.locator('input[type="email"]').count(), 0, "no inert sign-in form when unconfigured");
-  assert.match(await page.locator(".account-card").first().innerText(), /Netlify Identity/);
+  assert.match(await page.locator(".account-card").first().innerText(), /SESSION_SECRET/);
   await page.screenshot({ path: join(SHOT_DIR, "account-unconfigured.png") });
 
   await page.goto(`${baseUrl}/tai-khoan/cai-dat`, { waitUntil: "networkidle" });
@@ -78,7 +78,7 @@ test("auth-not-configured is explicit and guest account pages stay usable", asyn
   await context.close();
 });
 
-test("Netlify Identity sign-in through a loopback fixture reaches the account UI", async () => {
+test("session sign-in through a loopback fixture reaches the account UI", async () => {
   const { context, page, baseUrl } = await open(configured.baseUrl);
   await installIdentityFixture(context);
   await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });

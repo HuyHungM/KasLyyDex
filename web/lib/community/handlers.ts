@@ -3,7 +3,7 @@ import "server-only";
 import type { AppDatabase } from "../db/client";
 import { DatabaseConfigurationError, getDatabase } from "../db/client";
 import { AuthConfigurationError, getAuth } from "../auth/server";
-import { identityFromNetlifyUser, type AccountIdentity } from "../auth/identity";
+import { identityFromVerifiedUser, type AccountIdentity } from "../auth/identity";
 import type { ContentClient } from "../contracts";
 import { errorEnvelope } from "../contracts";
 import { logErrorEvent, withObservedRoute } from "../observability";
@@ -53,9 +53,9 @@ export type CommunityDeps = {
 
 export { errorToResponse, privateJson };
 
-/// Testable community API factory. Production supplies the pooled database and
-/// managed-session resolver; tests supply PGlite plus an opaque id obtained
-/// from the real SDK fixture. No header or environment bypass exists here.
+/// Testable community API factory. Production supplies the D1 database and
+/// session resolver; tests supply SQLite plus an opaque verified id. No header
+/// or environment bypass exists here.
 export function createCommunityApi(deps: CommunityDeps) {
   const db = () => deps.db();
   const now = () => deps.now();
@@ -200,7 +200,7 @@ export function createCommunityApi(deps: CommunityDeps) {
 export type CommunityApi = ReturnType<typeof createCommunityApi>;
 
 export function resolveSessionIdentity(data: unknown): AccountIdentity | null {
-  return identityFromNetlifyUser(data);
+  return identityFromVerifiedUser(data);
 }
 
 function readOperatorAllowlist(env: NodeJS.ProcessEnv = process.env): string[] {

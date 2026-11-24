@@ -71,7 +71,7 @@ async function loadSession(): Promise<void> {
         publish({
           status: "unconfigured",
           user: null,
-          message: "Chưa cấu hình đăng nhập. Cần bật Netlify Identity cho site này.",
+          message: "Chưa cấu hình đăng nhập. Cần đặt SESSION_SECRET cho Worker này.",
         });
         return;
       }

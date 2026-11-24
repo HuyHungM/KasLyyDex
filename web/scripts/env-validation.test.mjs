@@ -12,13 +12,15 @@ const repoDir = fileURLToPath(new URL("../..", import.meta.url));
 const { readDatabaseConfig } = await import("../lib/db/client.ts");
 
 const REQUIRED = [
-  "NETLIFY_DB_URL",
+  "SESSION_SECRET",
+  "GOOGLE_CLIENT_ID",
   "RUST_CONTENT_API_ORIGIN",
   "READER_TICKET_SECRET",
 ];
 
 const FORBIDDEN = [
   "DATABASE_URL",
+  "NETLIFY_DB_URL",
   "NEON_AUTH_BASE_URL",
   "NEON_AUTH_COOKIE_SECRET",
 ];
@@ -38,11 +40,10 @@ const SWEEP_PATTERNS = [
   "@neon/auth", "NEON_AUTH_", "DATABASE_URL", "@vercel/functions", "vercel deploy",
 ];
 
-test("Netlify build config pins base, command and Node version", async () => {
-  const config = await readFile(rootFile("netlify.toml"), "utf8");
-  assert.match(config, /^\s*base\s*=\s*"web"\s*$/m);
-  assert.match(config, /^\s*command\s*=\s*".*npm run build"\s*$/m);
-  assert.match(config, /^\s*NODE_VERSION\s*=\s*"22"\s*$/m);
+test("Cloudflare worker config declares the D1 binding and auth secrets", async () => {
+  const config = await readFile(rootFile("web/cloudflare.config.ts"), "utf8");
+  assert.match(config, /DB: bindings\.d1\(\{ name: "kaslyydex"/);
+  assert.match(config, /SESSION_SECRET: bindings\.secret\(\)/);
 });
 
 test(".env.example no longer documents removed platform names", () => {
@@ -51,9 +52,9 @@ test(".env.example no longer documents removed platform names", () => {
   }
 });
 
-test("Netlify runbook replaces the old platform runbook", async () => {
-  assert.ok((await readFile(rootFile("infra/netlify.md"), "utf8")).length > 0);
-  await assert.rejects(access(rootFile("infra/vercel.md")));
+test("Cloudflare runbook replaces the old platform runbook", async () => {
+  assert.ok((await readFile(rootFile("infra/cloudflare.md"), "utf8")).length > 0);
+  await assert.rejects(access(rootFile("infra/netlify.md")));
 });
 
 test(".env.example documents every required runtime name without values", () => {
@@ -63,30 +64,23 @@ test(".env.example documents every required runtime name without values", () => 
   assert.doesNotMatch(example, /NEXT_PUBLIC_(?:DATABASE|NEON|GOOGLE_CLIENT_SECRET|READER_TICKET)/);
 });
 
-test("database config reads only the Netlify connection name", () => {
-  const url = "postgresql://u:" + "p@localhost/db";
-  assert.deepEqual(readDatabaseConfig({ NETLIFY_DB_URL: url }), { url });
+test("database config reads only the D1 binding name", () => {
+  assert.deepEqual(readDatabaseConfig({ DB: {} }), { binding: "DB" });
   assert.throws(
     () => readDatabaseConfig({}),
     (error) => {
       assert.equal(error.code, "DATABASE_NOT_CONFIGURED");
-      assert.deepEqual(error.missing, ["NETLIFY_DB_URL"]);
+      assert.deepEqual(error.missing, ["DB"]);
       return true;
     },
   );
 });
 
 test("configured values are shape-checked without being printed", () => {
-  const invalidDatabase = (value) => {
-    try {
-      const parsed = new URL(value);
-      return !["postgres:", "postgresql:"].includes(parsed.protocol);
-    } catch {
-      return true;
-    }
-  };
-  assert.equal(invalidDatabase("postgresql://reader@db.example.com/kaslyydex"), false);
-  assert.equal(invalidDatabase("https://db.example.com"), true);
+  const secret = process.env.SESSION_SECRET ?? "";
+  assert.ok(secret.length >= 32 || secret.length === 0);
+  const googleClientId = process.env.GOOGLE_CLIENT_ID ?? "";
+  assert.ok(!googleClientId || googleClientId.endsWith(".apps.googleusercontent.com"));
   assert.equal((process.env.READER_TICKET_SECRET ?? "").length >= 32 || !process.env.READER_TICKET_SECRET, true);
 });
 

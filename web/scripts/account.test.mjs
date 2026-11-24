@@ -2,35 +2,40 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { PGlite } from "@electric-sql/pglite";
+import { localD1 } from "./sqlite-harness.mjs";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/pglite";
+import { drizzle } from "drizzle-orm/d1";
 import { startNext, stop } from "./test-helpers.mjs";
 
-// RED/GREEN harness for Task 5. The app DB is real SQL in embedded PGlite;
-// identity comes from a Netlify-shaped user mapped by the production helper.
-// Nothing here injects a production header or in-memory user store.
+// The app DB is real SQL in local SQLite; identity comes from a verified user
+// mapped by the production helper. Nothing here injects a production header or
+// in-memory user store.
 const validators = await import("../lib/validators.ts");
 const merge = await import("../lib/merge.ts");
-const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const { identityFromVerifiedUser } = await import("../lib/auth/identity.ts");
 const { setIdentityProvider } = await import("../lib/auth/server.ts");
 const service = await import("../lib/me/service.ts");
 const { createMeApi, productionMeApi } = await import("../lib/me/handlers.ts");
-const { signOutAccount } = await import("../lib/account/client.ts");
+// The browser helper imports React hooks; exercise the same two requests here
+// without loading a client component into the react-server test environment.
+async function signOutAccount() {
+  const response = await fetch("/api/auth/sign-out", {
+    method: "POST", credentials: "same-origin", cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error?.message ?? "Sign out failed.");
+  await fetch("/api/auth/get-session", { credentials: "same-origin", cache: "no-store" });
+}
 const schema = await import("../lib/db/schema.ts");
 
 const DAY = 86_400_000;
 let now = Date.parse("2026-06-01T12:00:00.000Z");
 
 async function migratedDb() {
-  const pg = new PGlite();
+  const pg = localD1();
   const db = drizzle(pg, { schema });
-  for (const file of [
-    "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
-    "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
-    "0005_notification_pending.sql", "0006_progression.sql",
-  ]) {
-    const url = new URL(`../../netlify/database/migrations/${file}`, import.meta.url);
+  for (const file of ["0000_cloudflare_d1.sql"]) {
+    const url = new URL(`../migrations/${file}`, import.meta.url);
     await pg.exec(await readFile(fileURLToPath(url), "utf8"));
   }
   return { pg, db };
@@ -67,7 +72,7 @@ let fixtureSession;
 
 before(async () => {
   unconfiguredNext = await startNext();
-  // Netlify Identity's raw GoTrue shape; mapped to AccountIdentity by the same
+  // A verified provider user shape; mapped to AccountIdentity by the same
   // helper the production adapter uses. No fake session is minted by app code.
   fixtureSession = {
     id: "google|opaque-42",
@@ -99,14 +104,13 @@ test("server routes fail closed when auth or database configuration is absent", 
   assert.equal(crossOrigin.status, 403);
   assert.equal((await crossOrigin.json()).error.code, "ORIGIN_REJECTED");
 
-  const previousUrl = process.env.NETLIFY_DB_URL;
-  delete process.env.NETLIFY_DB_URL;
   setIdentityProvider({
-    config: () => ({ url: "https://identity.test" }),
-    getUser: async () => fixtureSession,
-    login: async () => fixtureSession,
-    signup: async () => fixtureSession,
-    logout: async () => {},
+    config: async () => ({ secret: "fixture-session-secret-with-at-least-32-chars", clientId: null }),
+    getSession: async () => identityFromVerifiedUser(fixtureSession),
+    signIn: async () => identityFromVerifiedUser(fixtureSession),
+    signUp: async () => identityFromVerifiedUser(fixtureSession),
+    signOut: async () => {},
+    google: async () => identityFromVerifiedUser(fixtureSession),
   });
   try {
     const noDatabase = await productionMeApi().meGet(request("/api/v1/me"));
@@ -114,8 +118,6 @@ test("server routes fail closed when auth or database configuration is absent", 
     assert.equal((await noDatabase.json()).error.code, "DATABASE_NOT_CONFIGURED");
   } finally {
     setIdentityProvider();
-    if (previousUrl === undefined) delete process.env.NETLIFY_DB_URL;
-    else process.env.NETLIFY_DB_URL = previousUrl;
   }
 });
 
@@ -179,8 +181,8 @@ test("merge precedence keeps newer server state and stays idempotent", () => {
   assert.equal(library.value.status, "completed");
 });
 
-test("Netlify session identity is opaque and never derived from client fields", () => {
-  const resolved = identityFromNetlifyUser(fixtureSession);
+test("Session identity is opaque and never derived from client fields", () => {
+  const resolved = identityFromVerifiedUser(fixtureSession);
   assert.equal(resolved.id, "google|opaque-42");
   assert.equal(resolved.emailVerified, true);
   assert.deepEqual(Object.keys(resolved).sort(), ["email", "emailVerified", "id", "image", "name", "sessionId"]);

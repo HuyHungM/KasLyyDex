@@ -5,7 +5,7 @@
 Deployment is owner-gated. No cloud login, site/project creation, environment
 write, deploy, domain change or rollback was performed. No Preview or Production
 URL is asserted here. Non-empty values for secrets are intentionally absent from
-Git. Platform details live in `infra/netlify.md` (frontend) and
+Git. Platform details live in `infra/cloudflare.md` (frontend) and
 `infra/northflank.md` (Axum content service); this document is the shared gate
 and handoff checklist.
 
@@ -41,24 +41,24 @@ baseline exception; CI scopes formatting to maintained packages.
 
 ## Required environment names
 
-Set through the Netlify site settings or CLI, never in Git. See
-`web/.env.example`; empty values only.
+Set through Cloudflare Worker secrets/vars, never in Git. See
+`web/.env.example`; empty values only. The D1 `DB` binding is declared in
+`web/cloudflare.config.ts` and is not an environment variable.
 
 ```
-NETLIFY_DB_URL
+SESSION_SECRET
+GOOGLE_CLIENT_ID
+RUST_CONTENT_API_ORIGIN    # Axum service origin used by the Next BFF
 READER_TICKET_SECRET
 OPERATOR_EMAIL_ALLOWLIST   # optional operator bootstrap, provided out of band
-GOOGLE_CLIENT_ID
-GOOGLE_CLIENT_SECRET
-RUST_CONTENT_API_ORIGIN    # Axum service origin used by the Next BFF
-NEXT_PUBLIC_APP_URL
 ```
 
-Identity is provisioned by Netlify Identity; it has no application environment
-configuration. `READER_TICKET_SECRET` must be at least 32 characters; without it
-progression routes fail closed. `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
-document owner-managed provider inputs; the Identity adapter does not read them
-directly. Never prefix server secrets with `NEXT_PUBLIC_`.
+Session auth is worker-native: a signed HttpOnly cookie plus D1-backed users.
+`SESSION_SECRET` must be at least 32 characters. `GOOGLE_CLIENT_ID` is the
+public Google Identity Services client id; Google ID tokens are verified in the
+Worker and no client secret is used. `READER_TICKET_SECRET` must be at least 32
+characters; without it progression routes fail closed. Never prefix server
+secrets with `NEXT_PUBLIC_`.
 
 ## Health and observability
 
@@ -70,7 +70,8 @@ directly. Never prefix server secrets with `NEXT_PUBLIC_`.
   `--liveness-only` before DB configuration exists.
 - Security headers are set on Next (`next.config.ts`) and Axum. CSP allows
   same-origin `/api/content/img` and `/_next/image`, `data:`/`blob:` images and
-  `'wasm-unsafe-eval'`; it lists no third-party origins.
+  `'wasm-unsafe-eval'`; the only third-party origin is `accounts.google.com` for
+  Google Identity Services.
 - Structured JSON logs carry `correlationId` and redact Cookie, Authorization,
   tickets, passwords, emails, database URLs and upstream keys. Upstream errors
   returned to clients are generic (`UPSTREAM_ERROR`, 502).
@@ -85,24 +86,24 @@ directly. Never prefix server secrets with `NEXT_PUBLIC_`.
 
 ## Manual external gates (not run by CI)
 
-1. Owner links the Netlify site and injects the environment names above for the
-   chosen deploy context. No project settings were changed by this migration.
-2. Enable Netlify Identity, configure the Google provider with owner credentials
-   and complete a real sign-in plus JWT/JWKS verification on an HTTPS Deploy
-   Preview. Local browser tests use a loopback fixture only.
+1. Owner links the Cloudflare Worker and injects the environment names above for
+   the chosen deploy context. No project settings were changed by this migration.
+2. Register an OAuth client in Google Cloud with an HTTPS redirect to the
+   deployed origin, set `GOOGLE_CLIENT_ID`, and complete a real ID-token sign-in
+   on a preview URL. Local browser tests use fixtures only.
 3. Point `RUST_CONTENT_API_ORIGIN` at the separately deployed Axum service and
    verify content proxy, liveness and readiness.
-4. Create a dedicated database branch for any Preview. Apply migrations with
-   `npx drizzle-kit migrate` using the owner-supplied connection string; confirm
-   only application tables are created.
+4. For a preview D1 database, apply `web/migrations/0000_cloudflare_d1.sql` with
+   `d1_query` (or `wrangler d1 execute`) and confirm only application tables are
+   created. Never drop tables to roll back.
 5. Verify the built app's health/ready, account, community and progression flows
    plus error paths in a real browser. Record the actual deploy URL/context. Do
    not call these gates passed until observed.
 
 ## Rollback (manual, owner-gated)
 
-- Frontend: use Netlify deploy history to publish a previous successful deploy,
-  then rerun `node infra/healthcheck <owner-supplied-deployment-url>`.
+- Frontend: promote the previous Cloudflare Worker version, then rerun
+  `node infra/healthcheck <owner-supplied-deployment-url>`.
 - Axum service: use the Northflank build rollback in `infra/northflank.md`.
 - Database: capture the current migration log before applying migrations; there
   is no automatic down command. Stop writes, restore the database branch to the

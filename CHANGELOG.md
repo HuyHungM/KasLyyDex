@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — Cloudflare Workers, D1 and worker-native auth
+
+- Replace the managed Postgres database with Cloudflare D1: Drizzle SQLite
+  schema, `web/migrations/0000_cloudflare_d1.sql` applied to `kaslyydex`, and a
+  `DB` binding in `web/cloudflare.config.ts`.
+- Replace the managed identity SDK with worker-native sessions: password or
+  Google ID-token sign-in, D1-backed users, signed HttpOnly SameSite=Lax cookies
+  and structured failure when `GOOGLE_CLIENT_ID` is absent.
+- Keep `/api/auth/*` response shapes and do not change the Northflank Axum
+  service or `RUST_CONTENT_API_ORIGIN`.
+
 ## Unreleased — MangaDex-only web and hero search
 
 - Remove the alternate catalog from the web client: content ids are MangaDex
@@ -70,7 +81,7 @@ release gate; no live verification is claimed here.
 
 - Add secret-free GitHub Actions release gate: Rust scoped fmt/clippy/tests,
   Axum build, frozen npm install, typecheck/lint, WASM rebuild before Next build,
-  aggregate Node/PGlite/API tests, Playwright browser suites and diff check.
+  aggregate Node/SQLite/API tests, Playwright browser suites and diff check.
 - Add Next/Axum security headers. CSP allows same-origin images and WASM without
   third-party sources; health/readiness separated; readiness is bounded and
   returns only missing env names.

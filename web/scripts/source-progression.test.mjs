@@ -3,15 +3,15 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { PGlite } from "@electric-sql/pglite";
+import { localD1 } from "./sqlite-harness.mjs";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/pglite";
+import { drizzle } from "drizzle-orm/d1";
 
-// Task 6 RED/GREEN harness. Real SQL migrations run in embedded PostgreSQL and
-// identity comes from the Netlify user mapper. No production bypass: the clock,
+// Task 6 RED/GREEN harness. Real SQL migrations run in local SQLite and
+// identity comes from the verified-user mapper. No production bypass: the clock,
 // content fixture and failure hook exist only on this test factory.
 const apiModule = await import("../lib/progression-api.ts");
-const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const { identityFromVerifiedUser } = await import("../lib/auth/identity.ts");
 const { setIdentityProvider } = await import("../lib/auth/server.ts");
 const { ContentClientError } = await import("../lib/contracts.ts");
 const schema = await import("../lib/db/schema.ts");
@@ -25,18 +25,13 @@ const SECRET = "fixture-reader-secret-with-at-least-32-chars";
 const T0 = Date.parse("2026-11-21T10:00:00.000Z");
 let now = T0;
 
-const migrationFiles = [
-  "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
-  "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
-  "0005_notification_pending.sql", "0006_progression.sql",
-  "0007_reader_session_source.sql",
-];
+const migrationFiles = ["0000_cloudflare_d1.sql"];
 
 async function migratedDb() {
-  const pg = new PGlite();
+  const pg = localD1();
   const db = drizzle(pg, { schema });
   for (const file of migrationFiles) {
-    const url = new URL(`../../netlify/database/migrations/${file}`, import.meta.url);
+    const url = new URL(`../migrations/${file}`, import.meta.url);
     // RED runs before the additive source migration exists; skip it so the
     // failures reflect missing source behaviour, not a missing file.
     if (!existsSync(fileURLToPath(url))) continue;
@@ -108,7 +103,7 @@ const fixtureUser = {
   email_verified: true,
   user_metadata: { full_name: "Fixture Reader" },
 };
-const realIdentity = identityFromNetlifyUser(fixtureUser);
+const realIdentity = identityFromVerifiedUser(fixtureUser);
 assert.equal(realIdentity?.id, fixtureUser.id);
 
 afterEach(() => setIdentityProvider());
@@ -117,17 +112,12 @@ afterEach(() => setIdentityProvider());
 test("additive migration adds reader_sessions.source defaulting to mangadex", async () => {
   const { pg } = await migratedDb();
   try {
-    const column = await pg.query(
-      "select data_type, is_nullable, column_default from information_schema.columns "
-      + "where table_schema = 'public' and table_name = 'reader_sessions' and column_name = 'source'",
-    );
-    assert.equal(column.rows.length, 1);
-    assert.equal(column.rows[0].data_type, "text");
-    assert.equal(column.rows[0].is_nullable, "NO");
-    assert.equal(column.rows[0].column_default, "'mangadex'::text");
-    const auth = await pg.query(
-      "select count(*)::int as n from information_schema.schemata where schema_name = 'neon_auth'",
-    );
+    const column = await pg.query("PRAGMA table_info(reader_sessions)");
+    const source = column.rows.find((row) => row.name === "source");
+    assert.equal(source?.type.toLowerCase(), "text");
+    assert.equal(source?.notnull, 1);
+    assert.equal(source?.dflt_value, "'mangadex'");
+    const auth = await pg.query("select count(*) as n from sqlite_master where name like '%neon_auth%'");
     assert.equal(auth.rows[0].n, 0, "the migration must never manage Neon Auth tables");
   } finally {
     await pg.close();
@@ -348,11 +338,12 @@ test("production route fails closed without READER_TICKET_SECRET", async () => {
   const previous = process.env.READER_TICKET_SECRET;
   delete process.env.READER_TICKET_SECRET;
   setIdentityProvider({
-    config: () => ({ url: "https://example.test/.netlify/identity" }),
-    getUser: async () => fixtureUser,
-    login: async () => fixtureUser,
-    signup: async () => fixtureUser,
-    logout: async () => {},
+    config: async () => ({ secret: "fixture-session-secret-with-at-least-32-chars", clientId: null }),
+    getSession: async () => realIdentity,
+    signIn: async () => realIdentity,
+    signUp: async () => realIdentity,
+    signOut: async () => {},
+    google: async () => realIdentity,
   });
   try {
     const res = await apiModule.wrapProgressionRoute(

@@ -1,7 +1,6 @@
 import "server-only";
 
-import { Pool } from "pg";
-import { DatabaseConfigurationError, readDatabaseConfig } from "./db/client";
+import { DatabaseConfigurationError, readDatabaseConfig, resolveD1 } from "./db/client";
 
 export type ReadinessCheck = "ok" | "missing" | "invalid" | "unavailable" | "skipped";
 
@@ -25,25 +24,13 @@ function invalidContentOrigin(env: NodeJS.ProcessEnv): boolean {
   }
 }
 
-async function databaseReachable(url: string): Promise<boolean> {
-  const pool = new Pool({
-    connectionString: url,
-    max: 1,
-    connectionTimeoutMillis: CHECK_TIMEOUT_MS,
-    query_timeout: CHECK_TIMEOUT_MS,
-  });
+async function databaseReachable(): Promise<boolean> {
   try {
-    const client = await pool.connect();
-    try {
-      await client.query("SELECT 1");
-      return true;
-    } finally {
-      client.release();
-    }
+    const binding = await resolveD1();
+    await binding.prepare("SELECT 1").first();
+    return true;
   } catch {
     return false;
-  } finally {
-    await pool.end().catch(() => {});
   }
 }
 
@@ -65,16 +52,16 @@ async function upstreamReachable(origin: string): Promise<boolean> {
 /// DB and content-upstream probes. Missing local config is a normal 503.
 export async function checkReadiness(env: NodeJS.ProcessEnv = process.env): Promise<ReadinessReport> {
   const missing: string[] = [];
-  let databaseUrl = "";
+  let hasDatabase = false;
   let contentOrigin = "";
 
   try {
-    databaseUrl = readDatabaseConfig(env).url;
+    hasDatabase = Boolean(readDatabaseConfig(env).binding);
   } catch (error) {
     if (error instanceof DatabaseConfigurationError && error.missing.length > 0) {
       missing.push(...error.missing);
     } else {
-      missing.push("NETLIFY_DB_URL");
+      missing.push("DB");
     }
   }
   const ticket = env.READER_TICKET_SECRET?.trim();
@@ -89,7 +76,7 @@ export async function checkReadiness(env: NodeJS.ProcessEnv = process.env): Prom
     database: "skipped",
     upstream: "skipped",
   };
-  if (databaseUrl) checks.database = (await databaseReachable(databaseUrl)) ? "ok" : "unavailable";
+  if (hasDatabase) checks.database = (await databaseReachable()) ? "ok" : "unavailable";
   if (contentOrigin) checks.upstream = (await upstreamReachable(contentOrigin)) ? "ok" : "unavailable";
 
   return {

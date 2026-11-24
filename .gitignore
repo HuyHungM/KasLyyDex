@@ -20,3 +20,10 @@ web/.test-screenshots
 web/.test-*.log
 /.test-*.log
 web/*.tsbuildinfo
+
+/dist/
+.vinext/
+.cloudflare/
+
+# Legacy Netlify local state
+.netlify

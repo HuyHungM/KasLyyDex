@@ -2,16 +2,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { PGlite } from "@electric-sql/pglite";
+import { localD1 } from "./sqlite-harness.mjs";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/pglite";
+import { drizzle } from "drizzle-orm/d1";
 
-// Task 5 RED/GREEN harness. Real SQL migrations run in embedded PostgreSQL and
-// identity comes from a Netlify-shaped user mapped by the production helper.
+// Task 5 RED/GREEN harness. Real SQL migrations run in local SQLite and
+// identity comes from a verified user mapped by the production helper.
 // No production bypass: the clock, content fixture and hook exist only here.
 const progression = await import("../lib/progression.ts");
 const apiModule = await import("../lib/progression-api.ts");
-const { identityFromNetlifyUser } = await import("../lib/auth/identity.ts");
+const { identityFromVerifiedUser } = await import("../lib/auth/identity.ts");
 const schema = await import("../lib/db/schema.ts");
 const meService = await import("../lib/me/service.ts");
 
@@ -22,18 +22,13 @@ const SECRET = "fixture-reader-secret-with-at-least-32-chars";
 const T0 = Date.parse("2026-11-21T10:00:00.000Z");
 let now = T0;
 
-const migrationFiles = [
-  "0000_application.sql", "0001_account_data.sql", "0002_comments_moderation.sql",
-  "0003_community_cursor_scrub.sql", "0004_notification_feed_cursor.sql",
-  "0005_notification_pending.sql", "0006_progression.sql",
-  "0007_reader_session_source.sql",
-];
+const migrationFiles = ["0000_cloudflare_d1.sql"];
 
 async function migratedDb() {
-  const pg = new PGlite();
+  const pg = localD1();
   const db = drizzle(pg, { schema });
   for (const file of migrationFiles) {
-    const url = new URL(`../../netlify/database/migrations/${file}`, import.meta.url);
+    const url = new URL(`../migrations/${file}`, import.meta.url);
     await pg.exec(await readFile(fileURLToPath(url), "utf8"));
   }
   return { pg, db };
@@ -94,8 +89,8 @@ async function checkpoints(handler, ticket, pages) {
 let realIdentity;
 
 before(async () => {
-  // Netlify Identity's raw GoTrue shape; the same mapping the adapter uses.
-  realIdentity = identityFromNetlifyUser({
+  // A verified user shape; the same mapping the adapter uses.
+  realIdentity = identityFromVerifiedUser({
     id: "google|opaque-42",
     email: "reader@example.com",
     email_verified: true,

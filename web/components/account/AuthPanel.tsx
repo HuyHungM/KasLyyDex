@@ -94,11 +94,11 @@ export default function AuthPanel() {
     }
   }
 
-  function google() {
+  async function google() {
     setMessage(null);
     setBusy(true);
     try {
-      signInWithGoogle();
+      await signInWithGoogle();
     } catch (error) {
       setBusy(false);
       setMessage(error instanceof Error ? error.message : "Google đăng nhập thất bại.");

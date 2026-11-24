@@ -3,7 +3,7 @@ import "server-only";
 import type { AppDatabase } from "../db/client";
 import { DatabaseConfigurationError, getDatabase } from "../db/client";
 import { AuthConfigurationError, getAuth } from "../auth/server";
-import { identityFromNetlifyUser, type AccountIdentity } from "../auth/identity";
+import { identityFromVerifiedUser, type AccountIdentity } from "../auth/identity";
 import { errorEnvelope } from "../contracts";
 import { logErrorEvent, withObservedRoute } from "../observability";
 import {
@@ -41,23 +41,26 @@ export function privateJson(data: unknown, status = 200): Response {
 
 export function errorToResponse(error: unknown): Response {
   logErrorEvent(error);
+  // Drizzle wraps driver errors; inspect the cause chain for config failures.
+  let root: unknown = error;
+  while (root instanceof Error && "cause" in root && root.cause) root = root.cause;
   if (error instanceof ValidationError) {
     return privateJson(errorEnvelope(error.code, error.message), error.status);
   }
   if (error instanceof ServiceError) {
     return privateJson(errorEnvelope(error.code, error.message), error.status);
   }
-  if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
-    const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
-    if (error.missing.length > 0) details.missing = error.missing.join(",");
-    return privateJson(errorEnvelope(error.code, error.message, details), 503);
+  if (root instanceof AuthConfigurationError || root instanceof DatabaseConfigurationError) {
+    const details: Record<string, string> = { service: root instanceof AuthConfigurationError ? "auth" : "database" };
+    if (root.missing.length > 0) details.missing = root.missing.join(",");
+    return privateJson(errorEnvelope(root.code, root.message, details), 503);
   }
   return privateJson(errorEnvelope("INTERNAL_ERROR", "Account request failed."), 500);
 }
 
-/// Testable account API factory. Production route files supply the real pooled
-/// database and managed-session resolver; tests supply PGlite plus an identity
-/// obtained from the real SDK fixture. No header/env bypass exists here.
+/// Testable account API factory. Production route files supply the D1 database
+/// and session resolver; tests supply SQLite plus a verified identity. No
+/// header/env bypass exists here.
 export function createMeApi(deps: MeDeps) {
   const now = () => deps.now();
   const db = () => deps.db();
@@ -165,7 +168,7 @@ export function createMeApi(deps: MeDeps) {
 }
 
 export function resolveSessionIdentity(data: unknown): AccountIdentity | null {
-  return identityFromNetlifyUser(data);
+  return identityFromVerifiedUser(data);
 }
 
 function readOperatorAllowlist(env: NodeJS.ProcessEnv = process.env): string[] {

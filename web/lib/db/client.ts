@@ -1,12 +1,8 @@
 import "server-only";
 
-import { getConnectionString } from "@netlify/database";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/d1";
 import { errorEnvelope } from "../contracts";
 import * as schema from "./schema";
-
-export type DatabaseConfig = { url: string };
 
 export class DatabaseConfigurationError extends Error {
   readonly code: "DATABASE_NOT_CONFIGURED" | "DATABASE_CONFIG_INVALID";
@@ -24,53 +20,116 @@ export class DatabaseConfigurationError extends Error {
   }
 }
 
-export function readDatabaseConfig(env: NodeJS.ProcessEnv = process.env): DatabaseConfig {
-  const url = env.NETLIFY_DB_URL?.trim();
-  if (!url) {
+export type DatabaseConfig = { binding: string };
+
+// The binding lives in the Workers runtime, not in process.env. Keeping the
+// lookup lazy lets builds and public routes start without a D1 binding.
+export function readDatabaseConfig(env: { DB?: unknown } | NodeJS.ProcessEnv = {}): DatabaseConfig {
+  if (!(env as { DB?: unknown }).DB) {
     throw new DatabaseConfigurationError(
       "DATABASE_NOT_CONFIGURED",
       "Application database is not configured.",
-      ["NETLIFY_DB_URL"],
+      ["DB"],
     );
   }
-  try {
-    const parsed = new URL(url);
-    if (!["postgres:", "postgresql:"].includes(parsed.protocol)) throw new Error("protocol");
-  } catch {
-    throw new DatabaseConfigurationError("DATABASE_CONFIG_INVALID", "NETLIFY_DB_URL is invalid.");
-  }
-  return { url };
+  return { binding: "DB" };
 }
+
+type D1Like = {
+  prepare(sql: string): Statement;
+  batch(statements: unknown[]): Promise<Array<{ results: unknown[] }>>;
+  exec(sql: string): Promise<unknown>;
+};
+
+let bindingPromise: Promise<D1Like> | undefined;
+
+export async function resolveD1(): Promise<D1Like> {
+  if (!bindingPromise) {
+    // Variable specifier: Node tests do not resolve the Workers-only module,
+    // while Vite leaves it for workerd to resolve at runtime.
+    const moduleName = "cloudflare:workers";
+    bindingPromise = import(/* @vite-ignore */ moduleName)
+      .then((mod: unknown) => {
+        const binding = (mod as { env?: { DB?: D1Like } }).env?.DB;
+        readDatabaseConfig({ DB: binding });
+        if (!binding || typeof binding.prepare !== "function") {
+          throw new DatabaseConfigurationError("DATABASE_CONFIG_INVALID", "The D1 DB binding is invalid.", ["DB"]);
+        }
+        return binding;
+      })
+      .catch((error: unknown) => {
+        bindingPromise = undefined;
+        if (error instanceof DatabaseConfigurationError) throw error;
+        throw new DatabaseConfigurationError(
+          "DATABASE_NOT_CONFIGURED",
+          "Application database is not configured.",
+          ["DB"],
+        );
+      });
+  }
+  return bindingPromise;
+}
+
+type Statement = {
+  bind(...params: unknown[]): Statement;
+  all(): Promise<{ results: unknown[] }>;
+  run(): Promise<unknown>;
+  raw(): Promise<unknown[]>;
+  first(): Promise<unknown>;
+};
+
+// Drizzle calls prepare() synchronously but every D1 query method is async, so
+// a thin deferred facade keeps the existing synchronous db factories intact.
+const deferredD1 = {
+  prepare(sql: string): Statement {
+    return {
+      bind: (...params: unknown[]) => makeStatement(sql, params),
+      all: () => makeStatement(sql, []).all(),
+      run: () => makeStatement(sql, []).run(),
+      raw: () => makeStatement(sql, []).raw(),
+      first: () => makeStatement(sql, []).first(),
+    };
+  },
+  async batch(statements: unknown[]) {
+    const binding = await resolveD1();
+    return binding.batch(statements);
+  },
+  async exec(sql: string) {
+    const binding = await resolveD1();
+    return binding.exec(sql);
+  },
+};
+
+function makeStatement(sql: string, params: unknown[]): Statement {
+  async function invoke<T>(method: "all" | "run" | "raw" | "first"): Promise<T> {
+    const binding = await resolveD1();
+    const statement = binding.prepare(sql).bind(...params);
+    if (method === "all") return statement.all() as Promise<T>;
+    if (method === "run") return statement.run() as Promise<T>;
+    if (method === "raw") return statement.raw() as Promise<T>;
+    return statement.first() as Promise<T>;
+  }
+  return {
+    bind: (...next: unknown[]) => makeStatement(sql, next),
+    all: () => invoke<{ results: unknown[] }>("all"),
+    run: () => invoke<unknown>("run"),
+    raw: () => invoke<unknown[]>("raw"),
+    first: () => invoke<unknown>("first"),
+  };
+}
+
+export const AppDatabase = drizzle(deferredD1 as never, { schema });
+export type AppDatabase = typeof AppDatabase;
 
 export function databaseErrorResponse(error: unknown): Response | null {
-  if (!(error instanceof DatabaseConfigurationError)) return null;
+  let root: unknown = error;
+  while (root instanceof Error && "cause" in root && root.cause) root = root.cause;
+  if (!(root instanceof DatabaseConfigurationError)) return null;
   const details: Record<string, string> = { service: "database" };
-  if (error.missing.length > 0) details.missing = error.missing.join(",");
-  return Response.json(errorEnvelope(error.code, error.message, details), { status: 503 });
+  if (root.missing.length > 0) details.missing = root.missing.join(",");
+  return Response.json(errorEnvelope(root.code, root.message, details), { status: 503 });
 }
 
-function connect(url: string) {
-  const pool = new Pool({ connectionString: url, max: 5 });
-  return { pool, db: drizzle({ client: pool, schema }) };
-}
-
-export type AppDatabase = ReturnType<typeof connect>["db"];
-
-let connection: ReturnType<typeof connect> | undefined;
-
-// Pool creation stays lazy so builds and public routes need no NETLIFY_DB_URL.
-export function getDatabase() {
-  if (!connection) {
-    let url: string;
-    try {
-      url = readDatabaseConfig().url;
-    } catch (error) {
-      const absent = error instanceof DatabaseConfigurationError
-        && error.code === "DATABASE_NOT_CONFIGURED";
-      if (!absent || process.env.NETLIFY !== "true") throw error;
-      url = getConnectionString();
-    }
-    connection = connect(url);
-  }
-  return connection.db;
+export function getDatabase(): AppDatabase {
+  return AppDatabase;
 }
