@@ -392,7 +392,9 @@ test("public reads never expose hidden or removed bodies through replies", async
 
     const owner = await api(db, bob).commentsGet(request("/api/v1/comments?targetType=manga&targetId=m1"));
     const ownerBody = await owner.json();
-    assert.equal(ownerBody.items.length, 0, "hidden replies do not expose a removed root");
+    assert.equal(ownerBody.items.length, 1, "signed-in viewers keep the placeholder for a removed root");
+    assert.equal(ownerBody.items[0].body, null, "removed root body stays redacted");
+    assert.equal(ownerBody.items[0].replies.length, 0, "hidden replies stay hidden from their author");
     assert.ok(!JSON.stringify(ownerBody).includes("secret reply"));
 
     const mod = await api(db, alice, { allowlist: [alice.email] }).moderationReportsGet(

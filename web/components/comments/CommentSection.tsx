@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CommentDto, CommentListDto } from "@/lib/contracts";
 import { relDate } from "@/lib/format";
+import { realmForLevel } from "@/lib/progression";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
 
 type Props = {
@@ -51,12 +52,29 @@ function Initial({ name }: { name: string }) {
   return <span className="comment-avatar" aria-hidden="true">{(name.trim()[0] ?? "?").toUpperCase()}</span>;
 }
 
-function titleForLevel(level: number | null | undefined) {
-  const value = level ?? 1;
-  if (value >= 20) return { label: "HUYỀN THOẠI", tier: "legend" };
-  if (value >= 10) return { label: "CAO THỦ", tier: "pro" };
-  if (value >= 5) return { label: "THÀNH THẠO", tier: "skilled" };
-  return { label: "TÂN THỦ", tier: "new" };
+// Each cultivation realm gets its own frame colour, readable in both themes.
+const REALM_COLORS: Record<string, { color: string; background: string }> = {
+  mortal: { color: "#cbd5c1", background: "#2b3327" },
+  qi_refining: { color: "#67d5e5", background: "#0c3038" },
+  foundation_establishment: { color: "#8ec5ff", background: "#102b45" },
+  golden_core: { color: "#f2c94c", background: "#3a2f0b" },
+  nascent_soul: { color: "#d7a8ff", background: "#331a40" },
+  spirit_severing: { color: "#ff9ac7", background: "#401a2e" },
+  void_refinement: { color: "#a6b1ff", background: "#1c2145" },
+  body_integration: { color: "#5ee0c0", background: "#0b352e" },
+  mahayana: { color: "#ffb36b", background: "#40260f" },
+  tribulation_transcendence: { color: "#ff8a8a", background: "#3f1616" },
+  true_immortal: { color: "#8ff0a4", background: "#123b1c" },
+  immortal_king: { color: "#e3a8ff", background: "#2f1240" },
+  immortal_emperor: { color: "#ffe08a", background: "#3d2e08" },
+};
+
+function badgeForLevel(level: number | null | undefined) {
+  const realm = realmForLevel(level ?? 1);
+  return {
+    label: realm.name,
+    style: REALM_COLORS[realm.key] ?? REALM_COLORS.mortal,
+  };
 }
 
 function ActionButton({ label, onClick, disabled, danger }: {
@@ -220,9 +238,17 @@ export default function CommentSection({ targetType, targetId, label = "Bình lu
         <div className="comment-content">
           <div className="comment-author-bar">
             <strong className="comment-name">{comment.authorName}</strong>
-            <span className={`comment-badge comment-badge--${titleForLevel(comment.authorLevel).tier}`}>
-              {titleForLevel(comment.authorLevel).label}
-            </span>
+            {(() => {
+              const badge = badgeForLevel(comment.authorLevel);
+              return (
+                <span
+                  className="comment-badge"
+                  style={{ color: badge.style.color, background: badge.style.background, borderColor: badge.style.color }}
+                >
+                  {badge.label}
+                </span>
+              );
+            })()}
             <time dateTime={new Date(comment.createdAt).toISOString()} title={new Date(comment.createdAt).toLocaleString("vi-VN")}>
               {relDate(new Date(comment.createdAt).toISOString())}
             </time>

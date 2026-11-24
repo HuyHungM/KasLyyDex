@@ -686,14 +686,6 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
   border: 1px solid currentColor; border-radius: 6px;
   font-size: .62rem; font-weight: 800; letter-spacing: .06em;
 }
-.comment-badge--legend { color: #f2c94c; background: #3a2f0b; }
-.comment-badge--pro { color: #67d5e5; background: #0c3038; }
-.comment-badge--skilled { color: #a8e063; background: #1e3315; }
-.comment-badge--new { color: #e6b980; background: #38291a; }
-:root[data-theme="light"] .comment-badge--legend { color: #8a6508; background: #fff4cc; }
-:root[data-theme="light"] .comment-badge--pro { color: #0b7285; background: #d9f4f7; }
-:root[data-theme="light"] .comment-badge--skilled { color: #2f6b18; background: #e6f4d7; }
-:root[data-theme="light"] .comment-badge--new { color: #8a5a21; background: #f7ead6; }
 .comment-bubble {
   display: grid; gap: 8px; padding: 12px 14px;
   border: 1px solid var(--line); border-radius: 12px; background: var(--surface);

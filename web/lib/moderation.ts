@@ -177,23 +177,31 @@ export async function listComments(
       eq(tables.comments.targetType, targetType),
       eq(tables.comments.targetId, targetId),
       isNull(tables.comments.parentId),
-      visibility,
+      // Signed-in viewers keep REMOVED roots as placeholders so their visible
+      // replies stay attached; hidden roots and all guest reads stay public-only.
+      viewerId
+        ? or(
+          eq(tables.comments.status, "visible"),
+          eq(tables.comments.status, "removed"),
+          and(eq(tables.comments.status, "hidden"), eq(tables.comments.userId, viewerId)),
+        )
+        : visibility,
       cursor ? beforeCursor(cursor.time, cursor.id) : undefined,
     ))
     .orderBy(desc(tables.comments.createdAt), desc(tables.comments.id))
     .limit(limit + 1);
   const hasMore = roots.length > limit;
   const page = roots.slice(0, limit);
-  const visibleRootIds = page.filter((row) => row.comment.status === "visible").map((row) => row.comment.id);
+  const rootIds = page.map((row) => row.comment.id);
 
-  const replies = visibleRootIds.length > 0
+  const replies = rootIds.length > 0
     ? await db.select({
       comment: tables.comments,
       authorName: tables.profiles.displayName,
     authorLevel: tables.profiles.level,
     }).from(tables.comments)
       .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
-      .where(and(inArray(tables.comments.parentId, visibleRootIds), visibility))
+      .where(and(inArray(tables.comments.parentId, rootIds), eq(tables.comments.status, "visible")))
       .orderBy(tables.comments.createdAt, tables.comments.id)
       .limit(500)
     : [];
