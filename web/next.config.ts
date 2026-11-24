@@ -8,7 +8,7 @@ const csp = [
   "base-uri 'self'",
   "object-src 'none'",
   `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://accounts.google.com${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
-  "style-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline' https://accounts.google.com",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
   "connect-src 'self' https://accounts.google.com",
