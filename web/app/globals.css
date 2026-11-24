@@ -162,7 +162,7 @@ button:disabled { cursor: default; }
   to { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .feature-animate { animation: none; }
+  .feature-animate, .feature-art.feature-animate { animation: none; }
 }
 .rank-switch {
   display: flex; gap: 4px; margin: 12px 14px 4px; padding: 3px;
@@ -501,10 +501,8 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 }
 @media (prefers-reduced-motion: no-preference) {
   @keyframes shimmer { 50% { opacity: .57; } }
-  @keyframes feature-in { from { opacity: 0; transform: translateY(6px); } }
   @keyframes img-in { from { opacity: 0; transform: translateY(4px); } }
   .skel, .reader-skel { animation: shimmer 1.6s ease-in-out infinite; }
-  .feature-copy { animation: feature-in var(--dur-base) var(--ease-out) both; }
   :is(.btn, .icon-btn, .nav-btn):active:not(:disabled) {
     transform: translateY(1px);
     transition: transform var(--dur-fast) var(--ease-out);
