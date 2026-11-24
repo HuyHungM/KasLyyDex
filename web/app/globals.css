@@ -514,7 +514,8 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 }
 
 /* Account flows: an editorial two-panel card with a lime accent rail. */
-.account-grid { display: grid; gap: 18px; max-width: 860px; }
+.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; max-width: 960px; }
+.account-grid > .auth-shell { grid-column: 1 / -1; }
 .account-card { padding: 22px; width: 100%; }
 .account-card h2 { font-size: 1.25rem; margin-bottom: 10px; }
 .account-form { display: grid; gap: 12px; margin: 16px 0; }
@@ -603,7 +604,19 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .auth-ghost:hover { color: var(--text); background: var(--hover); }
 .auth-actions { display: flex; flex-wrap: wrap; gap: 9px; }
 .auth-foot { font-size: .76rem; }
+.auth-check { display: flex; align-items: center; gap: 9px; min-height: 44px; color: var(--muted); font-size: .86rem; }
+.auth-check input { width: 18px; height: 18px; accent-color: var(--solid); }
+.auth-input {
+  width: 100%; min-height: 48px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--bg); color: var(--text); padding: 12px 14px; font: inherit;
+}
+.auth-input:focus { outline: 0; border-color: var(--solid); box-shadow: 0 0 0 4px var(--soft); }
+.auth-field .select-trigger { min-height: 48px; border-radius: 12px; }
 .auth-shell--state .auth-aside { min-height: 300px; }
+
+@media (max-width: 860px) {
+  .account-grid { grid-template-columns: 1fr; }
+}
 
 @media (max-width: 760px) {
   .auth-shell { grid-template-columns: 1fr; }
@@ -656,27 +669,65 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 }
 .notification-center { position: relative; display: inline-flex; }
 .notification-bell {
-  position: relative; display: grid; place-items: center; min-width: 40px; min-height: 40px;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer;
+  position: relative; display: grid; place-items: center; min-width: 44px; min-height: 44px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text);
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
 }
+.notification-bell:hover { border-color: var(--accent); background: var(--hover); }
 .notification-badge {
   position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 4px;
   border-radius: 9px; background: var(--solid); color: var(--solid-ink, #fff);
   font-size: .65rem; line-height: 18px; text-align: center; font-weight: 700;
 }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 .notification-panel {
   position: absolute; z-index: 25; top: calc(100% + 8px); right: 0;
-  width: min(390px, calc(100vw - 24px)); max-height: 70dvh; overflow: auto; padding: 16px;
-  box-shadow: 0 14px 40px #0005;
+  width: min(420px, calc(100vw - 24px)); max-height: 70dvh; overflow: auto;
+  padding: 0; border-radius: 16px; box-shadow: 0 24px 60px #0008;
 }
-.notification-page { max-width: 760px; }
-.notification-list, .moderation-list { display: grid; gap: 8px; }
-.notification-item, .moderation-row {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px;
+.notification-panel-head, .notification-page-head {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
+  padding: 16px 18px; border-bottom: 1px solid var(--line);
+}
+.notification-panel-head h2, .notification-page-head h1 { font-size: 1.25rem; letter-spacing: -.02em; }
+.notification-panel-head h2 { margin: 0; }
+.notification-panel-head span, .notification-count { color: var(--muted); font-size: .75rem; white-space: nowrap; }
+.notification-page { max-width: 960px; padding: 0; overflow: hidden; }
+.notification-page > .account-error, .notification-page > .account-hint { margin: 12px 18px 0; }
+.notification-list { display: grid; gap: 8px; padding: 14px; }
+.notification-item {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 12px;
+  padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--bg);
+}
+.notification-item.unread { background: var(--soft); border-color: var(--accent); }
+.notification-icon {
+  display: grid; place-items: center; width: 34px; height: 34px; flex: none;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--accent);
+}
+.notification-copy strong { display: block; font-size: .9rem; }
+.notification-copy p { margin: 4px 0 7px; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--muted); font-size: .84rem; }
+.notification-copy time { color: var(--muted); font-size: .72rem; }
+.notification-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-size: .78rem; }
+.notification-empty { display: grid; place-items: center; gap: 6px; padding: 44px 18px; text-align: center; color: var(--muted); }
+.notification-empty span { font-size: 2rem; color: var(--accent); }
+.notification-empty p { color: var(--text); font-weight: 700; }
+.notification-empty small { font-size: .78rem; }
+.notification-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px 16px; }
+.notification-mark-all {
+  min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: transparent; color: var(--text); font-size: .8rem; font-weight: 700;
+}
+.notification-mark-all:hover:not(:disabled) { background: var(--hover); border-color: var(--accent); }
+.notification-mark-all:disabled { opacity: .45; }
+.notification-footer a { font-size: .8rem; color: var(--accent); font-weight: 700; }
+.moderation-list { display: grid; gap: 8px; }
+.moderation-row {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
   padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
 }
-.notification-item.unread { border-left: 3px solid var(--solid); }
-.notification-item p, .moderation-body { margin: 5px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-.moderation-row { grid-template-columns: minmax(0, 1fr); }
+.moderation-body { margin: 5px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .reader-comments { padding: 18px max(12px, env(safe-area-inset-left)) calc(94px + var(--safe)); }
 .reader-comments .comment-section { max-width: 760px; margin-inline: auto; background: var(--surface); }

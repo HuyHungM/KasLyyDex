@@ -9,6 +9,20 @@ import { refreshChapterNotifications } from "@/lib/community/client";
 
 type Props = { compact?: boolean; autoRefresh?: boolean };
 
+function TypeIcon({ type }: { type: string }) {
+  const common = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, "aria-hidden": true };
+  if (type.includes("comment")) {
+    return <svg {...common}><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z" /></svg>;
+  }
+  if (type.includes("moderation") || type.includes("report")) {
+    return <svg {...common}><path d="M12 3 4 6v5c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V6Z" /><path d="m9 12 2 2 4-4" /></svg>;
+  }
+  if (type.includes("chapter") || type.includes("feed")) {
+    return <svg {...common}><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v17H6.5A2.5 2.5 0 0 1 4 17.5Z" /><path d="M8 7h7M8 11h5" /></svg>;
+  }
+  return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>;
+}
+
 export default function NotificationCenter({ compact = false, autoRefresh = false }: Props) {
   const { session } = useAccountSession();
   const pathname = usePathname();
@@ -34,8 +48,6 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
 
   const openedRefreshRef = useRef(false);
   useEffect(() => {
-    // Only the notification page entry checks chapters. The globally mounted
-    // header badge just reads the inbox and never calls the content service.
     if (!signedIn || !autoRefresh) return;
     let alive = true;
     void refreshChapterNotifications()
@@ -56,7 +68,6 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
       setPartialWarning(result.partial === true);
       reloadRef.current();
     } catch {
-      // The inbox still loads existing notifications if the content check fails.
       setPartialWarning(false);
     } finally {
       openedRefreshRef.current = false;
@@ -66,7 +77,6 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
   function togglePanel() {
     const next = !open;
     setOpen(next);
-    // Library and notification pages already check on entry; no second call.
     if (next && compact && signedIn && pathname !== "/thong-bao" && pathname !== "/tu-truyen") {
       void refreshOnExplicitOpen();
     }
@@ -87,28 +97,37 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
   }
 
   function rows(items: NotificationDto[]) {
+    if (items.length === 0) {
+      return (
+        <div className="notification-empty">
+          <span aria-hidden="true">✦</span>
+          <p>Không có thông báo nào.</p>
+          <small>Chương mới và bình luận sẽ xuất hiện ở đây.</small>
+        </div>
+      );
+    }
     return (
       <div className="notification-list">
         {items.map((item) => (
           <article key={item.id} className={`notification-item${item.readAt === null ? " unread" : ""}`}>
-            <div>
+            <span className="notification-icon" aria-hidden="true"><TypeIcon type={item.type} /></span>
+            <div className="notification-copy">
               <strong>{item.title}</strong>
               <p>{item.body}</p>
               <time dateTime={new Date(item.createdAt).toISOString()}>
                 {new Date(item.createdAt).toLocaleString("vi-VN")}
               </time>
             </div>
-            <div className="comment-actions">
-              {item.href ? <Link href={item.href} onClick={() => void markRead([item.id])}>Mở</Link> : null}
+            <div className="notification-actions">
+              {item.href ? (
+                <Link href={item.href} onClick={() => void markRead([item.id])} aria-label={`Mở ${item.title}`}>Mở</Link>
+              ) : null}
               {item.readAt === null ? (
-                <button type="button" className="link-btn" disabled={busy} onClick={() => void markRead([item.id])}>
-                  Đã đọc
-                </button>
+                <button type="button" className="link-btn" disabled={busy} aria-label={`Đánh dấu đã đọc: ${item.title}`} onClick={() => void markRead([item.id])}>Đã đọc</button>
               ) : null}
             </div>
           </article>
         ))}
-        {items.length === 0 ? <p className="account-hint">Không có thông báo nào.</p> : null}
       </div>
     );
   }
@@ -116,9 +135,15 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
   if (!signedIn) {
     if (compact) return null;
     return (
-      <section className="surface account-card">
-        <h1>Thông báo</h1>
-        <p className="account-hint">Đăng nhập để xem thông báo bình luận, kiểm duyệt và chương mới.</p>
+      <section className="auth-shell auth-shell--state">
+        <div className="auth-aside">
+          <p className="auth-kicker">KasLyyDex / Inbox</p>
+          <h2 className="auth-title">Thông báo</h2>
+          <p className="auth-quote">Chưa có phiên đăng nhập để hiển thị hộp thư.</p>
+        </div>
+        <div className="auth-main">
+          <p className="account-hint">Đăng nhập để xem thông báo bình luận, kiểm duyệt và chương mới.</p>
+        </div>
       </section>
     );
   }
@@ -132,26 +157,31 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
       {inbox.error ? <p className="account-error" role="alert">{inbox.error}</p> : null}
       {inbox.loading && !inbox.data ? <p className="account-hint">Đang tải thông báo…</p> : null}
       {partialWarning ? (
-        <p className="account-error" role="status">
-          Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.
-        </p>
+        <p className="account-error" role="status">Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.</p>
       ) : null}
       {rows(items)}
-      <div className="comment-actions">
-        <button type="button" className="link-btn" disabled={busy || unreadIds.length === 0} onClick={() => void markRead(unreadIds)}>
-          Đánh dấu đã đọc
+      <div className="notification-footer">
+        <button type="button" className="notification-mark-all" disabled={busy || unreadIds.length === 0} onClick={() => void markRead(unreadIds)}>
+          Đánh dấu tất cả đã đọc
         </button>
-        {compact ? <Link href="/thong-bao">Xem tất cả</Link> : null}
-        {access.data?.moderator ? <Link href="/kiem-duyet">Hàng đợi kiểm duyệt</Link> : null}
+        {compact ? <Link href="/thong-bao">Xem tất cả →</Link> : null}
+        {access.data?.moderator ? <Link href="/kiem-duyet">Hàng đợi kiểm duyệt →</Link> : null}
       </div>
     </>
   );
 
   if (!compact) {
     return (
-      <section className="surface account-card notification-page">
-        <h1>Thông báo</h1>
-        {unread > 0 ? <p className="account-hint">{unread} thông báo chưa đọc.</p> : null}
+      <section className="notification-page surface">
+        <header className="notification-page-head">
+          <div>
+            <p className="auth-kicker">KasLyyDex / Inbox</p>
+            <h1>Thông báo</h1>
+          </div>
+          <p className="notification-count" role="status" aria-atomic="true">
+            {unread > 0 ? `${unread} thông báo chưa đọc` : "Tất cả đã đọc"}
+          </p>
+        </header>
         {body}
       </section>
     );
@@ -170,10 +200,14 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
         </svg>
         {unread > 0 ? <span className="notification-badge" aria-hidden="true">{unread > 9 ? "9+" : unread}</span> : null}
+        <span className="sr-only" role="status" aria-atomic="true">{unread > 0 ? `${unread} thông báo chưa đọc` : "Không có thông báo chưa đọc"}</span>
       </button>
       {open ? (
         <div className="notification-panel surface" role="dialog" aria-label="Trung tâm thông báo">
-          <h2>Thông báo</h2>
+          <header className="notification-panel-head">
+            <h2>Thông báo</h2>
+            <span role="status" aria-atomic="true">{unread > 0 ? `${unread} chưa đọc` : "Đã đọc hết"}</span>
+          </header>
           {body}
         </div>
       ) : null}

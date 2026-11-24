@@ -31,18 +31,24 @@ function ProfileFields({ profile, onSaved }: { profile: AccountProfileDto; onSav
   }
 
   return (
-    <form className="account-form" onSubmit={(event) => void submit(event)}>
-      <label>Tên người dùng
-        <input value={username} onChange={(event) => setUsername(event.target.value)} maxLength={24} placeholder="3–24 ký tự a-z, 0-9, ., _" />
+    <form className="auth-form" onSubmit={(event) => void submit(event)}>
+      <label className="auth-field">
+        <span>Tên người dùng</span>
+        <input className="auth-input" value={username} onChange={(event) => setUsername(event.target.value)} maxLength={24} placeholder="3–24 ký tự a-z, 0-9, ., _" />
       </label>
-      <label>Tên hiển thị
-        <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} />
+      <label className="auth-field">
+        <span>Tên hiển thị</span>
+        <input className="auth-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} placeholder="Tên bạn bè sẽ thấy" />
       </label>
-      <label>Ảnh đại diện (https)
-        <input type="url" value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} maxLength={512} placeholder="https://…" />
+      <label className="auth-field">
+        <span>Ảnh đại diện (https)</span>
+        <input className="auth-input" type="url" value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} maxLength={512} placeholder="https://…" />
       </label>
-      <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu hồ sơ"}</button>
-      {message ? <p className={message.startsWith("Đã") ? "account-hint" : "account-error"} role="status">{message}</p> : null}
+      <button type="submit" className="auth-submit" disabled={busy}>
+        {busy ? "Đang lưu…" : "Lưu hồ sơ"}
+        <span aria-hidden="true">→</span>
+      </button>
+      {message ? <p className={message.startsWith("Đã") ? "account-hint auth-foot" : "account-error"} role="status">{message}</p> : null}
     </form>
   );
 }

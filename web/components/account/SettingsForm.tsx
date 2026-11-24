@@ -34,8 +34,9 @@ function SettingsFields({
   }
 
   return (
-    <form className="account-form" onSubmit={(event) => void submit(event)}>
-      <label>Chế độ đọc
+    <form className="auth-form" onSubmit={(event) => void submit(event)}>
+      <label className="auth-field">
+        <span>Chế độ đọc</span>
         <Select
           ariaLabel="Chế độ đọc"
           value={mode}
@@ -46,7 +47,8 @@ function SettingsFields({
           onChange={(value) => setMode(value as ReaderSettingsDto["mode"])}
         />
       </label>
-      <label>Nền
+      <label className="auth-field">
+        <span>Nền</span>
         <Select
           ariaLabel="Nền"
           value={bg}
@@ -59,12 +61,16 @@ function SettingsFields({
           onChange={(value) => setBg(value as ReaderSettingsDto["bg"])}
         />
       </label>
-      <label className="account-check"><input type="checkbox" checked={fit} onChange={(event) => setFit(event.target.checked)} /> Vừa khung hình</label>
-      <label>Tốc độ cuộn
-        <input type="number" min={1} max={5} value={speed} onChange={(event) => setSpeed(Number(event.target.value))} />
+      <label className="auth-check"><input type="checkbox" checked={fit} onChange={(event) => setFit(event.target.checked)} /> Vừa khung hình</label>
+      <label className="auth-field">
+        <span>Tốc độ cuộn</span>
+        <input className="auth-input" type="number" min={1} max={5} value={speed} onChange={(event) => setSpeed(Number(event.target.value))} />
       </label>
-      <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu cài đặt"}</button>
-      {message ? <p className="account-hint" role="status">{message}</p> : null}
+      <button type="submit" className="auth-submit" disabled={busy}>
+        {busy ? "Đang lưu…" : "Lưu cài đặt"}
+        <span aria-hidden="true">→</span>
+      </button>
+      {message ? <p className="account-hint auth-foot" role="status">{message}</p> : null}
     </form>
   );
 }
