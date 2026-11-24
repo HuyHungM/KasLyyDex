@@ -55,13 +55,20 @@ export async function checkReadiness(env: NodeJS.ProcessEnv = process.env): Prom
   let hasDatabase = false;
   let contentOrigin = "";
 
-  try {
-    hasDatabase = Boolean(readDatabaseConfig(env).binding);
-  } catch (error) {
-    if (error instanceof DatabaseConfigurationError && error.missing.length > 0) {
-      missing.push(...error.missing);
-    } else {
-      missing.push("DB");
+  // Workers expose D1 as a binding, not on process.env. Prefer the live
+  // binding and fall back to env config for local/test harnesses.
+  const binding = await resolveD1().catch(() => null);
+  if (binding) {
+    hasDatabase = true;
+  } else {
+    try {
+      hasDatabase = Boolean(readDatabaseConfig(env).binding);
+    } catch (error) {
+      if (error instanceof DatabaseConfigurationError && error.missing.length > 0) {
+        missing.push(...error.missing);
+      } else {
+        missing.push("DB");
+      }
     }
   }
   const ticket = env.READER_TICKET_SECRET?.trim();
