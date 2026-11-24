@@ -66,7 +66,10 @@ function requireProvider(): IdentityProvider {
 // cookie directly against Identity instead of trusting the JWT payload.
 export async function sessionFromJwt(token: string): Promise<AccountIdentity | null> {
   const config = requireProvider().config();
-  if (!config?.url) return null;
+  if (!config?.url) {
+    console.info("[auth-debug] sessionFromJwt no-config");
+    return null;
+  }
   let response: Response;
   try {
     response = await fetch(`${config.url}/user`, {
@@ -75,10 +78,17 @@ export async function sessionFromJwt(token: string): Promise<AccountIdentity | n
       signal: AbortSignal.timeout(10_000),
     });
   } catch {
+    console.info("[auth-debug] sessionFromJwt network-fail");
     return null;
   }
-  if (!response.ok) return null;
-  return identityFromNetlifyUser(await response.json().catch(() => null));
+  const user = response.ok
+    ? identityFromNetlifyUser(await response.json().catch(() => null))
+    : null;
+  console.info("[auth-debug] sessionFromJwt", JSON.stringify({
+    status: response.status,
+    mapped: Boolean(user),
+  }));
+  return user;
 }
 
 export type NetlifyIdentityAdapter = {

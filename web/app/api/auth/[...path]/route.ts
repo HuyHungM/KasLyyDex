@@ -48,7 +48,15 @@ async function handle(request: NextRequest, context: Context) {
       if (action === "get-session") {
         const cookie = /(?:^|;\s*)nf_jwt=([^;]+)/.exec(request.headers.get("cookie") ?? "");
         const token = cookie ? decodeURIComponent(cookie[1]) : null;
+        console.info("[auth-debug] get-session", JSON.stringify({
+          hasCookie: Boolean(token),
+          tokenLength: token?.length ?? 0,
+        }));
         const identity = token ? await sessionFromJwt(token) : null;
+        console.info("[auth-debug] get-session result", JSON.stringify({
+          fromCookie: Boolean(identity),
+          fallback: !identity,
+        }));
         return sessionResponse(identity ?? await getAuth().getSession());
       }
 
