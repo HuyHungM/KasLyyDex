@@ -206,7 +206,7 @@ button:disabled { cursor: default; }
   to { opacity: 0; transform: scale(.985); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .feature-animate, .feature-art.feature-animate { animation: none; }
+  .feature-animate[data-layer], .feature-art.feature-animate[data-layer] { animation: none; }
   .feature-animate[data-layer="out"] { display: none; }
 }
 .rank-switch {
