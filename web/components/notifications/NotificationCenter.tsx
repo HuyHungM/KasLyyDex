@@ -156,18 +156,24 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
     <>
       {error ? <p className="account-error" role="alert">{error}</p> : null}
       {inbox.error ? <p className="account-error" role="alert">{inbox.error}</p> : null}
-      {inbox.loading && !inbox.data ? <LineSkeleton lines={2} label="Đang tải thông báo" /> : null}
       {partialWarning ? (
         <p className="account-error" role="status">Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.</p>
       ) : null}
-      {rows(items)}
-      <div className="notification-footer">
-        <button type="button" className="notification-mark-all" disabled={busy || unreadIds.length === 0} onClick={() => void markRead(unreadIds)}>
-          Đánh dấu tất cả đã đọc
-        </button>
-        {compact ? <Link href="/thong-bao">Xem tất cả →</Link> : null}
-        {access.data?.moderator ? <Link href="/kiem-duyet">Hàng đợi kiểm duyệt →</Link> : null}
-      </div>
+      {!compact ? <p className="notification-summary" role="status">{unread > 0 ? `${unread} thông báo chưa đọc.` : "Tất cả đã đọc."}</p> : null}
+      {inbox.loading && !inbox.error ? (
+        <LineSkeleton lines={3} label="Đang tải thông báo" />
+      ) : (
+        <>
+          {rows(items)}
+          <div className="notification-footer">
+            <button type="button" className="notification-mark-all" disabled={busy || unreadIds.length === 0} onClick={() => void markRead(unreadIds)}>
+              Đánh dấu tất cả đã đọc
+            </button>
+            {compact ? <Link href="/thong-bao">Xem tất cả →</Link> : null}
+            {access.data?.moderator ? <Link href="/kiem-duyet">Hàng đợi kiểm duyệt →</Link> : null}
+          </div>
+        </>
+      )}
     </>
   );
 

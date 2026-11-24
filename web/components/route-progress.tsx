@@ -3,8 +3,10 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
+type Phase = "idle" | "loading" | "done";
+
 export default function RouteProgress() {
-  const [pending, setPending] = useState(false);
+  const [phase, setPhase] = useState<Phase>("idle");
   const pathname = usePathname();
 
   useEffect(() => {
@@ -17,16 +19,19 @@ export default function RouteProgress() {
       const target = new URL(href, window.location.href);
       if (target.origin !== window.location.origin) return;
       if (target.pathname === window.location.pathname && target.search === window.location.search) return;
-      setPending(true);
+      setPhase("loading");
     };
     document.addEventListener("click", onClick, true);
     return () => document.removeEventListener("click", onClick, true);
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setPending(false), 250);
+    if (phase === "idle") return;
+    // The new route is committed: finish the bar, then retire it.
+    setPhase("done");
+    const timer = window.setTimeout(() => setPhase("idle"), 320);
     return () => window.clearTimeout(timer);
-  }, [pathname]);
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return <div className={`route-progress${pending ? " is-pending" : ""}`} aria-hidden="true" />;
+  return <div className={`route-progress is-${phase}`} aria-hidden="true" />;
 }
