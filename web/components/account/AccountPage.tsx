@@ -9,7 +9,7 @@ import { useAccountSession } from "@/lib/account/client";
 export default function AccountPage() {
   const { session } = useAccountSession();
   return (
-    <div className="account-grid">
+    <div className={`account-grid${session.status === "authenticated" ? " account-grid--full" : ""}`}>
       <AuthPanel />
       {session.status === "authenticated" ? (
         <>
