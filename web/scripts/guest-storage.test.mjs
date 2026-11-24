@@ -52,6 +52,14 @@ test("corrupt and unavailable storage stay non-fatal and keep guest data", () =>
   assert.doesNotThrow(() => guest.pushHistory({ mangaId: "m", mangaTitle: "T", chapterId: "c", chapter: null, title: "", coverFile: null, lang: "vi" }));
 });
 
+test("theme round-trips light, dark and black", () => {
+  globalThis.localStorage = new MemoryStorage();
+  for (const mode of ["light", "dark", "black"]) {
+    guest.saveTheme(mode);
+    assert.equal(guest.getTheme(), mode);
+  }
+});
+
 test("page restoration is chapter-local and clamped to the current page count", () => {
   seed(guest.KEYS.history, [{
     mangaId: "m", chapterId: "saved-chapter", page: 7, total: 20, ts: 1,

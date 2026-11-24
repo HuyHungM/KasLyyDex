@@ -12,6 +12,7 @@ Trang mở đầu của một tập truyện: tiêu đề to, kẻ double-rule, 
 ## 2. Palette and roles
 - **Lilac** (`#6d4a8c`) — accent duy nhất: số chương, kicker, focus ring.
 - **Paper** (`var(--surface)`, light `#fffafa`) — nền trang.
+- **Black** (`#0b0b0e`) — chế độ tối thứ ba, off-black (không dùng `#000`), vẫn một accent lilac.
 - **Rule** (`var(--line)`) — double rule ở masthead, gạch dòng mục lục.
 - **Ink** (`var(--text)`) — chữ chính.
 - **Muted ink** (`var(--muted)`) — nhãn chương, mô tả.

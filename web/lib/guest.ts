@@ -265,11 +265,14 @@ export function saveSettings(settings: ReaderSettings): void {
   writeRaw(KEYS.reader, JSON.stringify(normalizeSettings(settings)));
 }
 
-export function getTheme(): "dark" | "light" {
-  return readRaw(KEYS.theme) === "dark" ? "dark" : "light";
+export type Theme = "light" | "dark" | "black";
+
+export function getTheme(): Theme {
+  const raw = readRaw(KEYS.theme);
+  return raw === "dark" || raw === "black" ? raw : "light";
 }
 
-export function saveTheme(theme: "dark" | "light"): void {
+export function saveTheme(theme: Theme): void {
   writeRaw(KEYS.theme, theme);
 }
 

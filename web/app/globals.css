@@ -39,6 +39,21 @@
   --hover: #ffe2e2;
 }
 
+:root[data-theme="black"] {
+  color-scheme: dark;
+  --bg: #0b0b0e;
+  --surface: #15151a;
+  --rail: #101014;
+  --text: #f7f5fa;
+  --muted: #a9a3b3;
+  --line: #2c2a34;
+  --accent: #d8b4fe;
+  --solid: #c99bf5;
+  --solid-ink: #241135;
+  --soft: #282136;
+  --hover: #1d1c24;
+}
+
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 400 1rem/1.6 var(--font-be-vietnam), "Be Vietnam Pro", sans-serif; }
 h1, h2, h3, p { margin: 0; overflow-wrap: anywhere; }

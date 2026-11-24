@@ -289,6 +289,10 @@ test("theme choice survives a reload in localStorage", async () => {
   await page.reload({ waitUntil: "networkidle" });
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "dark");
   await page.locator(".theme-btn").click();
+  assert.equal(await page.evaluate(() => localStorage.getItem("truyenviet:theme")), "black");
+  await page.reload({ waitUntil: "networkidle" });
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "black");
+  await page.locator(".theme-btn").click();
   assert.equal(await page.evaluate(() => localStorage.getItem("truyenviet:theme")), "light");
   await page.reload({ waitUntil: "networkidle" });
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light");
