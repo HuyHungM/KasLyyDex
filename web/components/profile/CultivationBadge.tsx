@@ -21,7 +21,6 @@ export default function CultivationBadge() {
   }
   return (
     <div className="cultivation-badge" aria-live="polite" data-realm={data.realm}>
-      <p className="profile-folio">Trang 01 · Tu vi</p>
       <span className="cultivation-realm">{data.title}</span>
       <span className="cultivation-level">Cấp {data.level}</span>
       <span className="cultivation-xp">{data.totalXp} XP</span>

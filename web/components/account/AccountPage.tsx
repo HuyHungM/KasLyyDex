@@ -9,17 +9,27 @@ import { useAccountSession } from "@/lib/account/client";
 export default function AccountPage() {
   const { session } = useAccountSession();
   return (
-    <div className={`account-grid${session.status === "authenticated" ? " account-grid--full" : ""}`}>
-      <AuthPanel />
+    <div className={`account-grid${session.status === "authenticated" ? " account-grid--comic" : ""}`}>
       {session.status === "authenticated" ? (
         <>
-          <div className="profile-spread">
-            <div className="profile-page profile-page--left"><CultivationBadge /></div>
-            <div className="profile-page profile-page--right"><ProfileForm /></div>
-          </div>
-          <GuestImportPanel />
+          <section className="comic-panel comic-panel--head">
+            <span className="chapter-mark">CH.00 / Thư viện</span>
+            <AuthPanel />
+          </section>
+          <section className="comic-panel comic-panel--identity">
+            <span className="chapter-mark">CH.01 / Tu vi</span>
+            <CultivationBadge />
+          </section>
+          <section className="comic-panel comic-panel--form">
+            <span className="chapter-mark">CH.02 / Hồ sơ</span>
+            <ProfileForm />
+          </section>
+          <section className="comic-panel comic-panel--import">
+            <span className="chapter-mark">CH.03 / Dữ liệu khách</span>
+            <GuestImportPanel />
+          </section>
         </>
-      ) : null}
+      ) : <AuthPanel />}
     </div>
   );
 }

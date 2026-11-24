@@ -1,40 +1,41 @@
-# Design System: KasLyyDex — Reading-profile
+# Design System: KasLyyDex — Reader Profile
 
 ## 0. Dials
-VARIANCE: 7 | MOTION: 4 | DENSITY: 4
+VARIANCE: 7 | MOTION: 3 | DENSITY: 5
 
 ## 1. Atmosphere
-Một trang hồ sơ đọc như cuốn truyện đang mở: giấy mịn, gáy rõ, chữ in sạch, nhịp hai trang cân đối. Không hiệu ứng neon, không card đồng loạt — chỉ một cú mở trang duy nhất.
+Bố cục trang truyện: các ô panel không đều nhau, rãnh dày nhìn thấy nền, số chương nhỏ ở góc mỗi ô. Đọc từ trên xuống như lật một chương, không phải một danh sách card đồng dạng.
 
 ## 1b. Signature element (mandatory, exactly one)
-**Cuốn nhật ký mở (open reading spread)** — hồ sơ được trình bày như hai trang truyện snapped at a visible spine, kèm folio `TRANG 01 / TRANG 02` ở góc mỗi trang. Nó lives in materiality/layout và đến trực tiếp từ sản phẩm đọc truyện, không phải catalog effect. Sustained in: trang `/tai-khoan` (spread tu vi + hồ sơ) và dải nhật ký bên dưới cùng ngôn ngữ folio.
+**Trang panel truyện (manga panel grid)** — hồ sơ được chia thành các ô kích thước bất đối xứng, ngăn nhau bằng rãnh màu nền và đánh số `CH.00 → CH.03` như số chương. Nó lives in layout/materiality và đến từ chính product đọc truyện, không phải thư viện effect. Sustained in: toàn bộ trang `/tai-khoan` (mỗi vùng là một panel có số chương), mobile vẫn giữ rãnh và số chương khi xếp dọc.
 
 ## 2. Palette and roles
-- **Lilac** (`#6d4a8c`) — accent duy nhất, dùng cho folio, focus ring, viền gáy.
-- **Paper** (`var(--surface)`, light `#fffafa`) — nền trang.
+- **Lilac** (`#6d4a8c`) — accent duy nhất: số chương, focus ring, góc panel.
+- **Paper** (`var(--surface)`, light `#fffafa`) — mặt panel.
+- **Gutter** (`var(--bg)`) — rãnh giữa các panel, không phải viền trang.
 - **Ink** (`var(--text)`) — chữ chính.
-- **Muted ink** (`var(--muted)`) — metadata, folio phụ.
-- **Spine** (`var(--line)`) — gáy và đường kẻ trang.
-Không dùng `#000`, không gradient tím neon, không text-gradient.
+- **Muted ink** (`var(--muted)`) — metadata.
+Không `#000`, không neon/glow, không text-gradient.
 
 ## 3. Typography
 - Display: `Bricolage Grotesque` — tracking chặt, hierarchy bằng weight.
 - Body: `Be Vietnam Pro` — leading 1.65, tối đa ~65ch.
-- Mono: `ui-monospace, SFMono-Regular` — chỉ cho số XP/cấp/folio.
+- Mono: `ui-monospace, SFMono-Regular` — số chương, XP, cấp.
 - Banned: Inter, Roboto, serif trong UI, chữ in hoa to vô nghĩa.
 
 ## 4. Components
-- Buttons: phản hồi `:active` bằng translateY(1px), không glow.
-- Inputs: label ở trên, helper bên dưới, focus ring accent 4px мềm.
-- Pages: hai trang bằng nhau trên desktop, xếp dọc dưới 768px; mỗi trang có viền mỏng và bóng âm phía gáy.
-- Loaders/empty/error: giữ nguyên dạng dòng chữ + nút thử lại hiện có.
-- Icons: SVG một family, `aria-hidden` khi đi kèm chữ.
+- Panel: bo 16px, viền mỏng, rãnh 8–10px; kích thước không đồng đều (head full-width, identity hẹp, form cao, import full-width).
+- Chapter marker: `CH.0n` mono, màu accent, góc trên bên trái mỗi panel.
+- Buttons: tactile `:active` translateY(1px), không glow.
+- Inputs: label ở trên, focus ring accent; helper/error rõ ràng.
+- Loaders/empty/error: giữ dạng dòng chữ + nút thử lại.
+- Icons: SVG family hiện có, `aria-hidden` khi đi kèm chữ.
 
 ## 5. Layout
-CSS Grid, max-width 1040px, `min-h-[100dvh]` thay vì `h-screen`. Không overlap; gáy là khoảng trống có đường kẻ, không chồng lên nội dung. Mobile collapse 1 cột, zero horizontal scroll.
+CSS GridWithAreas, max-width 1040px, `min-h-[100dvh]`. Không overlap; rãnh là khoảng trống thật. Dưới 768px collapse thành 1 cột nhưng vẫn giữ rãnh và số chương. Zero horizontal scroll.
 
 ## 6. Motion
-CSS-only, chỉ `transform`/`opacity`, 300–420ms, stagger nhẹ giữa hai trang. Mọi animation nằm trong `prefers-reduced-motion: no-preference`; mặc định nội dung hiện đầy đủ. Không thêm library.
+CSS-only, chỉ `transform`/`opacity`, 260–380ms, panel vào theo thứ tự chương. Mặc định nội dung visible; chạy trong `prefers-reduced-motion: no-preference`; tắt hẳn khi reduce. Không thêm library.
 
 ## 7. Anti-patterns (BANNED)
-Emoji làm icon; Inter; neon/glow; text-gradient; ba card giống hệt; John Doe/Acme; số tròn giả (99.99%); copy cliche (`Elevate`, `Seamless`, `Unleash`); ảnh Unsplash hỏng; filler `Scroll to explore`; custom cursor; overlapping.
+Emoji làm icon; Inter; neon/glow; text-gradient; ba card giống hệt; John Doe/Acme; số tròn giả; copy cliche (`Elevate`, `Seamless`, `Unleash`); ảnh hỏng; filler `Scroll to explore`; custom cursor; overlapping; quay lại dạng spread/gáy cũ.
