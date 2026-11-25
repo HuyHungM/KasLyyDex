@@ -1,7 +1,7 @@
 "use client";
 
 import { useRemoteResource } from "@/lib/account/client";
-import { LineSkeleton } from "@/components/loaders";
+import { RealmSkeleton } from "@/components/loaders";
 
 type LevelDto = {
   level: number;
@@ -16,7 +16,7 @@ type LevelDto = {
 /// state or local import can raise the level or a permission.
 export default function CultivationBadge() {
   const { data, loading, error } = useRemoteResource<LevelDto>("/api/v1/me/level");
-  if (loading && !data) return <div className="cultivation-badge" aria-busy="true" role="status" aria-label="Đang tải tu vi"><LineSkeleton lines={2} label="Đang tải tu vi" /></div>;
+  if (loading && !data) return <RealmSkeleton />;
   if (error || !data) {
     return <div className="cultivation-badge" role="status">Chưa tải được tu vi.</div>;
   }

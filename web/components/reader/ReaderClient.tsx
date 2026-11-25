@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import type { ReaderWasm } from "@/generated/reader-wasm";
 import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
 import { sourceLabel } from "@/lib/contracts";
-import { LineSkeleton } from "@/components/loaders";
+import { ReaderPageSkeleton } from "@/components/loaders";
 import type { ReaderSettingsDto } from "@/lib/validators";
 import { accountGet, accountMutate, parseAccountResponse, useAccountSession } from "@/lib/account/client";
 import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
@@ -600,7 +600,7 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
         ) : total === 0 ? (
           <div className="panel">Chương này chưa có ảnh.</div>
         ) : !loaded ? (
-          <div className="reader-loading" role="status" aria-label="Đang khởi tạo trình đọc"><LineSkeleton lines={4} label="Đang khởi tạo trình đọc" /></div>
+          <ReaderPageSkeleton />
         ) : (
           <ReaderPages
             pages={pages}

@@ -20,12 +20,21 @@ async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverCon
 function HeroSkeleton() {
   return (
     <div className="feature skel-hero skel" role="status" aria-label="Đang tải truyện nổi bật">
+      <div className="feature-art" aria-hidden="true">
+        <span className="feature-bleed skel-bar" />
+        <span className="feature-poster skel-bar" />
+      </div>
       <div className="feature-copy" aria-hidden="true">
         <span className="skel-bar skel-label" />
         <span className="skel-bar skel-title" />
         <span className="skel-bar skel-meta" />
         <span className="skel-bar skel-desc" />
         <span className="skel-bar skel-action" />
+      </div>
+      <div className="feature-slider-controls" aria-hidden="true">
+        <span className="feature-dots">
+          {Array.from({ length: 5 }, (_, index) => <span className="skel-bar" key={index} />)}
+        </span>
       </div>
     </div>
   );
@@ -50,20 +59,25 @@ function FeedSkeleton() {
 
 function RankSkeleton() {
   return (
-    <ol className="rank-list" role="status" aria-label="Đang tải xếp hạng">
-      {Array.from({ length: 5 }, (_, index) => (
-        <li key={index}>
-          <div className="skel-rank skel" aria-hidden="true">
-            <span className="rank-row">
-              <span className="skel-bar skel-rank-no" />
-              <span className="rank-cover" />
-              <span className="rank-title"><span className="skel-bar" /><span className="skel-bar" /></span>
-              <span className="skel-bar skel-rank-score" />
-            </span>
-          </div>
-        </li>
-      ))}
-    </ol>
+    <div className="rank-tabs">
+      <div className="rank-switch" aria-hidden="true">
+        {Array.from({ length: 3 }, (_, index) => <span className="skel-bar" key={index} />)}
+      </div>
+      <ol className="rank-list" role="status" aria-label="Đang tải xếp hạng">
+        {Array.from({ length: 5 }, (_, index) => (
+          <li key={index}>
+            <div className="skel-rank skel" aria-hidden="true">
+              <span className="rank-row">
+                <span className="skel-bar skel-rank-no" />
+                <span className="rank-cover" />
+                <span className="rank-title"><span className="skel-bar" /><span className="skel-bar" /></span>
+                <span className="skel-bar skel-rank-score" />
+              </span>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 

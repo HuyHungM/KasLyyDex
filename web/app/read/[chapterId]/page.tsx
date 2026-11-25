@@ -5,7 +5,7 @@ import { serverContent } from "@/lib/content-server";
 import type { ChapterDto, MangaSummaryDto } from "@/lib/contracts";
 import { chapterLabel } from "@/lib/format";
 import ReaderClient from "@/components/reader/ReaderClient";
-import { LineSkeleton } from "@/components/loaders";
+import { ReaderPageSkeleton } from "@/components/loaders";
 
 type Props = {
   params: Promise<{ chapterId: string }>;
@@ -67,7 +67,7 @@ export default function ReadPage(props: Props) {
   return (
     <Suspense
       fallback={
-        <div className="reader-loading" role="status" aria-label="Đang mở chương"><LineSkeleton lines={4} label="Đang mở chương" /></div>
+        <ReaderPageSkeleton />
       }
     >
       <ReadContent {...props} />

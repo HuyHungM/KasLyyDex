@@ -549,6 +549,13 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .skel-hero .skel-meta { width: 40%; height: 14px; }
 .skel-hero .skel-desc { width: min(60%, 420px); height: 14px; }
 .skel-hero .skel-action { width: 132px; height: 44px; border-radius: 9px; }
+.skel-hero .feature-art { position: absolute; inset: 0; }
+.skel-hero .feature-bleed { position: absolute; inset: 0 0 0 auto; width: 86%; opacity: .35; }
+.skel-hero .feature-poster { position: absolute; right: 11%; top: 50%; height: 86%; width: 30%; border-radius: 10px; transform: translateY(-50%) rotate(4deg); }
+.skel-hero .feature-slider-controls { position: absolute; left: clamp(16px, 3vw, 36px); bottom: 16px; }
+.skel-hero .feature-dots { display: flex; gap: 5px; }
+.skel-hero .feature-dots .skel-bar { width: 8px; height: 4px; border-radius: 999px; }
+.rank-tabs .rank-switch .skel-bar { flex: 1; height: 36px; border-radius: 9px; }
 .skel-card { min-width: 0; }
 .skel-card .card-title { height: 2.5em; }
 .skel-card .card-year { width: 60%; height: 12px; }
@@ -570,21 +577,32 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .skel-chapter .skel-date { grid-column: 2; width: 45%; height: 11px; margin-top: 6px; }
 .load-skeleton { display: grid; gap: 12px; }
 .load-skeleton .skel-bar { height: 14px; }
-.load-comments { display: grid; gap: 18px; }
+.load-heading { width: 34%; height: 22px; border-radius: 8px; }
+.load-sub { width: 60%; height: 12px; border-radius: 6px; }
+.load-label { width: 30%; height: 10px; border-radius: 5px; }
+.load-title { width: 80%; height: 34px; border-radius: 8px; }
+.load-input { width: 100%; height: 48px; border-radius: 12px; }
+.load-submit { width: 100%; max-width: 200px; height: 44px; border-radius: 11px; }
+.load-pill { width: 92px; height: 26px; border-radius: 999px; }
+.load-realm { width: 46%; height: 30px; border-radius: 8px; }
+.load-xp { width: 84px; height: 16px; }
+.load-copy { display: grid; gap: 8px; width: 100%; }
+.load-copy .skel-bar { height: 14px; }
+.load-comments { display: grid; gap: 12px; }
 .load-comment { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; }
 .load-comment-avatar { width: 44px; height: 44px; border-radius: 14px; }
-.load-comment-lines { display: grid; gap: 8px; }
-.load-comment-lines .skel-bar { height: 12px; }
+.load-comment-bubble { gap: 8px; }
+.load-comment-bubble .comment-author-bar { gap: 8px; }
+.load-comment-bubble .comment-body-panel .skel-bar { height: 12px; }
 .load-comment-name { width: 30%; }
 .load-comment-tail { width: 70%; }
-.auth-shell--state .auth-aside, .auth-shell--state .auth-main { align-content: center; }
-.reader-loading .load-skeleton { width: min(320px, 80vw); }
+.auth-shell--state .auth-aside, .auth-shell--state .auth-main { align-content: center; gap: 16px; }
 .reader-page[data-loaded="false"] { background: var(--hover); }
 .img-fade { opacity: 0; }
 .img-fade[data-loaded="true"] { opacity: 1; }
 @media (max-width: 639px) {
   .skel-hero .skel-title { width: 76%; height: 2.5rem; }
-  .skel-hero .skel-desc { display: none; }
+  .skel-hero .skel-desc, .skel-hero .feature-poster { display: none; }
 }
 @media (min-width: 640px) {
   .skel-chapter .skel-date { grid-column: auto; }
