@@ -9,6 +9,7 @@ function ProfileFields({ profile, onSaved }: { profile: AccountProfileDto; onSav
   const [username, setUsername] = useState(profile.username ?? "");
   const [displayName, setDisplayName] = useState(profile.displayName ?? "");
   const [avatarUrl, setAvatarUrl] = useState(profile.avatarUrl ?? "");
+  const [bio, setBio] = useState(profile.bio ?? "");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -21,6 +22,7 @@ function ProfileFields({ profile, onSaved }: { profile: AccountProfileDto; onSav
         username: username.trim() || null,
         displayName: displayName.trim() || null,
         avatarUrl: avatarUrl.trim() || null,
+        bio: bio.trim() || null,
       });
       setMessage("Đã lưu hồ sơ.");
       onSaved();
@@ -44,6 +46,11 @@ function ProfileFields({ profile, onSaved }: { profile: AccountProfileDto; onSav
       <label className="auth-field">
         <span>Ảnh đại diện (https)</span>
         <input className="auth-input" type="url" value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} maxLength={512} placeholder="https://…" />
+      </label>
+      <label className="auth-field">
+        <span>Giới thiệu ngắn</span>
+        <textarea className="auth-input" value={bio} onChange={(event) => setBio(event.target.value)} maxLength={160} rows={3} placeholder="Vài dòng về bạn" />
+        <small>{bio.length}/160</small>
       </label>
       <button type="submit" className="auth-submit" disabled={busy}>
         {busy ? "Đang lưu…" : "Lưu hồ sơ"}

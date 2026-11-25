@@ -7,6 +7,7 @@ export type AccountProfileDto = {
   username: string | null;
   displayName: string | null;
   avatarUrl: string | null;
+  bio: string | null;
   level: number;
   totalXp: number;
   title: string;

@@ -49,6 +49,7 @@ export type ProfileDto = {
   username: string | null;
   displayName: string | null;
   avatarUrl: string | null;
+  bio: string | null;
   level: number;
   totalXp: number;
   title: string;
@@ -95,6 +96,7 @@ function profileDto(row: typeof tables.profiles.$inferSelect): ProfileDto {
     username: row.username,
     displayName: row.displayName,
     avatarUrl: row.avatarUrl,
+    bio: row.bio,
     level: levelFromXp(row.totalXp),
     totalXp: row.totalXp,
     title: realmForLevel(levelFromXp(row.totalXp)).name,
@@ -157,13 +159,14 @@ export async function ensureProfile(
 export async function updateProfile(
   db: AppDatabase,
   userId: string,
-  patch: { username?: string | null; displayName?: string | null; avatarUrl?: string | null },
+  patch: { username?: string | null; displayName?: string | null; avatarUrl?: string | null; bio?: string | null },
   now: number,
 ): Promise<ProfileDto> {
   const values: Partial<typeof tables.profiles.$inferInsert> = { updatedAt: date(now) };
   if (Object.hasOwn(patch, "username")) values.username = patch.username ?? null;
   if (Object.hasOwn(patch, "displayName")) values.displayName = patch.displayName ?? null;
   if (Object.hasOwn(patch, "avatarUrl")) values.avatarUrl = patch.avatarUrl ?? null;
+  if (Object.hasOwn(patch, "bio")) values.bio = patch.bio ?? null;
   try {
     await db.update(tables.profiles).set(values).where(eq(tables.profiles.userId, userId));
   } catch (error) {

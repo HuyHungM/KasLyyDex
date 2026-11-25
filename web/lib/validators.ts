@@ -173,9 +173,10 @@ export function parseProfilePatch(body: Record<string, unknown>): {
   username?: string | null;
   displayName?: string | null;
   avatarUrl?: string | null;
+  bio?: string | null;
 } {
-  assertAllowedKeys(body, ["username", "displayName", "avatarUrl"]);
-  const patch: { username?: string | null; displayName?: string | null; avatarUrl?: string | null } = {};
+  assertAllowedKeys(body, ["username", "displayName", "avatarUrl", "bio"]);
+  const patch: { username?: string | null; displayName?: string | null; avatarUrl?: string | null; bio?: string | null } = {};
   if (Object.hasOwn(body, "username")) {
     if (body.username === null || body.username === "") patch.username = null;
     else {
@@ -205,6 +206,13 @@ export function parseProfilePatch(body: Record<string, unknown>): {
       }
     }
     patch.avatarUrl = avatarUrl || null;
+  }
+  if (Object.hasOwn(body, "bio")) {
+    const bio = plainText(body.bio, 160);
+    if (bio === null && body.bio !== null) {
+      throw new ValidationError(400, "INVALID_INPUT", "Bio must be 1-160 characters.");
+    }
+    patch.bio = bio || null;
   }
   return patch;
 }
