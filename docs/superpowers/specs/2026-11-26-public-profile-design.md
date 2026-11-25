@@ -166,14 +166,23 @@ Layout, one column, maximum width aligned with existing catalog pages:
 
 ### Skeletons
 
-Add to `web/components/loaders.tsx`:
+Every async region on the profile uses a shape-matched skeleton. The initial route fallback is one composed `PublicProfileSkeleton`, not a generic spinner or text. Add to `web/components/loaders.tsx`:
 
-- `ProfileHeaderSkeleton`: avatar circle, 3 text bars, pill.
-- `ProfileStatsSkeleton`: 4 equal stat cells.
-- `ProfileEntrySkeleton`: cover block, 2 text bars, comment bubble.
-- Reuse `ShelfSkeleton` for saved items.
+- `PublicProfileSkeleton`: the full page frame — header block, stat strip, two section blocks, recent block, tag block, saved block — with the same max-width, gaps and section wrappers as the loaded page.
+- `ProfileHeaderSkeleton`: 88px avatar circle, name/handle bars, realm pill, bio lines, joined-date bar.
+- `ProfileStatsSkeleton`: 4 equal stat cells in the same strip.
+- `ProfileEntrySkeleton`: cover block, title/meta bars, comment bubble, time bar; used 3 times per comment section.
+- `ProfileRecentSkeleton`: 3 compact timeline rows with the same bubble geometry.
+- `ProfileTagsSkeleton`: 3 pill placeholders.
+- Reuse `ShelfSkeleton` (4 cards) for saved items.
 
-Skeletons must use the same wrappers as the loaded content and keep `role="status"` plus an `aria-label`. No visible “Đang tải…” text.
+Rules:
+
+- Skeleton wrappers must be the same elements/classes as the loaded content (`profile-header`, `profile-stats`, `profile-section`, `profile-entry`, `shelf-grid`, etc.), so bounding boxes match and there is no layout shift.
+- Keep `role="status"` and an `aria-label` on each skeleton container; inner placeholders are `aria-hidden`.
+- No visible “Đang tải…”, “Đang mở…” or similar text.
+- The owner/guest saved state uses the same skeleton; only the loaded result differs.
+- Reduced-motion users get the static skeleton, matching the existing skeleton behavior.
 
 ### Account link
 
@@ -208,7 +217,7 @@ Skeletons must use the same wrappers as the loaded content and keep `role="statu
 ### Browser
 
 - Guest and owner views render the correct saved state.
-- Skeletons match header/stat/comment/shelf geometry and expose accessible status.
+- The initial `PublicProfileSkeleton` and every section skeleton match the loaded header/stat/comment/recent/tag/shelf geometry; no visible loading text.
 - Comment links resolve to the right manga/chapter route.
 - No horizontal overflow at 375px and 1280px.
 - No console/page errors on load or navigation.
