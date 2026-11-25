@@ -28,37 +28,39 @@ function entry(targetId, body) {
   };
 }
 
-function payload(saved) {
+function payload(saved, long = false) {
+  const body = long ? "comment ".repeat(80) : "root mới nhất";
+  const bio = long ? "Thích isekai ".repeat(12) : "Thích isekai";
   return {
     id: USER_ID,
     username: "reader.one",
     displayName: "Reader One",
     avatarUrl: null,
-    bio: "Thích isekai",
+    bio,
     title: "Luyện khí",
     level: 3,
     totalXp: 120,
     joinedAt: Date.now() - 30 * 86_400_000,
     stats: { chaptersRead: 4, following: 2, comments: 3, posted: 2, participating: 1, saved: saved ? 1 : 0 },
     topTags: ["Action", "Isekai"],
-    posted: [entry("m1", "root mới nhất")],
-    participating: [entry("m2", "reply gần nhất")],
-    recent: [entry("m1", "root mới nhất")],
+    posted: [entry("m1", body)],
+    participating: [entry("m2", long ? "reply ".repeat(80) : "reply gần nhất")],
+    recent: [entry("m1", body)],
     saved,
     savedTotal: 1,
     truncated: { posted: false, participating: false, recent: false, saved: false },
   };
 }
 
-async function open({ signedIn = false, saved = null } = {}) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+async function open({ signedIn = false, saved = null, viewport = { width: 1280, height: 900 }, long = false } = {}) {
+  const context = await browser.newContext({ viewport });
   await installIdentityFixture(context, { signedIn, userId: USER_ID });
   await context.route("**/api/v1/notifications**", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], unreadCount: 0, nextCursor: null }) });
   });
   await context.route("**/api/v1/users/**", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1200));
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payload(saved)) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payload(saved, long)) });
   });
   const page = await context.newPage();
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -128,7 +130,32 @@ test("owner profile shows the saved shelf", async () => {
   await page.goto(`${app.baseUrl}/thanh-vien/${USER_ID}`, { waitUntil: "domcontentloaded" });
   await page.locator(".profile-page:not(.profile-skeleton) .shelf-card").first().waitFor();
   assert.ok(await page.locator(".shelf-card").count() >= 1);
+  assert.ok(await page.locator('.shelf-card a[href="/manga/m1"]').count() >= 1);
   await page.screenshot({ path: join(SHOT_DIR, "profile-owner.png"), fullPage: true });
+  await context.close();
+});
+
+test("long content stays contained and the 375px profile has no overflow", async () => {
+  const { context, page } = await open({ viewport: { width: 375, height: 812 }, long: true });
+  await page.goto(`${app.baseUrl}/thanh-vien/${USER_ID}`, { waitUntil: "domcontentloaded" });
+  await page.locator(".profile-page:not(.profile-skeleton) .profile-entry").first().waitFor();
+  const state = await page.evaluate(() => {
+    const header = document.querySelector(".profile-header");
+    const entry = document.querySelector(".profile-entry");
+    const recent = document.querySelector(".profile-recent");
+    return {
+      headerOverflows: header.scrollHeight > header.clientHeight + 2,
+      entryOverflows: entry.scrollHeight > entry.clientHeight + 2,
+      entryBottom: Math.round(entry.getBoundingClientRect().bottom),
+      recentTop: Math.round(recent.getBoundingClientRect().top),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  });
+  assert.equal(state.headerOverflows, false, "long bio must not overflow the header");
+  assert.equal(state.entryOverflows, false, "long comment must not overflow the entry");
+  assert.ok(state.recentTop >= state.entryBottom, "content sections must not overlap");
+  assert.ok(state.overflow <= 1, `375px overflow: ${JSON.stringify(state)}`);
+  await page.screenshot({ path: join(SHOT_DIR, "profile-mobile-long.png"), fullPage: true });
   await context.close();
 });
 

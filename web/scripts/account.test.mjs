@@ -281,7 +281,9 @@ test("profile validation rejects mass assignment, overlong names and duplicate u
     assert.equal((await patch(alice, { displayName: "x".repeat(100) })).status, 400);
     assert.equal((await patch(alice, { avatarUrl: "http://evil.example/a.png" })).status, 400);
     assert.equal((await patch(alice, { bio: "x".repeat(161) })).status, 400);
+    assert.equal((await patch(alice, { bio: "bad\u0001" })).status, 400);
     assert.equal((await patch(alice, { bio: "  Thích isekai  " })).status, 200);
+    assert.equal((await patch(alice, { bio: "Line 1\nLine 2" })).status, 200);
     assert.equal((await patch(alice, { username: "Reader.One", displayName: "Reader One", avatarUrl: "https://cdn.example/a.png" })).status, 200);
 
     const duplicate = await patch(bob, { username: "reader.one" });
@@ -291,8 +293,8 @@ test("profile validation rejects mass assignment, overlong names and duplicate u
     const profile = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, "opaque|alice"));
     assert.equal(profile[0].username, "reader.one");
     assert.equal(profile[0].totalXp, 0);
-    assert.equal(profile[0].bio, "Thích isekai");
-    assert.equal((await (await alice.meGet(request("/api/v1/me"))).json()).profile.bio, "Thích isekai");
+    assert.equal(profile[0].bio, "Line 1\nLine 2");
+    assert.equal((await (await alice.meGet(request("/api/v1/me"))).json()).profile.bio, "Line 1\nLine 2");
     assert.equal((await db.select().from(schema.userRoles)).length, 0);
   } finally {
     await pg.close();

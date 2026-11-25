@@ -1,4 +1,4 @@
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import * as tables from "../db/schema";
 import type {
@@ -66,27 +66,42 @@ export async function getPublicProfile(
 
   const [chapters] = await db.select({ value: count() }).from(tables.readingCompletions)
     .where(eq(tables.readingCompletions.userId, userId));
-  const [following] = await db.select({ value: count() }).from(tables.libraryEntries)
+  const [libraryTotalRow] = await db.select({ value: count() }).from(tables.libraryEntries)
     .where(eq(tables.libraryEntries.userId, userId));
   const [comments] = await db.select({ value: count() }).from(tables.comments)
     .where(and(eq(tables.comments.userId, userId), eq(tables.comments.status, "visible")));
-  const [savedTotalRow] = await db.select({ value: count() }).from(tables.libraryEntries)
-    .where(eq(tables.libraryEntries.userId, userId));
+  const [postedCountRow] = await db.select({
+    value: sql<number>`count(distinct ${tables.comments.targetType} || ':' || ${tables.comments.targetId})`,
+  }).from(tables.comments).where(and(
+    eq(tables.comments.userId, userId),
+    eq(tables.comments.status, "visible"),
+    isNull(tables.comments.parentId),
+  ));
+  const [participatingCountRow] = await db.select({
+    value: sql<number>`count(distinct ${tables.comments.targetType} || ':' || ${tables.comments.targetId})`,
+  }).from(tables.comments).where(and(
+    eq(tables.comments.userId, userId),
+    eq(tables.comments.status, "visible"),
+    isNotNull(tables.comments.parentId),
+  ));
 
   const visible = await db.select().from(tables.comments)
     .where(and(eq(tables.comments.userId, userId), eq(tables.comments.status, "visible")))
-    .orderBy(desc(tables.comments.createdAt), desc(tables.comments.id));
+    .orderBy(desc(tables.comments.createdAt), desc(tables.comments.id))
+    .limit(1000);
   const roots = latestByTarget(visible.filter((row) => row.parentId === null));
   const replies = latestByTarget(visible.filter((row) => row.parentId !== null));
 
-  const savedRows = viewerId === userId
-    ? await db.select().from(tables.libraryEntries)
-      .where(eq(tables.libraryEntries.userId, userId))
-      .orderBy(desc(tables.libraryEntries.followedAt))
-      .limit(24)
-    : [];
+  const libraryRows = await db.select().from(tables.libraryEntries)
+    .where(eq(tables.libraryEntries.userId, userId))
+    .orderBy(desc(tables.libraryEntries.followedAt))
+    .limit(200);
+  const savedRows = viewerId === userId ? libraryRows.slice(0, 24) : [];
   const saved = viewerId === userId ? savedRows.map(libraryDto) : null;
-  const libraryTitles = new Map(savedRows.map((row) => [row.mangaId, row]));
+  const libraryTitles = new Map(libraryRows.map((row) => [row.mangaId, row]));
+  const libraryByChapter = new Map(
+    libraryRows.filter((row) => row.lastChapterId).map((row) => [row.lastChapterId!, row.mangaId]),
+  );
 
   const postedAll = Array.from(roots.values());
   const participatingAll = Array.from(replies.values());
@@ -150,7 +165,8 @@ export async function getPublicProfile(
       entry.chapterLabel = metadata.chapter ? `Chương ${metadata.chapter}` : null;
       applyManga(entry, await loadManga(metadata.manga_id));
     } catch {
-      // Keep the fallback title and a working link to the chapter.
+      entry.mangaId = libraryByChapter.get(entry.targetId) ?? null;
+      if (entry.mangaId) applyManga(entry, null);
     }
   }
 
@@ -172,23 +188,23 @@ export async function getPublicProfile(
     joinedAt: profile.createdAt.getTime(),
     stats: {
       chaptersRead: chapters?.value ?? 0,
-      following: following?.value ?? 0,
+      following: libraryTotalRow?.value ?? 0,
       comments: comments?.value ?? 0,
-      posted: roots.size,
-      participating: replies.size,
-      saved: savedTotalRow?.value ?? 0,
+      posted: postedCountRow?.value ?? 0,
+      participating: participatingCountRow?.value ?? 0,
+      saved: libraryTotalRow?.value ?? 0,
     },
     topTags,
     posted,
     participating,
     recent,
     saved,
-    savedTotal: savedTotalRow?.value ?? 0,
+    savedTotal: libraryTotalRow?.value ?? 0,
     truncated: {
-      posted: postedAll.length > 20,
-      participating: participatingAll.length > 20,
-      recent: visible.length > 5,
-      saved: (savedTotalRow?.value ?? 0) > 24,
+      posted: (postedCountRow?.value ?? 0) > 20,
+      participating: (participatingCountRow?.value ?? 0) > 20,
+      recent: (comments?.value ?? 0) > 5,
+      saved: (libraryTotalRow?.value ?? 0) > 24,
     },
   };
 }

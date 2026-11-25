@@ -976,13 +976,13 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .reader-comments { padding: 18px max(12px, env(safe-area-inset-left)) calc(94px + var(--safe)); }
 .reader-comments .comment-section { max-width: 760px; margin-inline: auto; background: var(--surface); }
 .profile-page { display: grid; gap: 16px; max-width: 980px; margin-inline: auto; }
-.profile-header { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 18px; align-items: center; height: 188px; padding: 18px; }
+.profile-header { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 18px; align-items: center; min-height: 224px; padding: 18px; }
 .profile-header .cultivation-badge { padding: 8px 12px; gap: 8px; border-radius: 12px; }
 .profile-avatar { width: 88px; height: 88px; border-radius: 18px; display: grid; place-items: center; overflow: hidden; background: var(--hover); color: var(--accent); font: 800 2rem/1 var(--display); object-fit: cover; }
 .profile-identity { display: grid; gap: 6px; min-width: 0; }
 .profile-identity h1 { margin: 0; font-size: clamp(1.6rem, 4vw, 2.2rem); line-height: 1.15; overflow-wrap: anywhere; }
 .profile-handle, .profile-joined { margin: 0; color: var(--muted); font-size: .85rem; }
-.profile-bio { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.profile-bio { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
 .profile-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; height: 88px; }
 .profile-stat { display: grid; align-content: center; gap: 4px; padding: 12px; text-align: center; }
 .profile-stat b { font-size: 1.35rem; font-family: var(--display); }
@@ -991,14 +991,15 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .profile-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .profile-section-head h2 { margin: 0; font-size: 1.15rem; }
 .profile-count { min-width: 28px; padding: 4px 8px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: .75rem; text-align: center; }
+.profile-limit { margin: -6px 0 0; color: var(--muted); font-size: .75rem; }
 .profile-entries { display: grid; gap: 10px; }
-.profile-entry { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; align-items: start; height: 128px; padding: 12px; }
+.profile-entry { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; align-items: start; min-height: 128px; padding: 12px; }
 .profile-entry-cover { width: 56px; height: 84px; border-radius: 8px; overflow: hidden; background: var(--hover); }
 .profile-entry-cover img { width: 100%; height: 100%; object-fit: cover; }
 .profile-entry-body { display: grid; gap: 5px; min-width: 0; }
 .profile-entry-title { font-weight: 700; overflow-wrap: anywhere; }
 .profile-entry-meta { margin: 0; color: var(--muted); font-size: .75rem; }
-.profile-comment { min-height: 46px; padding: 9px 12px; font-size: .9rem; overflow-wrap: anywhere; }
+.profile-comment { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 46px; padding: 9px 12px; font-size: .9rem; overflow-wrap: anywhere; }
 .profile-recent { display: grid; gap: 8px; min-height: 110px; padding: 14px; }
 .profile-recent-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 8px; border-radius: 9px; background: var(--bg); }
 .profile-recent-row a { font-weight: 700; overflow-wrap: anywhere; }
@@ -1007,7 +1008,7 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .profile-tag-list { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 44px; }
 .profile-tag { padding: 6px 11px; border-radius: 999px; background: var(--hover); font-size: .8rem; }
 .profile-empty-inline { color: var(--muted); font-size: .85rem; }
-.profile-saved .shelf-grid { height: 168px; align-items: start; }
+.profile-saved .shelf-grid { min-height: 168px; align-items: start; }
 .profile-saved .shelf-grid .empty { grid-column: 1 / -1; display: grid; place-items: center; height: 158px; padding: 12px; }
 .profile-all-link { justify-self: start; color: var(--accent); font-size: .85rem; text-decoration: underline; }
 .profile-skeleton .profile-identity { gap: 8px; }

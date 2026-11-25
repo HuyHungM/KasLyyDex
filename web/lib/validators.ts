@@ -169,6 +169,16 @@ export function normalizeUsername(value: unknown): string | null {
   return /^[a-z0-9._]{3,24}$/.test(normalized) ? normalized : null;
 }
 
+function parseBio(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") throw new ValidationError(400, "INVALID_INPUT", "Expected text.");
+  const normalized = value.replace(/\r\n?/g, "\n").trim();
+  if (normalized.length > 160 || /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/.test(normalized)) {
+    throw new ValidationError(400, "INVALID_INPUT", "Bio is too long or contains unsupported characters.");
+  }
+  return normalized || null;
+}
+
 export function parseProfilePatch(body: Record<string, unknown>): {
   username?: string | null;
   displayName?: string | null;
@@ -207,13 +217,7 @@ export function parseProfilePatch(body: Record<string, unknown>): {
     }
     patch.avatarUrl = avatarUrl || null;
   }
-  if (Object.hasOwn(body, "bio")) {
-    const bio = plainText(body.bio, 160);
-    if (bio === null && body.bio !== null) {
-      throw new ValidationError(400, "INVALID_INPUT", "Bio must be 1-160 characters.");
-    }
-    patch.bio = bio || null;
-  }
+  if (Object.hasOwn(body, "bio")) patch.bio = parseBio(body.bio);
   return patch;
 }
 

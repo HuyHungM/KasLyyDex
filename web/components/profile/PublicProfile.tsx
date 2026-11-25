@@ -17,6 +17,7 @@ function ProfileEntry({ entry }: { entry: PublicProfileEntryDto }) {
   const cover = entry.coverFile
     ? coverImageUrl({ id: entry.mangaId ?? entry.targetId, cover_file: entry.coverFile }, 128)
     : null;
+  const canLink = entry.targetType !== "chapter" || Boolean(entry.mangaId);
   return (
     <article className="surface profile-entry">
       <span className="profile-entry-cover">
@@ -26,7 +27,9 @@ function ProfileEntry({ entry }: { entry: PublicProfileEntryDto }) {
         ) : null}
       </span>
       <div className="profile-entry-body">
-        <Link className="profile-entry-title" href={entryHref(entry)}>{entry.title}</Link>
+        {canLink
+          ? <Link className="profile-entry-title" href={entryHref(entry)}>{entry.title}</Link>
+          : <span className="profile-entry-title">{entry.title}</span>}
         <p className="profile-entry-meta">
           {entry.chapterLabel ?? (entry.targetType === "chapter" ? "Chương" : "Truyện")}
           <span aria-hidden="true"> · </span>
@@ -38,13 +41,14 @@ function ProfileEntry({ entry }: { entry: PublicProfileEntryDto }) {
   );
 }
 
-function ProfileSection({ title, count, items, empty }: { title: string; count: number; items: PublicProfileEntryDto[]; empty: string }) {
+function ProfileSection({ title, count, items, empty, truncated = false }: { title: string; count: number; items: PublicProfileEntryDto[]; empty: string; truncated?: boolean }) {
   return (
     <section className="surface profile-section">
       <header className="profile-section-head">
         <h2>{title}</h2>
         <span className="profile-count">{count}</span>
       </header>
+      {truncated ? <p className="profile-limit">{count > 20 ? "20 gần nhất" : "Đang hiển thị bản rút gọn"}</p> : null}
       <div className="profile-entries">
         {items.length > 0 ? items.map((entry) => <ProfileEntry entry={entry} key={`${entry.targetType}:${entry.targetId}`} />)
           : <p className="empty">{empty}</p>}
@@ -111,8 +115,8 @@ export default function PublicProfile({ userId }: { userId: string }) {
         ))}
       </div>
 
-      <ProfileSection title="Truyện đã đăng" count={data.stats.posted} items={data.posted} empty="Chưa có truyện đã đăng." />
-      <ProfileSection title="Truyện đang tham gia" count={data.stats.participating} items={data.participating} empty="Chưa có truyện đang tham gia." />
+      <ProfileSection title="Truyện đã đăng" count={data.stats.posted} items={data.posted} empty="Chưa có truyện đã đăng." truncated={data.truncated.posted} />
+      <ProfileSection title="Truyện đang tham gia" count={data.stats.participating} items={data.participating} empty="Chưa có truyện đang tham gia." truncated={data.truncated.participating} />
 
       <section className="surface profile-section">
         <header className="profile-section-head">
@@ -148,14 +152,27 @@ export default function PublicProfile({ userId }: { userId: string }) {
           {data.saved === null
             ? <div className="surface empty">Chỉ chủ nhân xem được</div>
             : data.saved.length > 0
-              ? data.saved.map((item) => (
-                <div className="surface shelf-card" key={item.mangaId}>
-                  <div className="shelf-story">
-                    <span className="skel-cover" aria-hidden="true" />
-                    <span className="load-copy"><b>{item.title}</b><span>{item.status}</span></span>
+              ? data.saved.map((item) => {
+                const cover = item.coverFile
+                  ? coverImageUrl({ id: item.mangaId, cover_file: item.coverFile, source: undefined }, 128)
+                  : null;
+                return (
+                  <div className="surface shelf-card" key={item.mangaId}>
+                    <Link className="shelf-story" href={`/manga/${encodeURIComponent(item.mangaId)}`}>
+                      <div className="card-cover">
+                        {cover
+                          ? // eslint-disable-next-line @next/next/no-img-element
+                            <img src={cover} alt="" loading="lazy" decoding="async" />
+                          : <div className="no-cover" aria-hidden="true">Chưa có bìa</div>}
+                      </div>
+                      <div>
+                        <strong>{item.title}</strong>
+                        <p className="cc-ch">{item.lastChapterId ? `Chương mới: ${item.lastChapterId}` : "Chưa đọc"}</p>
+                      </div>
+                    </Link>
                   </div>
-                </div>
-              ))
+                );
+              })
               : <div className="surface empty">Chưa có truyện đã lưu.</div>}
         </div>
         {data.saved !== null ? <Link className="profile-all-link" href="/tu-truyen">Xem tất cả →</Link> : null}

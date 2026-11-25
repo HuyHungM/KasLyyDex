@@ -35,9 +35,11 @@ before(async () => {
     userId: OWNER,
     mangaId: "m1",
     title: "Truyện một",
+    coverFile: "cover.jpg",
     lang: "vi",
     status: "reading",
     followedAt: now - DAY,
+    lastChapterId: "c1",
     lastReadPublish: 0,
     revision: 1,
     updatedAt: new Date(now - DAY),
@@ -160,8 +162,11 @@ test("profile enriches titles, tags and falls back when content fails", async ()
   assert.equal(payload.topTags[0], "Action");
 
   const fallback = await publicProfile.getPublicProfile(db, null, OWNER, brokenContent);
-  assert.equal(fallback.posted.find((entry) => entry.targetId === "m1").title, "Truyện");
-  assert.equal(fallback.posted.find((entry) => entry.targetId === "c1").targetId, "c1");
+  assert.equal(fallback.posted.find((entry) => entry.targetId === "m1").title, "Truyện một");
+  assert.equal(fallback.posted.find((entry) => entry.targetId === "m1").coverFile, "cover.jpg");
+  const fallbackChapter = fallback.posted.find((entry) => entry.targetId === "c1");
+  assert.equal(fallbackChapter.targetId, "c1");
+  assert.equal(fallbackChapter.mangaId, "m1", "fallback link must resolve to a real manga");
 });
 
 test("usersGet returns owner saved entries and guest null", async () => {
