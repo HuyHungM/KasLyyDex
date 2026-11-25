@@ -18,7 +18,7 @@ const schema = await import("../lib/db/schema.ts");
 
 const DAY = 86_400_000;
 let now = Date.parse("2026-07-01T12:00:00.000Z");
-const MIGRATIONS = ["0000_cloudflare_d1.sql"];
+const MIGRATIONS = ["0000_cloudflare_d1.sql", "0001_profile_bio.sql"];
 // Keep the pre-0003 comment schema while satisfying the current Drizzle shape.
 
 async function migratedDb(files = MIGRATIONS) {

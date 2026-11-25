@@ -8,23 +8,32 @@ import { localD1 } from "./sqlite-harness.mjs";
 const { readDatabaseConfig, getDatabase, isTransactionControl } = await import("../lib/db/client.ts");
 const { profiles } = await import("../lib/db/schema.ts");
 
-const migrationUrl = new URL("../migrations/0000_cloudflare_d1.sql", import.meta.url);
+const migrationUrls = [
+  new URL("../migrations/0000_cloudflare_d1.sql", import.meta.url),
+  new URL("../migrations/0001_profile_bio.sql", import.meta.url),
+];
+
+const migrationUrl = migrationUrls[0];
 
 async function freshDatabase() {
   const db = localD1();
-  const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
+  let sql = "";
+  for (const url of migrationUrls) sql += await readFile(fileURLToPath(url), "utf8") + "\n";
   await db.exec(sql);
   return { db, sql };
 }
 
-test("migration is a single numbered D1 baseline", async () => {
+test("migrations include the additive profile bio migration", async () => {
   const entries = await readdir(fileURLToPath(new URL("../migrations/", import.meta.url)), { withFileTypes: true });
   const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".sql")).map((entry) => entry.name).sort();
-  assert.deepEqual(files, ["0000_cloudflare_d1.sql"]);
+  assert.deepEqual(files, ["0000_cloudflare_d1.sql", "0001_profile_bio.sql"]);
   const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
   assert.match(sql, /CREATE TABLE `auth_users`/);
   assert.match(sql, /CREATE TABLE `profiles`/);
   assert.doesNotMatch(sql, /CREATE\s+SCHEMA/i);
+  const bio = await readFile(fileURLToPath(new URL("../migrations/0001_profile_bio.sql", import.meta.url)), "utf8");
+  assert.match(bio, /ADD(?: COLUMN)? `bio`/);
+  assert.match(bio, /CREATE INDEX `comments_user_visible_idx`/);
 });
 
 test("D1 facade skips transaction control statements", () => {
@@ -39,7 +48,7 @@ test("Drizzle journal is the SQLite journal beside the D1 migration", async () =
   const dir = new URL("../migrations/", import.meta.url);
   const journal = JSON.parse(await readFile(fileURLToPath(new URL("meta/_journal.json", dir)), "utf8"));
   assert.equal(journal.dialect, "sqlite");
-  assert.deepEqual(journal.entries.map((entry) => entry.tag), ["0000_cloudflare_d1"]);
+  assert.deepEqual(journal.entries.map((entry) => entry.tag), ["0000_cloudflare_d1", "0001_profile_bio"]);
   const snapshots = (await readdir(fileURLToPath(new URL("meta/", dir)))).filter((name) => name.endsWith("_snapshot.json"));
   assert.equal(snapshots.length, journal.entries.length);
 });
@@ -62,7 +71,7 @@ test("migration owns only application and auth user tables", async () => {
     assert.deepEqual(columns.rows.map((row) => [row.name, row.type.toLowerCase(), row.notnull]), [
       ["user_id", "text", 1], ["username", "text", 0], ["display_name", "text", 0],
       ["avatar_url", "text", 0], ["total_xp", "integer", 1], ["level", "integer", 1],
-      ["created_at", "integer", 1], ["updated_at", "integer", 1],
+      ["created_at", "integer", 1], ["updated_at", "integer", 1], ["bio", "text", 0],
     ]);
   } finally {
     db.close();

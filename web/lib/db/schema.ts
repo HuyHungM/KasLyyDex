@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import {
   check,
   customType,
@@ -49,6 +49,7 @@ export const profiles = sqliteTable("profiles", {
   username: text("username"),
   displayName: text("display_name"),
   avatarUrl: text("avatar_url"),
+  bio: text("bio"),
   // Server-owned XP/level. Never client-writable; kept consistent with the
   // xp_events ledger by the single completion transaction.
   totalXp: integer("total_xp").default(0).notNull(),
@@ -137,6 +138,7 @@ export const comments = sqliteTable("comments", {
 }, (table) => [
   index("comments_thread_idx").on(table.targetType, table.targetId, table.createdAt),
   index("comments_parent_idx").on(table.parentId),
+  index("comments_user_visible_idx").on(table.userId, table.status, desc(table.createdAt)),
   check("comments_status_check", sql`${table.status} in ('visible', 'hidden', 'removed')`),
   check("comments_target_type_check", sql`${table.targetType} in ('manga', 'chapter')`),
   check("comments_no_self_parent", sql`${table.parentId} is null or ${table.parentId} <> ${table.id}`),

@@ -34,7 +34,7 @@ let now = Date.parse("2026-06-01T12:00:00.000Z");
 async function migratedDb() {
   const pg = localD1();
   const db = drizzle(pg, { schema });
-  for (const file of ["0000_cloudflare_d1.sql"]) {
+  for (const file of ["0000_cloudflare_d1.sql", "0001_profile_bio.sql"]) {
     const url = new URL(`../migrations/${file}`, import.meta.url);
     await pg.exec(await readFile(fileURLToPath(url), "utf8"));
   }

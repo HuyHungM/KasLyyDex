@@ -70,7 +70,7 @@ function makeChapter(index, published) {
   };
 }
 
-const MIGRATIONS = ["0000_cloudflare_d1.sql"];
+const MIGRATIONS = ["0000_cloudflare_d1.sql", "0001_profile_bio.sql"];
 
 async function migratedDb(files = MIGRATIONS) {
   const pg = localD1();

@@ -8,6 +8,13 @@
       "when": 1795496660934,
       "tag": "0000_cloudflare_d1",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795628139708,
+      "tag": "0001_profile_bio",
+      "breakpoints": true
     }
   ]
 }

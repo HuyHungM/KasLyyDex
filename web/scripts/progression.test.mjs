@@ -22,7 +22,7 @@ const SECRET = "fixture-reader-secret-with-at-least-32-chars";
 const T0 = Date.parse("2026-11-21T10:00:00.000Z");
 let now = T0;
 
-const migrationFiles = ["0000_cloudflare_d1.sql"];
+const migrationFiles = ["0000_cloudflare_d1.sql", "0001_profile_bio.sql"];
 
 async function migratedDb() {
   const pg = localD1();
