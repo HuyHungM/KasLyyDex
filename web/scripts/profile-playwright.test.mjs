@@ -135,6 +135,25 @@ test("owner profile shows the saved shelf", async () => {
   await context.close();
 });
 
+test("encoded user ids are requested only once", async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await installIdentityFixture(context);
+  await context.route("**/api/v1/notifications**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], unreadCount: 0 }) });
+  });
+  const paths = [];
+  await context.route("**/api/v1/users/**", async (route) => {
+    paths.push(new URL(route.request().url()).pathname);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payload(null)) });
+  });
+  const page = await context.newPage();
+  const response = page.waitForResponse((res) => res.url().includes("/api/v1/users/"));
+  await page.goto(`${app.baseUrl}/thanh-vien/${encodeURIComponent("user:2")}`, { waitUntil: "domcontentloaded" });
+  await response;
+  assert.deepEqual(paths, ["/api/v1/users/user%3A2"]);
+  await context.close();
+});
+
 test("long content stays contained and the 375px profile has no overflow", async () => {
   const { context, page } = await open({ viewport: { width: 375, height: 812 }, long: true });
   await page.goto(`${app.baseUrl}/thanh-vien/${USER_ID}`, { waitUntil: "domcontentloaded" });
