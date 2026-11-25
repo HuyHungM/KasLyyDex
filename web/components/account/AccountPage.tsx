@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import AuthPanel from "@/components/account/AuthPanel";
 import ProfileForm from "@/components/account/ProfileForm";
 import GuestImportPanel from "@/components/account/GuestImportPanel";
@@ -16,6 +17,7 @@ export default function AccountPage() {
         <p className="volume-kicker">KasLyyDex · Tập 01</p>
         <h1>Tài khoản</h1>
         <p className="volume-sub">Đăng nhập bằng email/mật khẩu hoặc Google để đồng bộ tủ truyện và tiến độ đọc.</p>
+        {signedIn ? <Link className="profile-all-link" href={`/thanh-vien/${encodeURIComponent(session.user?.id ?? "")}`}>Xem hồ sơ công khai →</Link> : null}
       </header>
 
       <div className="volume-cover"><AuthPanel /></div>

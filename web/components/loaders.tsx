@@ -90,6 +90,94 @@ export function CommentSkeleton() {
   );
 }
 
+export function ProfileHeaderSkeleton() {
+  return (
+    <section className="surface profile-header skel" role="status" aria-label="Đang tải hồ sơ" aria-busy="true">
+      <span className="profile-avatar skel-bar" aria-hidden="true" />
+      <div className="profile-identity" aria-hidden="true">
+        <span className="skel-bar load-title" />
+        <span className="skel-bar load-sub" />
+        <span className="skel-bar load-pill" />
+        <span className="skel-bar load-sub" />
+        <span className="skel-bar load-sub" />
+      </div>
+    </section>
+  );
+}
+
+export function ProfileStatsSkeleton() {
+  return (
+    <div className="profile-stats" role="status" aria-label="Đang tải thống kê" aria-busy="true">
+      {Array.from({ length: 4 }, (_, index) => (
+        <div className="surface profile-stat skel" key={index} aria-hidden="true">
+          <span className="skel-bar load-title" />
+          <span className="skel-bar load-label" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ProfileEntrySkeleton() {
+  return (
+    <div className="surface profile-entry skel" role="status" aria-label="Đang tải truyện đã tương tác" aria-busy="true">
+      <span className="profile-entry-cover skel-cover" aria-hidden="true" />
+      <div className="profile-entry-body" aria-hidden="true">
+        <span className="skel-bar load-title" />
+        <span className="skel-bar load-sub" />
+        <div className="comment-bubble profile-comment">
+          <span className="skel-bar" />
+          <span className="skel-bar load-comment-tail" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function ProfileRecentSkeleton() {
+  return (
+    <div className="profile-recent surface" role="status" aria-label="Đang tải hoạt động gần đây" aria-busy="true">
+      {Array.from({ length: 3 }, (_, index) => (
+        <div className="profile-recent-row skel" key={index} aria-hidden="true">
+          <span className="skel-bar load-sub" />
+          <span className="skel-bar load-label" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ProfileTagsSkeleton() {
+  return (
+    <div className="profile-tag-list" role="status" aria-label="Đang tải thể loại" aria-busy="true">
+      {Array.from({ length: 3 }, (_, index) => <span className="skel-pill" key={index} aria-hidden="true" />)}
+    </div>
+  );
+}
+
+export function PublicProfileSkeleton() {
+  return (
+    <div className="profile-page profile-skeleton">
+      <ProfileHeaderSkeleton />
+      <ProfileStatsSkeleton />
+      <section className="surface profile-section" aria-label="Đang tải truyện đã đăng" aria-busy="true">
+        <div className="profile-section-head"><span className="skel-bar load-title" /></div>
+        <ProfileEntrySkeleton />
+      </section>
+      <section className="surface profile-section" aria-label="Đang tải truyện đang tham gia" aria-busy="true">
+        <div className="profile-section-head"><span className="skel-bar load-title" /></div>
+        <ProfileEntrySkeleton />
+      </section>
+      <ProfileRecentSkeleton />
+      <ProfileTagsSkeleton />
+      <section className="surface profile-section" aria-label="Đang tải truyện đã lưu" aria-busy="true">
+        <div className="profile-section-head"><span className="skel-bar load-title" /></div>
+        <ShelfSkeleton count={3} />
+      </section>
+    </div>
+  );
+}
+
 export function AuthSkeleton() {
   return (
     <div className="auth-shell auth-shell--state" role="status" aria-label="Đang khôi phục phiên" aria-busy="true">
