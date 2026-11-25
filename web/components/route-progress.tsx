@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 type Phase = "idle" | "loading" | "done";
 
-export default function RouteProgress() {
+export default function RouteProgress({ floating = false }: { floating?: boolean }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -35,5 +35,5 @@ export default function RouteProgress() {
     return () => window.clearTimeout(timer);
   }, [routeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return <div className={`route-progress is-${phase}`} aria-hidden="true" />;
+  return <div className={`route-progress is-${phase}${floating ? " route-progress--floating" : ""}`} aria-hidden="true" />;
 }

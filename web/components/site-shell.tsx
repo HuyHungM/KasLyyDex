@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import SiteHeader from "@/components/site-header";
+import RouteProgress from "@/components/route-progress";
 
 const LINKS = [
   { href: "/", label: "Trang chủ", icon: "home", exact: true },
@@ -54,6 +55,7 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
   const reading = pathname.startsWith("/read/");
   return (
     <div className={`site-shell${reading ? " reading" : ""}`}>
+      {reading ? <RouteProgress floating /> : null}
       {!reading && (
         <aside className="site-rail">
           <Link href="/" className="logo" aria-label="KasLyyDex — trang chủ">

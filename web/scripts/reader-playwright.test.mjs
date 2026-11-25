@@ -299,6 +299,19 @@ test("theme choice survives a reload in localStorage", async () => {
   await context.close();
 });
 
+test("leaving a chapter shows a route progress bar", async () => {
+  const { context, page } = await openPage({ width: 1280, height: 800 });
+  await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+  assert.equal(await page.locator(".route-progress--floating").count(), 1, "reader needs its own progress bar");
+  await page.locator(".reader-bar .back-link").click();
+  await page.waitForURL("**/manga/**");
+  await page.waitForTimeout(400);
+  const phase = await page.locator(".route-progress").getAttribute("class");
+  assert.match(phase ?? "", /route-progress is-(idle|done)/, `progress should retire after commit, got ${phase}`);
+  assert.equal(pageErrors.length, 0, `unexpected page errors: ${pageErrors.join(" | ")}`);
+  await context.close();
+});
+
 test("reader lazy-loads a small window and skeletons the rest", async () => {
   const { context, page } = await openPage({ width: 375, height: 812 });
   let imageRequests = 0;
