@@ -55,8 +55,9 @@ export default function RouteProgress() {
     let observer: ResizeObserver | null = null;
     let observed: Element | null = null;
     const update = () => {
-      const bar = document.querySelector(".reader-bar") ?? document.querySelector(".site-header");
-      document.documentElement.style.setProperty("--route-progress-top", `${Math.round(bar?.getBoundingClientRect().height ?? 0)}px`);
+      const bar = document.querySelector(".site-header") ?? document.querySelector(".reader-bar");
+      if (!bar) return;
+      document.documentElement.style.setProperty("--route-progress-top", `${Math.round(bar.getBoundingClientRect().bottom)}px`);
       if (bar && bar !== observed) {
         observer?.disconnect();
         observer = new ResizeObserver(update);

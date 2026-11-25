@@ -101,7 +101,12 @@ button:disabled { cursor: default; }
 .logo-mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 9px; background: var(--solid); color: var(--solid-ink); }
 .logo-mark svg { width: 21px; height: 21px; }
 .site-header { position: relative; border-bottom: 1px solid var(--line); background: var(--rail); }
-.route-progress { position: fixed; z-index: 30; inset: var(--route-progress-top, 0px) 0 auto; height: 2px; overflow: hidden; pointer-events: none; }
+:root { --route-progress-top: 68px; }
+@media (min-width: 900px) { :root { --route-progress-top: 73px; } }
+.route-progress { position: fixed; z-index: 30; inset: var(--route-progress-top) 0 auto; height: 2px; overflow: hidden; pointer-events: none; }
+@media (min-width: 900px) {
+  .site-shell:not(.reading) .route-progress { left: var(--rail-width); }
+}
 .route-progress::before {
   content: ""; display: block; width: 0; height: 100%; background: var(--accent);
   opacity: 0; transition: width 1200ms cubic-bezier(.2, .7, .2, 1), opacity 160ms ease;
