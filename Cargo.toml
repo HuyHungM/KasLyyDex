@@ -1,6 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/server", "crates/ui"]
+members = [
+    "crates/core",
+    "crates/server",
+    "crates/ui",
+    "crates/domain",
+    "crates/contracts",
+    "crates/reader-core",
+    "crates/reader-wasm",
+]
+exclude = ["crates/app"]
 
 [profile.release]
 opt-level = 3

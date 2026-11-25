@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+// Usage: node infra/healthcheck [baseUrl] [--liveness-only]
+// Bounded probe for deployment operators. Prints status codes only: no env
+// values, headers, query strings, tickets or database URLs.
+const base = process.argv[2] && !process.argv[2].startsWith("--")
+  ? process.argv[2].replace(/\/$/, "")
+  : "http://127.0.0.1:3000";
+const livenessOnly = process.argv.includes("--liveness-only");
+
+async function probe(path) {
+  try {
+    const response = await fetch(`${base}${path}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(2_000),
+    });
+    return { status: response.status, ok: response.ok };
+  } catch {
+    return { status: 0, ok: false };
+  }
+}
+
+const liveness = await probe("/api/v1/health");
+const result = { liveness, readiness: livenessOnly ? undefined : await probe("/api/v1/ready") };
+console.log(JSON.stringify(result));
+process.exit(liveness.ok && (livenessOnly || result.readiness.ok) ? 0 : 1);

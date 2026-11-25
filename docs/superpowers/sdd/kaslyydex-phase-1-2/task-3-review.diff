@@ -1,0 +1,272 @@
+diff --git a/docs/superpowers/sdd/kaslyydex-phase-1-2/task-3-report.md b/docs/superpowers/sdd/kaslyydex-phase-1-2/task-3-report.md
+new file mode 100644
+index 0000000..28a158e
+--- /dev/null
++++ b/docs/superpowers/sdd/kaslyydex-phase-1-2/task-3-report.md
+@@ -0,0 +1,88 @@
++# Task 3 report: Vercel-ready Next.js shell and health route (local scope)
++
++## Status
++
++Local implementation complete. External deployment steps were intentionally not
++performed: no Vercel login, link, deployment, Production promotion, Neon project,
++auth provider, or remote resource was created. The controller owns those steps.
++
++## Changes
++
++- Added `web/app/api/v1/health/route.ts`: `GET /api/v1/health` returns
++  `{ ok: true, version }`, with `version` imported from `web/package.json`.
++- Added `web/scripts/smoke.test.mjs` and `web/package.json` script `test:smoke`.
++  The test builds the app with `npm run build`, starts `next start` with every
++  `DATABASE|POSTGRES|NEON|AUTH|GOOGLE_CLIENT|RUST_CONTENT_API_ORIGIN`-matching
++  environment key removed, and asserts:
++  - `/` returns 200 and contains `KasLyyDex`;
++  - `/api/v1/health` returns 200, JSON content type, exactly the keys `ok` and
++    `version`, `ok === true`, and a non-empty string version.
++- Added `infra/vercel.md` with the local checks and the owner-owned Preview runbook.
++
++`web/app/layout.tsx`, `web/app/page.tsx`, and `web/next.config.ts` were intentionally
++left unchanged: the existing root/layout already provide the branded, buildable
++Vercel-ready shell (title contains KasLyyDex and the root route returns 200 without
++Neon/auth credentials). Rewriting them would risk the reader/catalog behavior Task 5
++must preserve. No auth, database, metrics, or runtime dependency was added. The
++health route is prerendered as `○ /api/v1/health`, so a function-runtime dependency
++is unnecessary.
++
++## RED evidence
++
++Command: `npm run test:smoke` from `web/`, before adding the health route.
++
++```text
++✔ root serves the branded KasLyyDex shell without Neon/auth credentials (634.8602ms)
++✖ GET /api/v1/health returns ok and version without secrets (24.5521ms)
++AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
++  404 !== 200
++ℹ tests 2
++ℹ pass 1
++ℹ fail 1
++```
++
++Exit code: 1. The build succeeded and the route table had no `/api/v1/health`.
++
++## GREEN evidence
++
++Command: `npm run test:smoke` from `web/`, after adding the health route.
++
++```text
++├ ○ /api/v1/health
++✔ root serves the branded KasLyyDex shell without Neon/auth credentials (633.642ms)
++✔ GET /api/v1/health returns ok and version without secrets (20.0967ms)
++ℹ tests 2
++ℹ pass 2
++ℹ fail 0
++```
++
++Exit code: 0.
++
++Other checks from `web/`:
++
++- `npx tsc --noEmit` — exit 0.
++- `npx eslint app/api/v1/health/route.ts scripts/smoke.test.mjs` — exit 0, no output.
++- `npm run build` — exit 0; route table includes `○ /api/v1/health` and preserves
++  `/`, `/search`, `/manga/[id]`, `/read/[chapterId]`, `/api/img`, and
++  `/api/pages/[chapterId]`.
++- `npm run lint` — exit 1 with exactly the four pre-existing errors already present
++  at base `e4b81ee`: `components/chapter-list.tsx:28:12`,
++  `components/continue-reading.tsx:14:5`, `components/manga-actions.tsx:20:12`,
++  `components/reader.tsx:52:5`, all `react-hooks/set-state-in-effect`. No rule was
++  disabled and no legacy consumer was refactored. The full-lint output is unchanged
++  from the baseline; the focused lint of this task's files is clean.
++- `git diff --check` — clean.
++
++## Residual concerns / blocked work
++
++- No Vercel Preview URL exists for this task. Task 4 is blocked until the owner logs
++  in, links the existing project with Root Directory `web`, runs `vercel deploy`
++  (Preview only), and verifies `/` and `/api/v1/health` as described in
++  `infra/vercel.md`.
++- The smoke test proves no Neon/auth credentials are required; it does not prove
++  Preview deployment, DNS, or Vercel project settings.
++- The home page still fetches MangaDex for catalog sections. That behavior and its
++  network dependency were preserved; this task does not replace the Axum content
++  boundary planned in Task 4/5.
++- `version` is baked into the prerendered health response at build time from
++  `web/package.json`; it does not change without a rebuild.
+diff --git a/infra/vercel.md b/infra/vercel.md
+new file mode 100644
+index 0000000..73bcb33
+--- /dev/null
++++ b/infra/vercel.md
+@@ -0,0 +1,52 @@
++# Vercel deployment — Task 3 local baseline
++
++## What exists locally
++
++- Next.js app directory: `web/`. Framework: Next.js 16.4.6. Build: `npm run build`.
++- Default Next.js output (no `output: "export"` or standalone override); Vercel uses its
++  native Next.js adapter.
++- `GET /api/v1/health` returns `{ ok: true, version }` with `version` read from
++  `web/package.json`. It is prerendered as a static route: no runtime env, database,
++  auth, metrics, or secret access.
++- Existing reader/catalog routes are unchanged: `/`, `/search`, `/manga/[id]`,
++  `/read/[chapterId]`, `/api/img`, `/api/pages/[chapterId]`.
++
++## Local verification
++
++Run from `web/`:
++
++```bash
++npm ci
++npm run test:smoke                  # build + node --test scripts/smoke.test.mjs
++npx tsc --noEmit
++npx eslint app/api/v1/health/route.ts scripts/smoke.test.mjs
++npm run lint                        # see known baseline errors below
++```
++
++`npm run test:smoke` starts the built app with Neon/auth-related environment keys
++removed and asserts that `/` returns 200 with KasLyyDex branding and that
++`/api/v1/health` returns exactly `ok` and `version`.
++
++Full `npm run lint` still reports four pre-existing `react-hooks/set-state-in-effect`
++errors in `components/chapter-list.tsx`, `components/continue-reading.tsx`,
++`components/manga-actions.tsx`, and `components/reader.tsx`. They are unrelated to
++Task 3 and were not suppressed or refactored here.
++
++## Owner-owned Preview steps (not executed in this task)
++
++1. `vercel login` with the account that owns the existing project.
++2. Link the repo to that project with `vercel link` from the repository root and keep
++   Project Settings → Root Directory as `web` (or link from `web/` if that project
++   already targets `web` as its root).
++3. Confirm Framework Preset is Next.js and Build Command is `npm run build`.
++4. Keep this Preview credential-free: do **not** set `DATABASE_URL`,
++   `BETTER_AUTH_SECRET`, `NEON_*`, `GOOGLE_CLIENT_*`, or other auth/Neon values.
++5. Create a Preview with `vercel deploy` (no `--prod`). Do not promote to Production.
++6. Verify `<preview-url>/` returns 200 and shows KasLyyDex, and
++   `<preview-url>/api/v1/health` returns `{ "ok": true, "version": "..." }`.
++7. Record the Preview URL only in the ignored SDD report
++   (`docs/superpowers/sdd/kaslyydex-phase-1-2/task-3-report.md`), never in source.
++
++Task 4 depends on that verified Preview before connecting Neon Managed Auth. This
++document is extended there with Axum `/api/content/*` and `RUST_CONTENT_API_ORIGIN`
++notes.
+diff --git a/web/app/api/v1/health/route.ts b/web/app/api/v1/health/route.ts
+new file mode 100644
+index 0000000..6c527ea
+--- /dev/null
++++ b/web/app/api/v1/health/route.ts
+@@ -0,0 +1,5 @@
++import { version } from "../../../../package.json";
++
++export function GET() {
++  return Response.json({ ok: true, version });
++}
+diff --git a/web/package.json b/web/package.json
+index 97c3235..d672b1b 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -6,7 +6,8 @@
+     "dev": "next dev",
+     "build": "next build",
+     "start": "next start",
+-    "lint": "eslint"
++    "lint": "eslint",
++    "test:smoke": "npm run build && node --test scripts/smoke.test.mjs"
+   },
+   "dependencies": {
+     "next": "16.4.6",
+diff --git a/web/scripts/smoke.test.mjs b/web/scripts/smoke.test.mjs
+new file mode 100644
+index 0000000..d5fd70e
+--- /dev/null
++++ b/web/scripts/smoke.test.mjs
+@@ -0,0 +1,89 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { once } from "node:events";
++import { createServer } from "node:net";
++import { after, before, test } from "node:test";
++import { fileURLToPath } from "node:url";
++
++const webDir = fileURLToPath(new URL("..", import.meta.url));
++const nextBin = fileURLToPath(new URL("../node_modules/next/dist/bin/next", import.meta.url));
++
++// Prove the shell never needs Neon/auth configuration to answer.
++const childEnv = { ...process.env };
++for (const key of Object.keys(childEnv)) {
++  if (/DATABASE|POSTGRES|NEON|AUTH|GOOGLE_CLIENT|RUST_CONTENT_API_ORIGIN/i.test(key)) {
++    delete childEnv[key];
++  }
++}
++childEnv.NODE_ENV = "production";
++
++let server;
++let baseUrl;
++let output = "";
++
++function freePort() {
++  return new Promise((resolve, reject) => {
++    const probe = createServer();
++    probe.once("error", reject);
++    probe.listen(0, "127.0.0.1", () => {
++      const { port } = probe.address();
++      probe.close(() => resolve(port));
++    });
++  });
++}
++
++async function waitForServer() {
++  const deadline = Date.now() + 30_000;
++  let lastError;
++  while (Date.now() < deadline) {
++    try {
++      const res = await fetch(`${baseUrl}/favicon.ico`, { signal: AbortSignal.timeout(2_000) });
++      await res.arrayBuffer();
++      return;
++    } catch (error) {
++      lastError = error;
++      await new Promise((resolve) => setTimeout(resolve, 200));
++    }
++  }
++  throw new Error(`next start did not become ready: ${lastError}\n${output}`);
++}
++
++before(async () => {
++  const port = await freePort();
++  baseUrl = `http://127.0.0.1:${port}`;
++  server = spawn(process.execPath, [nextBin, "start", "-p", String(port), "-H", "127.0.0.1"], {
++    cwd: webDir,
++    env: childEnv,
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  server.stdout.on("data", (chunk) => { output += chunk; });
++  server.stderr.on("data", (chunk) => { output += chunk; });
++  await waitForServer();
++});
++
++after(async () => {
++  if (!server || server.exitCode !== null) return;
++  const exited = once(server, "exit", { signal: AbortSignal.timeout(5_000) }).catch(() => {});
++  server.kill("SIGTERM");
++  await exited;
++  if (server.exitCode === null) server.kill("SIGKILL");
++});
++
++test("root serves the branded KasLyyDex shell without Neon/auth credentials", async () => {
++  const res = await fetch(`${baseUrl}/`);
++  assert.equal(res.status, 200);
++  const html = await res.text();
++  assert.match(html, /KasLyyDex/);
++});
++
++test("GET /api/v1/health returns ok and version without secrets", async () => {
++  const res = await fetch(`${baseUrl}/api/v1/health`);
++  assert.equal(res.status, 200);
++  assert.match(res.headers.get("content-type") ?? "", /application\/json/);
++
++  const body = await res.json();
++  assert.deepEqual(Object.keys(body).sort(), ["ok", "version"]);
++  assert.equal(body.ok, true);
++  assert.equal(typeof body.version, "string");
++  assert.ok(body.version.length > 0);
++});

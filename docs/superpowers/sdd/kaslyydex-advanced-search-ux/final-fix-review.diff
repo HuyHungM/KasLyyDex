@@ -1,0 +1,406 @@
+88ddc43 fix(search): fetch full provider prefixes before merge; correct baseline docs and CI comments
+ .github/workflows/ci.yml  |   5 +-
+ README.md                 |   5 +-
+ crates/core/src/search.rs | 183 ++++++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 160 insertions(+), 33 deletions(-)
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 24ba985..6ebf41e 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -76,28 +76,29 @@ jobs:
+       # Typechecking needs the generated WASM glue and Next's generated route
+       # types, so it runs after the build rather than before it.
+       - name: TypeScript check
+         run: npm run typecheck
+         working-directory: web
+ 
+       - name: Next lint
+         run: npm run lint
+         working-directory: web
+ 
+-      # Aggregate now includes Playwright suites, so Chromium must exist first.
++      # Aggregate is Node-only; the separate browser suites below need Chromium.
+       - name: Install Playwright Chromium
+         run: npm run browser:install
+         working-directory: web
+ 
+       - name: Aggregate Node / PGlite / API tests
+         run: npm run test:aggregate
+         working-directory: web
+ 
+       - name: Browser suites
+         run: npm run test:browser
+         working-directory: web
+ 
+       # Inspects tracked checkout content, so it is not vacuous on a clean tree.
+-      # Baseline covers committed prior-plan SDD .diff artifacts only; new findings fail.
++      # Baseline covers committed SDD .diff artifacts from prior and multi-source
++      # plans (1130 entries); new findings fail.
+       - name: Whitespace / conflict-marker check (baselined)
+         run: npm run check:whitespace
+         working-directory: web
+diff --git a/README.md b/README.md
+index e188d90..a5d2d99 100644
+--- a/README.md
++++ b/README.md
+@@ -130,22 +130,23 @@ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+ `.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+ secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
+ `reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
+ `cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
+ `build:wasm` → `build:web` → typecheck/lint; cài Playwright Chromium trước rồi
+ aggregate tests — 28 aggregate test files (7 source + 5 new among them), gồm
+ nguồn/fallback/UI/theme/dropdown/skeleton + search-contracts/search-source/
+ advanced-search/source-badge/ranking-skeleton; 2 suite mới dùng browser nên cần
+ Chromium; server được build trước qua pretest; rồi browser suites; tracked-file
+ whitespace/conflict-marker scan với baseline — không vacuous trên clean
+-checkout, nhưng 783 finding đã commit trong
+-`docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua
++checkout, nhưng 1130 finding đã commit trong
++`docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` và
++`docs/superpowers/sdd/kaslyydex-multi-source-ux/*.diff` được baseline hóa qua
+ `web/scripts/whitespace-baseline.txt` thay vì sửa artifact của plan cũ; mọi
+ finding mới vẫn fail.
+ 
+ Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+ CI scoped như trên. Xem
+ `infra/deployment.md` cho runbook, caveat first-deploy-is-production, chặn
+ 402 fair-use trước đây, migration/rollback Neon và các external gate chưa chạy.
+ Live Comick/MangaDex provider verification và kiểm tra ToS vẫn là manual gate;
+ không có deploy/push/merge nào được thực hiện cho các thay đổi này.
+ 
+diff --git a/crates/core/src/search.rs b/crates/core/src/search.rs
+index a12a9a0..dd0c29f 100644
+--- a/crates/core/src/search.rs
++++ b/crates/core/src/search.rs
+@@ -6,41 +6,43 @@ use crate::{Comick, Md};
+ 
+ type Err = String;
+ 
+ /// Sentinel for a query that requires an unconfigured provider. Kept distinct
+ /// from upstream error text so a failed request is a 502, not a 503.
+ pub const CONTENT_UNAVAILABLE: &str = "Comick provider is not configured";
+ 
+ /// Comick's official search declares page <= 50 (limit <= 50). A page past that
+ /// cannot be fetched, so it is reported partial instead of silently truncated.
+ const COMICK_MAX_PAGE: u32 = 50;
++const COMICK_PAGE_SIZE: u32 = 15;
+ const PAGE_SIZE: usize = 24;
+ 
+ struct ProviderPage {
+     results: Vec<MangaSummaryDto>,
+     total: u64,
+     partial: bool,
+     error: Option<Err>,
+ }
+ 
+ impl ProviderPage {
+     fn failed(error: Err) -> Self {
+         Self {
+             results: Vec::new(),
+             total: 0,
+             partial: true,
+             error: Some(error),
+         }
+     }
+ }
+ 
+-/// Merges one page of results from the selected catalog providers.
++/// Merges each provider's full prefix through the requested page, then slices
++/// the deterministically sorted result once.
+ pub async fn search_all(
+     md: &Md,
+     comick: Option<&Comick>,
+     query: &SearchQuery,
+ ) -> Result<SearchResponse, Err> {
+     let use_md = matches!(query.source.as_str(), "all" | "mangadex");
+     let use_comick = matches!(query.source.as_str(), "all" | "comick");
+     let comick = if use_comick {
+         Some(comick.ok_or_else(|| CONTENT_UNAVAILABLE.to_owned())?)
+     } else {
+@@ -112,79 +114,105 @@ fn cache_key(query: &SearchQuery) -> String {
+         query.page,
+         query.tags.join(","),
+         query.status.as_deref().unwrap_or(""),
+         query.sort,
+         query.source,
+         query.lang,
+         query.year.map(|year| year.to_string()).unwrap_or_default(),
+     )
+ }
+ 
++/// Collects every MangaDex page up to the requested one. The aggregator slices
++/// after merging, so a provider that only supplied page N would lose the
++/// correctly-ranked hits from earlier pages.
+ async fn mangadex_page(md: &Md, query: &SearchQuery) -> ProviderPage {
+-    let response = match md
+-        .search_filtered(
+-            &query.q,
+-            query.page,
+-            &query.tags,
+-            query.status.as_deref(),
+-            &query.sort,
+-            &query.lang,
+-        )
+-        .await
+-    {
+-        Ok(response) => response,
+-        Err(error) => return ProviderPage::failed(error),
+-    };
++    let mut results = Vec::new();
++    let mut total = 0;
++    let mut partial = false;
++    for page in 1..=query.page {
++        let response = match md
++            .search_filtered(
++                &query.q,
++                page,
++                &query.tags,
++                query.status.as_deref(),
++                &query.sort,
++                &query.lang,
++            )
++            .await
++        {
++            Ok(response) => response,
++            Err(error) => return ProviderPage::failed(error),
++        };
++        if page == 1 {
++            total = response.total;
++        }
++        partial |= response.partial.unwrap_or(false);
++        results.extend((*response).clone().results);
++    }
+     // MangaDex applies `lang` server-side via the official
+     // `availableTranslatedLanguage[]` filter. Year has no upstream filter in
+-    // this adapter, so it is applied to the returned page only and marked partial.
+-    let mut results = (*response).clone().results;
++    // this adapter, so it is applied to the prefix only and marked partial.
+     if let Some(year) = query.year {
+         results.retain(|item| item.year == Some(year));
++        partial = true;
+     }
+     ProviderPage {
+         results,
+-        total: response.total,
+-        partial: response.partial.unwrap_or(false) || query.year.is_some(),
++        total,
++        partial,
+         error: None,
+     }
+ }
+ 
++/// Collects every Comick page needed for a full `page * 24` prefix. Upstream
++/// pages hold 15 hits, so page N needs `ceil(N*24/15)` of them, capped at the
++/// documented page <= 50. Page 1 keeps the legacy single-request behavior.
+ async fn comick_page_for(comick: &Comick, query: &SearchQuery) -> ProviderPage {
+     if query.page > COMICK_MAX_PAGE {
+         return ProviderPage {
+             results: Vec::new(),
+             total: 0,
+             partial: true,
+             error: None,
+         };
+     }
+-    let results = match comick
+-        .search(&query.q, &query.lang, query.year, query.page)
+-        .await
+-    {
+-        Ok(results) => results,
+-        Err(error) => return ProviderPage::failed(error),
++    let needed = if query.page == 1 {
++        1
++    } else {
++        query
++            .page
++            .saturating_mul(PAGE_SIZE as u32)
++            .div_ceil(COMICK_PAGE_SIZE)
+     };
++    // A capped prefix cannot be exhaustive; never present its count as total.
++    let capped = needed > COMICK_MAX_PAGE;
++    let last = needed.min(COMICK_MAX_PAGE);
++    let mut results = Vec::new();
++    for page in 1..=last {
++        match comick.search(&query.q, &query.lang, query.year, page).await {
++            Ok(items) => results.extend(items),
++            Err(error) => return ProviderPage::failed(error),
++        }
++    }
+     // Verified official /genre/ slugs exist, but no official endpoint maps a
+     // MangaDex tag UUID to a Comick genre slug. Never guess one: report partial.
+     // /v1.0/search/ has no `lang` field and the summary hit carries no language,
+     // so Comick results cannot be language-filtered without per-title lookups;
+     // report partial instead of inventing a param or dropping hits. `status` is
+     // filtered locally for the same "cannot guarantee full coverage" reason.
+-    let mut results = results;
+     if let Some(status) = query.status.as_deref() {
+         results.retain(|item| item.status == status);
+     }
+     ProviderPage {
+         total: results.len() as u64,
+-        partial: query.lang != "all" || !query.tags.is_empty() || query.status.is_some(),
++        partial: capped || query.lang != "all" || !query.tags.is_empty() || query.status.is_some(),
+         results,
+         error: None,
+     }
+ }
+ 
+ fn compare(a: &MangaSummaryDto, b: &MangaSummaryDto, sort: &str) -> Ordering {
+     let primary = match sort {
+         "follows" => b.follows.unwrap_or(0).cmp(&a.follows.unwrap_or(0)),
+         "rating" => b
+             .rating
+@@ -292,42 +320,56 @@ mod tests {
+             }
+         });
+         Fixture {
+             base,
+             hits,
+             paths,
+             task,
+         }
+     }
+ 
++    fn path_param(path: &str, name: &str) -> Option<u32> {
++        let query = path.split_once('?')?.1;
++        query
++            .split('&')
++            .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
++            .and_then(|value| value.parse().ok())
++    }
++
+     fn respond(mode: &Mode, path: &str) -> (String, bool) {
+         match mode {
+             Mode::Md { items, fail } => {
+                 if path.starts_with("/manga?") {
++                    let offset = path_param(path, "offset").unwrap_or(0) as usize;
++                    let limit = path_param(path, "limit").unwrap_or(PAGE_SIZE as u32) as usize;
++                    let page: Vec<_> = items.iter().skip(offset).take(limit).cloned().collect();
+                     let total = items.len();
+-                    return (json!({ "total": total, "data": items }).to_string(), *fail);
++                    return (json!({ "total": total, "data": page }).to_string(), *fail);
+                 }
+                 if path.starts_with("/statistics/manga") {
+                     let stats: serde_json::Map<String, Value> = items
+                         .iter()
+                         .filter_map(|item| {
+                             let id = item["id"].as_str()?;
+                             Some((id.to_owned(), item["statistics"].clone()))
+                         })
+                         .collect();
+                     return (json!({ "statistics": stats }).to_string(), false);
+                 }
+                 (json!({ "total": 0, "data": [] }).to_string(), false)
+             }
+             Mode::Comick { hits, fail } => {
+                 if path.starts_with("/v1.0/search/") {
+-                    return (json!(hits).to_string(), *fail);
++                    let start =
++                        path_param(path, "page").unwrap_or(1).saturating_sub(1) as usize * 15;
++                    let page: Vec<_> = hits.iter().skip(start).take(15).cloned().collect();
++                    return (json!(page).to_string(), *fail);
+                 }
+                 ("[]".into(), false)
+             }
+         }
+     }
+ 
+     fn md_item(id: &str, title: &str, follows: u64) -> Value {
+         json!({
+             "id": id,
+             "attributes": {
+@@ -699,11 +741,94 @@ mod tests {
+         .await;
+         let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
+ 
+         for source in ["comick", "all"] {
+             let error = search_all(&md, None, &query(source, "all", "follows"))
+                 .await
+                 .expect_err("missing Comick adapter must be reported");
+             assert_eq!(error, CONTENT_UNAVAILABLE);
+         }
+     }
++
++    #[tokio::test]
++    async fn source_all_page_2_uses_full_prefix_before_slicing() {
++        let items = (0..30)
++            .map(|i| md_item(&format!("md-{i:02}"), &format!("A-{i:02}"), i))
++            .collect();
++        let md_fx = fixture(Mode::Md { items, fail: false }).await;
++        let hits = (0..30)
++            .map(|i| comick_hit(&format!("ck-{i:02}"), &format!("B-{i:02}"), i, "5.0"))
++            .collect();
++        let ck_fx = fixture(Mode::Comick { hits, fail: false }).await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let mut cfg = query("all", "all", "title");
++        cfg.page = 2;
++        let response = search_all(&md, Some(&comick), &cfg)
++            .await
++            .expect("multi-source page 2 succeeds");
++
++        let expected: Vec<String> = (24..30)
++            .map(|i| format!("md-{i:02}"))
++            .chain((0..18).map(|i| format!("comick:ck-{i:02}")))
++            .collect();
++        let ids: Vec<_> = response.results.iter().map(|r| r.id.as_str()).collect();
++        assert_eq!(ids, expected.iter().map(String::as_str).collect::<Vec<_>>());
++        assert_eq!(response.partial, Some(false));
++    }
++
++    #[tokio::test]
++    async fn comick_page_2_fetches_full_prefix() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![],
++            fail: false,
++        })
++        .await;
++        let hits = (0..60)
++            .map(|i| comick_hit(&format!("ck-{i:02}"), &format!("T-{i:02}"), i, "5.0"))
++            .collect();
++        let ck_fx = fixture(Mode::Comick { hits, fail: false }).await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let mut cfg = query("comick", "all", "title");
++        cfg.page = 2;
++        let response = search_all(&md, Some(&comick), &cfg)
++            .await
++            .expect("comick page 2 succeeds");
++
++        let expected: Vec<String> = (24..48).map(|i| format!("comick:ck-{i:02}")).collect();
++        let ids: Vec<_> = response.results.iter().map(|r| r.id.as_str()).collect();
++        assert_eq!(ids, expected.iter().map(String::as_str).collect::<Vec<_>>());
++        assert_eq!(ck_fx.count(), 4, "page 2 needs four 15-item Comick pages");
++        assert_eq!(response.partial, Some(false));
++    }
++
++    #[tokio::test]
++    async fn comick_prefix_capped_at_documented_page_is_partial() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![],
++            fail: false,
++        })
++        .await;
++        let hits = (0..60)
++            .map(|i| comick_hit(&format!("ck-{i:02}"), &format!("T-{i:02}"), i, "5.0"))
++            .collect();
++        let ck_fx = fixture(Mode::Comick { hits, fail: false }).await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let mut cfg = query("comick", "all", "title");
++        cfg.page = 32; // needs 52 Comick pages, past the documented cap of 50
++        let response = search_all(&md, Some(&comick), &cfg)
++            .await
++            .expect("capped comick search still responds");
++
++        assert_eq!(ck_fx.count(), 50, "fetching stops at the documented cap");
++        assert_eq!(
++            response.partial,
++            Some(true),
++            "a capped prefix is not exhaustive"
++        );
++    }
+ }

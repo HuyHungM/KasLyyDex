@@ -1,0 +1,272 @@
+a968291 feat: add source metadata to content contracts
+ crates/contracts/src/lib.rs           | 82 +++++++++++++++++++++++++++++++++++
+ crates/core/src/mangadex.rs           |  4 ++
+ web/lib/contracts.ts                  |  9 ++++
+ web/scripts/source-contracts.test.mjs | 24 ++++++++++
+ 4 files changed, 119 insertions(+)
+diff --git a/crates/contracts/src/lib.rs b/crates/contracts/src/lib.rs
+index 43d0980..68114e2 100644
+--- a/crates/contracts/src/lib.rs
++++ b/crates/contracts/src/lib.rs
+@@ -49,31 +49,55 @@ pub struct MangaSummaryDto {
+     pub author: String,
+     pub artist: String,
+     #[serde(default)]
+     pub rating: Option<f64>,
+     #[serde(default)]
+     pub follows: Option<u64>,
+     #[serde(default)]
+     pub latest_chapter: Option<String>,
++    #[serde(default = "default_source")]
++    pub source: String,
++    #[serde(default = "default_source_label")]
++    pub source_label: String,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct ChapterDto {
+     pub id: ChapterId,
+     #[serde(default)]
+     pub chapter: Option<String>,
+     #[serde(default)]
+     pub volume: Option<String>,
+     pub title: String,
+     pub lang: String,
+     pub pages: u64,
+     pub external_url: Option<String>,
+     pub publish_at: String,
+     pub group: String,
++    #[serde(default = "default_source")]
++    pub source: String,
++    #[serde(default = "default_source_label")]
++    pub source_label: String,
++}
++
++fn default_source() -> String {
++    "mangadex".to_owned()
++}
++
++fn default_source_label() -> String {
++    "MangaDex".to_owned()
++}
++
++/// Display label for a source id; unknown sources keep the primary label.
++pub fn source_label(source: &str) -> &'static str {
++    match source {
++        "comick" => "Comick",
++        _ => "MangaDex",
++    }
+ }
+ 
+ /// Single-chapter authority for the BFF reader ticket. Manga ownership comes
+ /// from the chapter's manga relationship, not from a client-supplied list.
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct ChapterMetadataDto {
+     pub id: String,
+     pub manga_id: String,
+@@ -231,16 +255,18 @@ mod tests {
+             chapter: Some("1".into()),
+             volume: None,
+             title: String::new(),
+             lang: "vi".into(),
+             pages: 12,
+             external_url: None,
+             publish_at: String::new(),
+             group: String::new(),
++            source: "mangadex".into(),
++            source_label: "MangaDex".into(),
+         };
+         let chapters = serde_json::to_value(chapter).unwrap();
+         for field in [
+             "id",
+             "chapter",
+             "volume",
+             "title",
+             "lang",
+@@ -291,9 +317,65 @@ mod tests {
+                 "error": {
+                     "code": "VALIDATION_ERROR",
+                     "message": "Invalid input",
+                     "details": { "field": "title" }
+                 }
+             })
+         );
+     }
++
++    #[test]
++    fn manga_summary_defaults_source_to_mangadex() {
++        let legacy = json!({
++            "id": "manga-id",
++            "title": "Title",
++            "cover_file": null,
++            "status": "ongoing",
++            "year": 2024,
++            "description": "Description",
++            "tags": ["Action"],
++            "author": "Author",
++            "artist": "Artist"
++        });
++        let manga: MangaSummaryDto = serde_json::from_value(legacy.clone()).unwrap();
++        assert_eq!(manga.source, "mangadex");
++        assert_eq!(manga.source_label, "MangaDex");
++
++        let mut comick = legacy;
++        comick["source"] = json!("comick");
++        comick["source_label"] = json!("Comick");
++        let manga: MangaSummaryDto = serde_json::from_value(comick).unwrap();
++        assert_eq!(manga.source, "comick");
++        assert_eq!(manga.source_label, "Comick");
++    }
++
++    #[test]
++    fn chapter_defaults_source_to_mangadex() {
++        let legacy = json!({
++            "id": "chapter-id",
++            "chapter": "1",
++            "volume": null,
++            "title": "Title",
++            "lang": "vi",
++            "pages": 12,
++            "external_url": null,
++            "publish_at": "2026-11-20T00:00:00Z",
++            "group": "Group"
++        });
++        let chapter: ChapterDto = serde_json::from_value(legacy.clone()).unwrap();
++        assert_eq!(chapter.source, "mangadex");
++        assert_eq!(chapter.source_label, "MangaDex");
++
++        let mut comick = legacy;
++        comick["source"] = json!("comick");
++        let chapter: ChapterDto = serde_json::from_value(comick).unwrap();
++        assert_eq!(chapter.source, "comick");
++        assert_eq!(source_label(&chapter.source), "Comick");
++    }
++
++    #[test]
++    fn source_label_maps_known_sources() {
++        assert_eq!(source_label("mangadex"), "MangaDex");
++        assert_eq!(source_label("comick"), "Comick");
++        assert_eq!(source_label("unknown"), "MangaDex");
++    }
+ }
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 7cfd27f..249a5ac 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -498,16 +498,18 @@ fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<
+         } else {
+             attributes["readableAt"]
+                 .as_str()
+                 .or(attributes["publishAt"].as_str())
+         }
+         .unwrap_or_default()
+         .to_owned(),
+         group,
++        source: "mangadex".to_owned(),
++        source_label: "MangaDex".to_owned(),
+     })
+ }
+ 
+ fn chapter_metadata_dto(chapter: &Value) -> Option<ChapterMetadataDto> {
+     let id = chapter["id"].as_str().filter(|id| !id.trim().is_empty())?;
+     let relationships = chapter["relationships"].as_array()?;
+     let manga = relationships.iter().find(|relationship| {
+         relationship["type"] == "manga"
+@@ -590,16 +592,18 @@ fn summary(m: &Value) -> Option<MangaSummaryDto> {
+             names.last().cloned().unwrap_or_default()
+         } else {
+             names.first().cloned().unwrap_or_default()
+         },
+         artist: names.first().cloned().unwrap_or_default(),
+         rating: None,
+         follows: None,
+         latest_chapter: None,
++        source: "mangadex".to_owned(),
++        source_label: "MangaDex".to_owned(),
+     })
+ }
+ 
+ fn items(data: &Value) -> &[Value] {
+     data["data"]
+         .as_array()
+         .map(Vec::as_slice)
+         .unwrap_or_default()
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index ca59f01..657a414 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -86,16 +86,18 @@ export type MangaSummaryDto = {
+   description: string;
+   tags: string[];
+   tag_ids: string[];
+   author: string;
+   artist: string;
+   rating: number | null;
+   follows: number | null;
+   latest_chapter: string | null;
++  source?: string;
++  source_label?: string;
+ };
+ 
+ export type LatestChapterSummaryDto = {
+   id: string;
+   chapter: string | null;
+   lang: string;
+   publish_at: string;
+ };
+@@ -115,18 +117,25 @@ export type ChapterDto = {
+   chapter: string | null;
+   volume: string | null;
+   title: string;
+   lang: string;
+   pages: number;
+   external_url: string | null;
+   publish_at: string;
+   group: string;
++  source?: string;
++  source_label?: string;
++  readable?: boolean;
+ };
+ 
++export function sourceLabel(source?: string): string {
++  return source === "comick" ? "Comick" : "MangaDex";
++}
++
+ /// Single-chapter authority from Axum/MangaDex entity metadata. The public
+ /// chapter lists are capped at 2000 and cannot establish ownership alone.
+ export type ChapterMetadataDto = {
+   id: string;
+   manga_id: string;
+   lang: string;
+   pages: number;
+   external_url: string | null;
+diff --git a/web/scripts/source-contracts.test.mjs b/web/scripts/source-contracts.test.mjs
+new file mode 100644
+index 0000000..0ff22f3
+--- /dev/null
++++ b/web/scripts/source-contracts.test.mjs
+@@ -0,0 +1,24 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { sourceLabel } from "../lib/contracts.ts";
++
++test("sourceLabel maps known sources and falls back to MangaDex", () => {
++  assert.equal(sourceLabel(), "MangaDex");
++  assert.equal(sourceLabel("comick"), "Comick");
++  assert.equal(sourceLabel("unknown"), "MangaDex");
++});
++
++test("legacy ChapterDto without source fields stays usable", () => {
++  const legacyChapter = {
++    id: "chapter-id",
++    chapter: "1",
++    volume: null,
++    title: "Title",
++    lang: "vi",
++    pages: 12,
++    external_url: null,
++    publish_at: "2026-11-20T00:00:00Z",
++    group: "Group",
++  };
++  assert.equal(sourceLabel(legacyChapter.source), "MangaDex");
++});

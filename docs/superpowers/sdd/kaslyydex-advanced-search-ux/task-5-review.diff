@@ -1,0 +1,580 @@
+c3b1291 feat: show source as a cover badge
+ web/app/bxh/page.tsx                   |   5 +-
+ web/app/globals.css                    |   6 +-
+ web/app/manga/[id]/page.tsx            |   6 +-
+ web/app/page.tsx                       |  14 +--
+ web/components/manga-card.tsx          |   6 +-
+ web/components/source-badge.tsx        |   7 ++
+ web/lib/contracts.ts                   |  14 ++-
+ web/scripts/reader-playwright.test.mjs |   6 +-
+ web/scripts/source-badge.test.mjs      | 152 +++++++++++++++++++++++++++++++++
+ web/scripts/source-ui.test.mjs         |  28 +++---
+ 10 files changed, 218 insertions(+), 26 deletions(-)
+diff --git a/web/app/bxh/page.tsx b/web/app/bxh/page.tsx
+index 3ec7e35..220d50c 100644
+--- a/web/app/bxh/page.tsx
++++ b/web/app/bxh/page.tsx
+@@ -1,13 +1,13 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+-import { titleWithSource } from "@/lib/format";
++import { SourceBadge } from "@/components/source-badge";
+ 
+ type Props = { searchParams: Promise<{ kind?: string }> };
+ 
+ const TABS = [
+   ["follows", "Theo dõi"],
+   ["rating", "Đánh giá"],
+   ["new", "Mới cập nhật"],
+ ] as const;
+@@ -32,19 +32,20 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
+           <li key={manga.id}>
+             <Link href={`/manga/${manga.id}`} className="rank-row">
+               <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+               <span className="rank-cover">
+                 {cover && (
+                   // eslint-disable-next-line @next/next/no-img-element
+                   <img src={cover} alt="" loading="lazy" />
+                 )}
++                <SourceBadge source={manga.source} />
+               </span>
+               <span className="rank-title">
+-                {titleWithSource(manga.title, manga.source)}
++                {manga.title}
+                 <small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small>
+               </span>
+               {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
+             </Link>
+           </li>
+         );
+       })}
+     </ol>
+diff --git a/web/app/globals.css b/web/app/globals.css
+index d0c30af..c954f0f 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -157,18 +157,20 @@ button:disabled { cursor: default; }
+ .continue-cover { width: 44px; height: 66px; flex: none; overflow: hidden; border-radius: 6px; background: var(--hover); }
+ .continue-cover img { width: 100%; height: 100%; object-fit: cover; }
+ .continue-meta { flex: 1; min-width: 0; }
+ .cc-title, .card-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: .875rem; line-height: 1.4; font-weight: 600; }
+ .cc-ch, .card-year { margin-top: 4px; color: var(--muted); font-size: .75rem; }
+ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-color: var(--accent); }
+ .feed-row { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 12px; align-items: start; padding: 12px 16px; }
+ .feed-row + .feed-row { border-top: 1px solid var(--line); }
+-.feed-cover, .rank-cover { display: block; width: 100%; aspect-ratio: 2 / 3; overflow: hidden; border-radius: 6px; background: var(--hover); }
++.feed-cover, .rank-cover { position: relative; display: block; width: 100%; aspect-ratio: 2 / 3; overflow: hidden; border-radius: 6px; background: var(--hover); }
+ .feed-cover img, .rank-cover img { width: 100%; height: 100%; object-fit: cover; }
++.source-badge { position: absolute; z-index: 2; top: 7px; right: 7px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: .625rem; font-weight: 700; line-height: 1.35; }
++.feed-cover .source-badge, .rank-cover .source-badge { inset: auto 0 0; padding: 1px 2px; border-radius: 0 0 5px 5px; font-size: .5rem; text-align: center; }
+ .feed-details h3 { font-size: .9375rem; line-height: 1.32; }
+ .feed-details h3 a { display: inline-flex; min-height: 44px; align-items: center; }
+ .feed-details h3 a:hover, .rank-row:hover .rank-title, .card:hover .card-title, .continue-card:hover, .shelf-story:hover { color: var(--accent); }
+ .chapter-pills, .tag-options { display: flex; flex-wrap: wrap; gap: 6px; }
+ .chapter-pill { display: inline-flex; min-height: 44px; align-items: center; flex-wrap: wrap; gap: 5px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: .75rem; font-weight: 600; }
+ .chapter-pill.fresh { background: var(--soft); color: var(--accent); }
+ .chapter-pill:hover, .filter-tag:hover { border-color: var(--accent); }
+ .chapter-pill abbr { padding-inline: 3px; border: 1px solid currentColor; border-radius: 4px; font-size: .625rem; letter-spacing: .04em; text-decoration: none; }
+@@ -275,17 +277,17 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .shelf-card { display: grid; align-content: start; justify-items: start; gap: 9px; padding: 13px; }
+ .shelf-story { display: grid; width: 100%; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 12px; }
+ .shelf-story strong { overflow-wrap: anywhere; }
+ 
+ /* Chi tiết truyện */
+ .back-link { display: inline-flex; min-height: 44px; align-items: center; color: var(--muted); font-weight: 600; font-size: .8125rem; }
+ .back-link:hover { color: var(--accent); }
+ .manga-head { display: grid; align-items: start; gap: clamp(16px, 3vw, 34px); margin: 4px 0 22px; padding: clamp(14px, 3vw, 30px); background: linear-gradient(145deg, var(--hover), var(--surface) 62%); }
+-.manga-cover { width: min(156px, 100%); aspect-ratio: 2 / 3; overflow: hidden; border-radius: 10px; background: var(--hover); box-shadow: 0 8px 22px #0003; }
++.manga-cover { position: relative; width: min(156px, 100%); aspect-ratio: 2 / 3; overflow: hidden; border-radius: 10px; background: var(--hover); box-shadow: 0 8px 22px #0003; }
+ .manga-cover img { width: 100%; height: 100%; object-fit: cover; }
+ .manga-title { margin-bottom: 13px; text-wrap: balance; }
+ .meta-row, .tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: .8125rem; }
+ .meta-row b { color: var(--text); }
+ .tag, .stat-chip { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+ .stat-chip { background: var(--soft); color: var(--accent); font-weight: 600; }
+ .tags, .desc, .manga-info .actions { margin-top: 13px; }
+ .desc { max-width: 70ch; color: var(--muted); white-space: pre-line; }
+diff --git a/web/app/manga/[id]/page.tsx b/web/app/manga/[id]/page.tsx
+index f392961..d155609 100644
+--- a/web/app/manga/[id]/page.tsx
++++ b/web/app/manga/[id]/page.tsx
+@@ -1,19 +1,20 @@
+ /* eslint-disable @next/next/no-img-element */
+ import type { Metadata } from "next";
+ import { Suspense } from "react";
+ import { notFound } from "next/navigation";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type ChaptersResponse, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterLabel, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
++import { chapterLabel, filterUrl, statusText, tagLabel } from "@/lib/format";
+ import ChapterList from "@/components/chapter-list";
+ import MangaActions from "@/components/manga-actions";
+ import { SectionTitle } from "@/components/manga-card";
++import { SourceBadge } from "@/components/source-badge";
+ import CommentSection from "@/components/comments/CommentSection";
+ 
+ type Props = { params: Promise<{ id: string }> };
+ 
+ export async function generateMetadata({ params }: Props): Promise<Metadata> {
+   const { id } = await params;
+   try {
+     const manga = await (await serverContent()).manga(id);
+@@ -39,19 +40,20 @@ async function MangaContent({ params }: Props) {
+   const cover = coverImageUrl(manga, 512);
+ 
+   return (
+     <main className="wrap">
+       <Link href="/" className="back-link">← Về trang chủ</Link>
+       <section className="surface manga-head">
+         <div className="manga-cover">
+           {cover && <img src={cover} alt="" fetchPriority="high" />}
++          <SourceBadge source={manga.source} />
+         </div>
+         <div className="manga-info">
+-          <h1 className="manga-title">{titleWithSource(manga.title, manga.source)}</h1>
++          <h1 className="manga-title">{manga.title}</h1>
+           <p className="meta-row">
+             {manga.author ? <>Tác giả: <b>{manga.author}</b></> : null}
+             {manga.status ? <span className="stat-chip">{statusText(manga.status)}</span> : null}
+             {manga.year ? <span>{manga.year}</span> : null}
+             <span>{active.length} chapter ({lang === "vi" ? "tiếng Việt" : "English"})</span>
+           </p>
+           {manga.tags.length > 0 && (
+             <div className="tags">
+diff --git a/web/app/page.tsx b/web/app/page.tsx
+index 16d466e..3a92ce1 100644
+--- a/web/app/page.tsx
++++ b/web/app/page.tsx
+@@ -1,14 +1,15 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterName, relDate, statusText, titleWithSource } from "@/lib/format";
++import { chapterName, relDate, statusText } from "@/lib/format";
+ import { CardSkeleton, MangaCard } from "@/components/manga-card";
++import { SourceBadge } from "@/components/source-badge";
+ import ContinueReading from "@/components/continue-reading";
+ 
+ async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
+   try {
+     return await load(await serverContent());
+   } catch {
+     return fallback;
+   }
+@@ -78,26 +79,27 @@ function FeatureFallback() {
+ 
+ async function Featured() {
+   const [manga] = await withContent((client) => client.rank("follows"), [] as MangaSummaryDto[]);
+   if (!manga) return <FeatureFallback />;
+   const cover = coverImageUrl(manga, 512);
+   return (
+     <section className="feature" aria-labelledby="featured-title">
+       {cover && (
+-        <div className="feature-art" aria-hidden="true">
++        <div className="feature-art">
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img className="feature-bleed" src={cover} alt="" />
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img className="feature-poster" src={cover} alt="" fetchPriority="high" />
++          <SourceBadge source={manga.source} />
+         </div>
+       )}
+       <div className="feature-copy">
+         <p className="feature-label"><span aria-hidden="true" />Truyện nổi bật</p>
+-        <h1 id="featured-title">{titleWithSource(manga.title, manga.source)}</h1>
++        <h1 id="featured-title">{manga.title}</h1>
+         <p className="feature-meta">
+           {manga.rating && manga.rating > 0 ? <strong>★ {manga.rating.toFixed(1)}</strong> : null}
+           {manga.year ? <span>{manga.year}</span> : null}
+           {manga.status ? <span>{statusText(manga.status)}</span> : null}
+         </p>
+         {manga.description ? <p className="feature-description">{manga.description}</p> : null}
+         <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
+       </div>
+@@ -124,19 +126,20 @@ async function LatestFeed() {
+         const cover = coverImageUrl(item, 256);
+         return (
+           <article className="feed-row" key={item.id}>
+             <Link href={`/manga/${item.id}`} className="feed-cover" aria-label={`Xem truyện ${item.title}`}>
+               {cover && (
+                 // eslint-disable-next-line @next/next/no-img-element
+                 <img src={cover} alt="" loading="lazy" decoding="async" />
+               )}
++              <SourceBadge source={item.source} />
+             </Link>
+             <div className="feed-details">
+-              <h3><Link href={`/manga/${item.id}`}>{titleWithSource(item.title, item.source)}</Link></h3>
++              <h3><Link href={`/manga/${item.id}`}>{item.title}</Link></h3>
+               <div className="chapter-pills">
+                 {item.chapters.map((chapter, index) => (
+                   <Link
+                     key={chapter.id}
+                     href={`/read/${chapter.id}?manga=${encodeURIComponent(item.id)}&lang=${chapter.lang}`}
+                     className={index === 0 ? "chapter-pill fresh" : "chapter-pill"}
+                   >
+                     {chapterName(chapter.chapter)}
+@@ -163,18 +166,19 @@ async function RankPanel() {
+         <li key={manga.id}>
+           <Link href={`/manga/${manga.id}`} className="rank-row">
+             <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+             <span className="rank-cover">
+               {coverImageUrl(manga, 256) && (
+                 // eslint-disable-next-line @next/next/no-img-element
+                 <img src={coverImageUrl(manga, 256) ?? ""} alt="" loading="lazy" />
+               )}
++              <SourceBadge source={manga.source} />
+             </span>
+-            <span className="rank-title">{titleWithSource(manga.title, manga.source)}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
++            <span className="rank-title">{manga.title}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
+             {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
+           </Link>
+         </li>
+       ))}
+     </ol>
+   );
+ }
+ 
+diff --git a/web/components/manga-card.tsx b/web/components/manga-card.tsx
+index 9b0cb62..62068cb 100644
+--- a/web/components/manga-card.tsx
++++ b/web/components/manga-card.tsx
+@@ -1,25 +1,27 @@
+ import Link from "next/link";
+ import { coverImageUrl, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterName, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
++import { chapterName, filterUrl, statusText, tagLabel } from "@/lib/format";
++import { SourceBadge } from "@/components/source-badge";
+ 
+ export function MangaCard({ manga, rank }: { manga: MangaSummaryDto; rank?: number }) {
+   const cover = coverImageUrl(manga, 256);
+   return (
+     <Link href={`/manga/${manga.id}`} className="card">
+       <div className="card-cover">
+         {cover ? (
+           <img src={cover} alt="" loading="lazy" decoding="async" />
+         ) : (
+           <div className="no-cover" aria-hidden="true">Chưa có bìa</div>
+         )}
+         {rank !== undefined && <span className="rank-num">{rank}</span>}
++        <SourceBadge source={manga.source} />
+       </div>
+-      <h3 className="card-title">{titleWithSource(manga.title, manga.source)}</h3>
++      <h3 className="card-title">{manga.title}</h3>
+       <p className="card-year">
+         {manga.rating && manga.rating > 0 ? `★ ${manga.rating.toFixed(1)} · ` : ""}
+         {manga.latest_chapter
+           ? chapterName(manga.latest_chapter)
+           : manga.status
+             ? statusText(manga.status)
+             : manga.year?.toString() ?? ""}
+       </p>
+diff --git a/web/components/source-badge.tsx b/web/components/source-badge.tsx
+new file mode 100644
+index 0000000..add2262
+--- /dev/null
++++ b/web/components/source-badge.tsx
+@@ -0,0 +1,7 @@
++import { sourceLabel } from "@/lib/contracts";
++
++export function SourceBadge({ source }: { source?: string }) {
++  if (source !== "comick" && source !== "mangadex") return null;
++  const label = sourceLabel(source);
++  return <span className="source-badge" role="img" aria-label={`Nguồn: ${label}`}>{label}</span>;
++}
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index b3d8455..39c5fd7 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -250,20 +250,32 @@ export class ContentClientError extends Error {
+ }
+ 
+ /// All MangaDex image bytes flow through Axum's `/api/content/img` handler.
+ export function contentImageUrl(upstream: string): string {
+   return `${contentPath("img")}?u=${encodeURIComponent(upstream)}`;
+ }
+ 
+ export function coverImageUrl(
+-  manga: Pick<MangaSummaryDto, "id" | "cover_file">,
++  manga: Pick<MangaSummaryDto, "id" | "cover_file" | "source">,
+   size = 256,
+ ): string | null {
+   if (!manga.cover_file) return null;
++  if (manga.source === "comick") {
++    // Comick normalization supplies a full CDN URL; only the proxy allowlist's
++    // HTTPS host may pass through.
++    let upstream: URL;
++    try {
++      upstream = new URL(manga.cover_file);
++    } catch {
++      return null;
++    }
++    if (upstream.protocol !== "https:" || upstream.hostname !== "meo.comick.pictures") return null;
++    return contentImageUrl(upstream.href);
++  }
+   return contentImageUrl(
+     `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover_file}.${size}.jpg`,
+   );
+ }
+ 
+ /// Defensive boundary normalization for any legacy `/api/img?u=` page URL that
+ /// may still arrive from cached content. No upstream fetch happens here.
+ export function normalizePageUrls(pages: string[]): string[] {
+diff --git a/web/scripts/reader-playwright.test.mjs b/web/scripts/reader-playwright.test.mjs
+index ef7d9b7..aaeb9ab 100644
+--- a/web/scripts/reader-playwright.test.mjs
++++ b/web/scripts/reader-playwright.test.mjs
+@@ -217,17 +217,21 @@ async function openPage(viewport) {
+   return { context, page };
+ }
+ 
+ test("desktop and 375px shells render decodable covers, no horizontal overflow, and no direct MangaDex requests", async () => {
+   for (const [name, viewport] of [["desktop", { width: 1280, height: 800 }], ["mobile", { width: 375, height: 812 }]]) {
+     const { context, page } = await openPage(viewport);
+     await page.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
+     await page.locator(".feature h1").waitFor();
+-    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga (MangaDex)");
++    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga");
++    const badge = page.locator(".feature-art .source-badge");
++    assert.equal(await badge.textContent(), "MangaDex");
++    assert.equal(await badge.getAttribute("aria-label"), "Nguồn: MangaDex");
++    assert.ok(await badge.isVisible());
+     assert.ok(await page.locator(".popular-rail .card").count() >= 1);
+     const cover = page.locator(".feature-poster");
+     assert.ok(cover && await cover.getAttribute("src").then((src) => src.startsWith("/api/content/img?u=")));
+     await assertDecoded(cover, `${name} feature poster`);
+     await assertDecoded(page.locator(".popular-rail .card-cover img").first(), `${name} card cover`);
+     const rail = page.locator(".site-rail");
+     if (name === "desktop") assert.equal(await rail.isVisible(), true);
+     else {
+diff --git a/web/scripts/source-badge.test.mjs b/web/scripts/source-badge.test.mjs
+new file mode 100644
+index 0000000..0180d89
+--- /dev/null
++++ b/web/scripts/source-badge.test.mjs
+@@ -0,0 +1,152 @@
++import assert from "node:assert/strict";
++import { execFileSync } from "node:child_process";
++import { join } from "node:path";
++import { test } from "node:test";
++import { pathToFileURL } from "node:url";
++import { coverImageUrl } from "../lib/contracts.ts";
++import { webDir } from "./test-helpers.mjs";
++
++const COMICK_COVER = "https://meo.comick.pictures/comic-1-cover.jpg";
++const COMICK_PROXY = `/api/content/img?u=${encodeURIComponent(COMICK_COVER)}`;
++const BADGE = (label) => `<span class="source-badge" role="img" aria-label="Nguồn: ${label}">${label}</span>`;
++
++// RSC mode cannot render hooks, so render shipped components in a child process
++// the same way source-ui.test.mjs does, without a hand-written stand-in.
++function render(relativePath, props, exportName = "default") {
++  const specifier = pathToFileURL(join(webDir, relativePath)).href;
++  const script = `
++    import { createElement } from "react";
++    import { renderToStaticMarkup } from "react-dom/server";
++    const mod = await import(${JSON.stringify(specifier)});
++    const exported = mod[${JSON.stringify(exportName)}] ?? mod.default ?? mod;
++    const Component = exported?.default ?? exported;
++    process.stdout.write(renderToStaticMarkup(createElement(Component, ${JSON.stringify(props)})));
++  `;
++  return execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
++    cwd: webDir,
++    encoding: "utf8",
++  });
++}
++
++const manga = {
++  id: "m1",
++  title: "Slime",
++  cover_file: COMICK_COVER,
++  status: "ongoing",
++  year: 2026,
++  description: "desc",
++  tags: [],
++  tag_ids: [],
++  author: "A",
++  artist: "A",
++  rating: 8.5,
++  follows: 12,
++  latest_chapter: "1",
++  source: "comick",
++  source_label: "Comick",
++};
++const fixture = {
++  rank: [manga],
++  latest: [{ ...manga, chapters: [{ id: "c1", chapter: "1", lang: "vi", publish_at: "2026-11-20T00:00:00Z" }] }],
++  manga,
++  chapters: { vi: [], en: [] },
++};
++
++// Async Server Components need the same stubbed content boundary as source-ui.
++function renderPage(relativePath, props) {
++  const target = pathToFileURL(join(webDir, relativePath)).href;
++  const contentServer = pathToFileURL(join(webDir, "lib/content-server.tsx")).href;
++  const stubSource = 'const d=JSON.parse(process.env.SOURCE_UI_FIXTURE||"{}");'
++    + 'export async function serverContent(){return {'
++    + 'rank:async()=>d.rank??[],latest:async()=>d.latest??[],'
++    + 'manga:async()=>d.manga??{},chapters:async()=>d.chapters??{vi:[],en:[]}}};'
++    + 'export function contentUnavailable(){return null}';
++  const stub = `data:text/javascript,${encodeURIComponent(stubSource)}`;
++  const loaderSource = `const m={${JSON.stringify(contentServer)}:${JSON.stringify(stub)}};`
++    + "export async function resolve(s,c,n){if(m[s])return{url:m[s],shortCircuit:true};return n(s,c)}";
++  const loader = `data:text/javascript,${encodeURIComponent(loaderSource)}`;
++  const script = `
++    import { register, createRequire } from "node:module";
++    import { createElement } from "react";
++    const require = createRequire(${JSON.stringify(pathToFileURL(join(webDir, "package.json")).href)});
++    const { renderToPipeableStream } = require(${JSON.stringify(join(webDir, "node_modules", "react-dom", "cjs", "react-dom-server.node.development.js"))});
++    register(${JSON.stringify(loader)}, import.meta.url);
++    const mod = await import(${JSON.stringify(target)});
++    const Component = mod.default?.default ?? mod.default ?? mod;
++    const chunks = [];
++    await new Promise((resolve, reject) => {
++      const stream = renderToPipeableStream(createElement(Component, ${JSON.stringify(props)}), {
++        onAllReady() {}, onError: reject,
++      });
++      stream.pipe({
++        write(chunk) { chunks.push(Buffer.from(chunk)); return true; },
++        end: resolve,
++        on() {}, off() {}, once() {}, emit() {}, writableEnded: false,
++      });
++    });
++    process.stdout.write(Buffer.concat(chunks).toString("utf8"));
++  `;
++  return execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
++    cwd: webDir,
++    encoding: "utf8",
++    env: { ...process.env, SOURCE_UI_FIXTURE: JSON.stringify(fixture) },
++  });
++}
++
++test("SourceBadge shows exact labels with an accessible name and hides unknown sources", () => {
++  assert.equal(render("components/source-badge.tsx", { source: "mangadex" }, "SourceBadge"), BADGE("MangaDex"));
++  assert.equal(render("components/source-badge.tsx", { source: "comick" }, "SourceBadge"), BADGE("Comick"));
++  assert.equal(render("components/source-badge.tsx", { source: "" }, "SourceBadge"), "");
++  assert.equal(render("components/source-badge.tsx", { source: "unknown" }, "SourceBadge"), "");
++  assert.equal(render("components/source-badge.tsx", {}, "SourceBadge"), "");
++});
++
++test("card cover keeps the original link and shows a badge instead of a title suffix", () => {
++  const html = render("components/manga-card.tsx", { manga, rank: 1 }, "MangaCard");
++  assert.match(html, /<a class="card" href="\/manga\/m1">/);
++  assert.match(html, new RegExp(`<div class="card-cover">[\\s\\S]*?${BADGE("Comick")}[\\s\\S]*?<\\/div>`));
++  assert.match(html, /<h3 class="card-title">Slime<\/h3>/);
++  assert.doesNotMatch(html, /\(Comick\)|\(MangaDex\)/);
++});
++
++test("home feature, feed and rank covers show badges without title suffixes", () => {
++  const html = renderPage("app/page.tsx", {});
++  assert.match(html, /<h1 id="featured-title">Slime<\/h1>/);
++  assert.match(html, /<h3><a href="\/manga\/m1">Slime<\/a><\/h3>/);
++  assert.match(html, /<span class="rank-title">Slime<small>/);
++  assert.doesNotMatch(html, /\(Comick\)|\(MangaDex\)/);
++
++  const featureStart = html.indexOf('class="feature-art"');
++  const feature = html.slice(featureStart, html.indexOf("</section>", featureStart));
++  assert.match(feature, new RegExp(BADGE("Comick")));
++  const feedLink = html.match(/<a[^>]*class="feed-cover"[\s\S]*?<\/a>/)?.[0] ?? "";
++  assert.match(feedLink, /href="\/manga\/m1"/);
++  assert.match(feedLink, new RegExp(BADGE("Comick")));
++  const rankCover = html.match(/<span class="rank-cover"><img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
++  assert.match(rankCover, new RegExp(BADGE("Comick")));
++  assert.ok(html.includes(COMICK_PROXY));
++});
++
++test("ranking and detail covers show badges", () => {
++  const rankHtml = renderPage("app/bxh/page.tsx", { searchParams: {} });
++  const rankCover = rankHtml.match(/<span class="rank-cover"><img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
++  assert.match(rankCover, new RegExp(BADGE("Comick")));
++  assert.match(rankHtml, /<span class="rank-title">Slime<small>/);
++  assert.doesNotMatch(rankHtml, /\(Comick\)|\(MangaDex\)/);
++
++  const detail = renderPage("app/manga/[id]/page.tsx", { params: {} });
++  assert.match(detail, new RegExp(`<div class="manga-cover">[\\s\\S]*?${BADGE("Comick")}`));
++  assert.match(detail, /<h1 class="manga-title">Slime<\/h1>/);
++  assert.doesNotMatch(detail, /\(Comick\)|\(MangaDex\)/);
++});
++
++test("Comick covers proxy through Axum while MangaDex stays unchanged", () => {
++  assert.equal(coverImageUrl(manga), COMICK_PROXY);
++  assert.equal(
++    coverImageUrl({ id: "m1", cover_file: "cover.jpg" }),
++    `/api/content/img?u=${encodeURIComponent("https://uploads.mangadex.org/covers/m1/cover.jpg.256.jpg")}`,
++  );
++  assert.equal(coverImageUrl({ ...manga, cover_file: null }), null);
++  assert.equal(coverImageUrl({ ...manga, cover_file: "http://meo.comick.pictures/cover.jpg" }), null);
++  assert.equal(coverImageUrl({ ...manga, cover_file: "https://evil.test/cover.jpg" }), null);
++});
+diff --git a/web/scripts/source-ui.test.mjs b/web/scripts/source-ui.test.mjs
+index 17c87cd..a7248ac 100644
+--- a/web/scripts/source-ui.test.mjs
++++ b/web/scripts/source-ui.test.mjs
+@@ -44,17 +44,17 @@ function render(relativePath, props, exportName = "default") {
+ function rowTitles(html) {
+   return [...html.matchAll(/<span class="ch-title"[^>]*>([\s\S]*?)<\/span>/g)]
+     .map((match) => match[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim());
+ }
+ 
+ const sourceManga = {
+   id: "m1",
+   title: "Slime",
+-  cover_file: null,
++  cover_file: "https://meo.comick.pictures/comic-1-cover.jpg",
+   status: "ongoing",
+   year: 2026,
+   description: "desc",
+   tags: [],
+   tag_ids: [],
+   author: "A",
+   artist: "A",
+   rating: 8.5,
+@@ -154,30 +154,36 @@ test("reader toolbar back title marks a fallback chapter", () => {
+     running: false,
+     fullscreenSupported: false,
+   };
+   const html = render("components/reader/ReaderToolbar.tsx", props);
+   const backLink = html.match(/<a class="back-link"[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? "";
+   assert.equal(backLink, "← Slime (Comick)");
+ });
+ 
+-test("manga card title shows the source label", () => {
++const badge = /<span class="source-badge" role="img" aria-label="Nguồn: Comick">Comick<\/span>/;
++
++test("manga card cover shows the source badge and keeps its link", () => {
+   const html = render("components/manga-card.tsx", { manga: sourceManga, rank: 1 }, "MangaCard");
+-  assert.match(html, /<h3 class="card-title">Slime \(Comick\)<\/h3>/);
++  assert.match(html, /<h3 class="card-title">Slime<\/h3>/);
++  assert.match(html, badge);
+   assert.match(html, /href="\/manga\/m1"/);
+ });
+ 
+-test("home feature, feed and rank titles show the source label", () => {
++test("home feature, feed and rank covers show the source badge", () => {
+   const html = renderPage("app/page.tsx", {});
+-  assert.match(html, /<h1 id="featured-title">Slime \(Comick\)<\/h1>/);
+-  assert.match(html, /<h3><a href="\/manga\/m1">Slime \(Comick\)<\/a><\/h3>/);
+-  assert.match(html, /<span class="rank-title">Slime \(Comick\)<small>12 theo dõi<\/small><\/span>/);
++  assert.match(html, /<h1 id="featured-title">Slime<\/h1>/);
++  assert.match(html, /<h3><a href="\/manga\/m1">Slime<\/a><\/h3>/);
++  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
++  assert.equal(html.split(badge).length - 1, 4);
+ });
+ 
+-test("manga detail title shows the source label", () => {
++test("manga detail cover shows the source badge", () => {
+   const html = renderPage("app/manga/[id]/page.tsx", { params: {} });
+-  assert.match(html, /<h1 class="manga-title">Slime \(Comick\)<\/h1>/);
++  assert.match(html, /<h1 class="manga-title">Slime<\/h1>/);
++  assert.match(html, badge);
+ });
+ 
+-test("ranking page titles show the source label", () => {
++test("ranking page covers show the source badge", () => {
+   const html = renderPage("app/bxh/page.tsx", { searchParams: {} });
+-  assert.match(html, /<span class="rank-title">Slime \(Comick\)<small>12 theo dõi<\/small><\/span>/);
++  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
++  assert.match(html, badge);
+ });

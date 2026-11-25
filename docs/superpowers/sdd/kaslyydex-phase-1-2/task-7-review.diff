@@ -1,0 +1,4426 @@
+b4790e2 docs: report task 7 comments and notifications
+ed301f4 feat: add moderated comments and notifications
+ .../sdd/kaslyydex-phase-1-2/task-7-report.md       |  132 +++
+ web/app/api/v1/comments/[id]/route.ts              |   11 +
+ web/app/api/v1/comments/route.ts                   |    9 +
+ web/app/api/v1/moderation/access/route.ts          |    8 +
+ web/app/api/v1/moderation/comments/[id]/route.ts   |    7 +
+ web/app/api/v1/moderation/reports/[id]/route.ts    |    7 +
+ web/app/api/v1/moderation/reports/route.ts         |    5 +
+ web/app/api/v1/moderation/threads/route.ts         |    9 +
+ web/app/api/v1/notifications/read/route.ts         |    5 +
+ web/app/api/v1/notifications/refresh/route.ts      |    5 +
+ web/app/api/v1/notifications/route.ts              |    5 +
+ web/app/api/v1/reports/route.ts                    |    5 +
+ web/app/globals.css                                |   58 ++
+ web/app/kiem-duyet/page.tsx                        |   12 +
+ web/app/manga/[id]/page.tsx                        |    2 +
+ web/app/thong-bao/page.tsx                         |   12 +
+ web/components/comments/CommentSection.tsx         |  252 +++++
+ web/components/library-view.tsx                    |   10 +-
+ web/components/moderation/ModerationQueue.tsx      |  100 ++
+ .../notifications/NotificationCenter.tsx           |  144 +++
+ web/components/reader/ReaderClient.tsx             |    4 +
+ web/components/site-header.tsx                     |    2 +
+ web/components/site-shell.tsx                      |    2 +
+ web/drizzle/0002_comments_moderation.sql           |   79 ++
+ web/drizzle/meta/0002_snapshot.json                | 1076 ++++++++++++++++++++
+ web/drizzle/meta/_journal.json                     |    7 +
+ web/lib/community/client.ts                        |    9 +
+ web/lib/community/handlers.ts                      |  242 +++++
+ web/lib/contracts.ts                               |   54 +
+ web/lib/db/schema.ts                               |   83 +-
+ web/lib/moderation.ts                              |  622 +++++++++++
+ web/lib/validators.ts                              |  119 +++
+ web/package.json                                   |    4 +-
+ web/scripts/community-playwright.test.mjs          |  267 +++++
+ web/scripts/community.test.mjs                     |  620 +++++++++++
+ web/scripts/database.test.mjs                      |   20 +-
+ 36 files changed, 4002 insertions(+), 6 deletions(-)
+diff --git a/web/app/api/v1/comments/[id]/route.ts b/web/app/api/v1/comments/[id]/route.ts
+new file mode 100644
+index 0000000..1eab3c3
+--- /dev/null
++++ b/web/app/api/v1/comments/[id]/route.ts
+@@ -0,0 +1,11 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++type Context = { params: Promise<{ id: string }> };
++
++export function PATCH(request: Request, context: Context) {
++  return wrapCommunityRoute(async (api, req) => api.commentPatch(req, await context.params), request);
++}
++
++export function DELETE(request: Request, context: Context) {
++  return wrapCommunityRoute(async (api, req) => api.commentDelete(req, await context.params), request);
++}
+diff --git a/web/app/api/v1/comments/route.ts b/web/app/api/v1/comments/route.ts
+new file mode 100644
+index 0000000..f5bac8b
+--- /dev/null
++++ b/web/app/api/v1/comments/route.ts
+@@ -0,0 +1,9 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export function GET(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.commentsGet(req), request);
++}
++
++export function POST(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.commentPost(req), request);
++}
+diff --git a/web/app/api/v1/moderation/access/route.ts b/web/app/api/v1/moderation/access/route.ts
+new file mode 100644
+index 0000000..7246191
+--- /dev/null
++++ b/web/app/api/v1/moderation/access/route.ts
+@@ -0,0 +1,8 @@
++import { connection } from "next/server";
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export async function GET(request: Request) {
++  // Capability is session-specific: never prerender a shared "not moderator".
++  await connection();
++  return wrapCommunityRoute(async (api, req) => api.moderationAccessGet(req), request);
++}
+diff --git a/web/app/api/v1/moderation/comments/[id]/route.ts b/web/app/api/v1/moderation/comments/[id]/route.ts
+new file mode 100644
+index 0000000..8bda98a
+--- /dev/null
++++ b/web/app/api/v1/moderation/comments/[id]/route.ts
+@@ -0,0 +1,7 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++type Context = { params: Promise<{ id: string }> };
++
++export function PATCH(request: Request, context: Context) {
++  return wrapCommunityRoute(async (api, req) => api.commentModeratePatch(req, await context.params), request);
++}
+diff --git a/web/app/api/v1/moderation/reports/[id]/route.ts b/web/app/api/v1/moderation/reports/[id]/route.ts
+new file mode 100644
+index 0000000..72aa8df
+--- /dev/null
++++ b/web/app/api/v1/moderation/reports/[id]/route.ts
+@@ -0,0 +1,7 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++type Context = { params: Promise<{ id: string }> };
++
++export function PATCH(request: Request, context: Context) {
++  return wrapCommunityRoute(async (api, req) => api.reportPatch(req, await context.params), request);
++}
+diff --git a/web/app/api/v1/moderation/reports/route.ts b/web/app/api/v1/moderation/reports/route.ts
+new file mode 100644
+index 0000000..e7dd0d2
+--- /dev/null
++++ b/web/app/api/v1/moderation/reports/route.ts
+@@ -0,0 +1,5 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export function GET(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.moderationReportsGet(req), request);
++}
+diff --git a/web/app/api/v1/moderation/threads/route.ts b/web/app/api/v1/moderation/threads/route.ts
+new file mode 100644
+index 0000000..f1894ee
+--- /dev/null
++++ b/web/app/api/v1/moderation/threads/route.ts
+@@ -0,0 +1,9 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export function GET(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.threadGet(req), request);
++}
++
++export function PUT(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.threadPut(req), request);
++}
+diff --git a/web/app/api/v1/notifications/read/route.ts b/web/app/api/v1/notifications/read/route.ts
+new file mode 100644
+index 0000000..6cf0f59
+--- /dev/null
++++ b/web/app/api/v1/notifications/read/route.ts
+@@ -0,0 +1,5 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export function POST(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.notificationsReadPost(req), request);
++}
+diff --git a/web/app/api/v1/notifications/refresh/route.ts b/web/app/api/v1/notifications/refresh/route.ts
+new file mode 100644
+index 0000000..15416cb
+--- /dev/null
++++ b/web/app/api/v1/notifications/refresh/route.ts
+@@ -0,0 +1,5 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export function POST(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.notificationsRefreshPost(req), request);
++}
+diff --git a/web/app/api/v1/notifications/route.ts b/web/app/api/v1/notifications/route.ts
+new file mode 100644
+index 0000000..f314efb
+--- /dev/null
++++ b/web/app/api/v1/notifications/route.ts
+@@ -0,0 +1,5 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export function GET(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.notificationsGet(req), request);
++}
+diff --git a/web/app/api/v1/reports/route.ts b/web/app/api/v1/reports/route.ts
+new file mode 100644
+index 0000000..553212b
+--- /dev/null
++++ b/web/app/api/v1/reports/route.ts
+@@ -0,0 +1,5 @@
++import { wrapCommunityRoute } from "@/lib/community/handlers";
++
++export function POST(request: Request) {
++  return wrapCommunityRoute(async (api, req) => api.reportPost(req), request);
++}
+diff --git a/web/app/globals.css b/web/app/globals.css
+index 3c314dd..d48ef4d 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -364,8 +364,66 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .account-hint { color: var(--muted); font-size: .88rem; line-height: 1.5; }
+ .account-error { color: #ff8c7a; font-size: .9rem; }
+ .history-list { display: grid; gap: 10px; }
+ .history-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+ .history-row span { display: grid; gap: 4px; }
+ .history-row small { color: var(--muted); }
+ .history-row img { width: 42px; height: 56px; object-fit: cover; border-radius: 6px; }
+ .history-row progress { width: 120px; accent-color: var(--solid); }
++
++/* Task 7: plain-text comments, moderation and in-app notifications. */
++.comment-section { display: grid; gap: 14px; margin-top: 22px; padding: 20px; }
++.comment-composer { display: grid; gap: 8px; }
++.comment-composer label { color: var(--muted); font-size: .85rem; }
++.comment-composer textarea, .comment-edit textarea {
++  width: 100%; border: 1px solid var(--line); border-radius: 10px;
++  background: var(--bg); color: var(--text); padding: 10px 12px; font: inherit; resize: vertical;
++}
++.comment-composer textarea:focus, .comment-edit textarea:focus { outline: 2px solid var(--solid); outline-offset: 1px; }
++.comment-composer-row, .comment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
++.comment-composer-row .btn { margin-left: auto; }
++.comment-list { display: grid; gap: 12px; }
++.comment-thread { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
++.comment { display: grid; gap: 6px; min-width: 0; }
++.comment-reply { margin-left: 18px; padding-left: 12px; border-left: 2px solid var(--line); }
++.comment-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: .85rem; }
++.comment-head time, .notification-item time { color: var(--muted); font-size: .75rem; }
++.comment-flag, .spoiler-hide {
++  border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px;
++  background: var(--hover); color: var(--accent); font-size: .75rem;
++}
++.spoiler-hide { justify-self: start; cursor: pointer; }
++.comment-body { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
++.comment-muted { margin: 0; color: var(--muted); font-style: italic; }
++.comment-edit { display: grid; gap: 8px; }
++.comment-actions .link-btn, .notification-item .comment-actions a { font-size: .82rem; }
++.report-dialog {
++  position: fixed; z-index: 30; inset: auto 12px 12px auto; max-width: min(420px, calc(100vw - 24px));
++  padding: 16px; border: 1px solid var(--line); border-radius: 12px;
++  background: var(--surface); box-shadow: 0 14px 40px #0005;
++}
++.notification-center { position: relative; display: inline-flex; }
++.notification-bell {
++  position: relative; display: grid; place-items: center; min-width: 40px; min-height: 40px;
++  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer;
++}
++.notification-badge {
++  position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 4px;
++  border-radius: 9px; background: var(--solid); color: var(--solid-ink, #fff);
++  font-size: .65rem; line-height: 18px; text-align: center; font-weight: 700;
++}
++.notification-panel {
++  position: absolute; z-index: 25; top: calc(100% + 8px); right: 0;
++  width: min(390px, calc(100vw - 24px)); max-height: 70dvh; overflow: auto; padding: 16px;
++  box-shadow: 0 14px 40px #0005;
++}
++.notification-page { max-width: 760px; }
++.notification-list, .moderation-list { display: grid; gap: 8px; }
++.notification-item, .moderation-row {
++  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px;
++  padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
++}
++.notification-item.unread { border-left: 3px solid var(--solid); }
++.notification-item p, .moderation-body { margin: 5px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
++.moderation-row { grid-template-columns: minmax(0, 1fr); }
++.reader-comments { padding: 18px max(12px, env(safe-area-inset-left)) calc(94px + var(--safe)); }
++.reader-comments .comment-section { max-width: 760px; margin-inline: auto; background: var(--surface); }
+diff --git a/web/app/kiem-duyet/page.tsx b/web/app/kiem-duyet/page.tsx
+new file mode 100644
+index 0000000..bbb2bb6
+--- /dev/null
++++ b/web/app/kiem-duyet/page.tsx
+@@ -0,0 +1,12 @@
++import type { Metadata } from "next";
++import ModerationQueue from "@/components/moderation/ModerationQueue";
++
++export const metadata: Metadata = { title: "Kiểm duyệt" };
++
++export default function ModerationPage() {
++  return (
++    <main className="wrap">
++      <ModerationQueue />
++    </main>
++  );
++}
+diff --git a/web/app/manga/[id]/page.tsx b/web/app/manga/[id]/page.tsx
+index 7b4672b..af25ec6 100644
+--- a/web/app/manga/[id]/page.tsx
++++ b/web/app/manga/[id]/page.tsx
+@@ -4,16 +4,17 @@ import { Suspense } from "react";
+ import { notFound } from "next/navigation";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type ChaptersResponse, type MangaSummaryDto } from "@/lib/contracts";
+ import { chapterLabel, filterUrl, statusText, tagLabel } from "@/lib/format";
+ import ChapterList from "@/components/chapter-list";
+ import MangaActions from "@/components/manga-actions";
+ import { SectionTitle } from "@/components/manga-card";
++import CommentSection from "@/components/comments/CommentSection";
+ 
+ type Props = { params: Promise<{ id: string }> };
+ 
+ export async function generateMetadata({ params }: Props): Promise<Metadata> {
+   const { id } = await params;
+   try {
+     const manga = await (await serverContent()).manga(id);
+     return { title: manga.title, description: manga.description.slice(0, 160) };
+@@ -75,16 +76,17 @@ async function MangaContent({ params }: Props) {
+             />
+           </div>
+         </div>
+       </section>
+       <section className="surface chapters-panel">
+         <SectionTitle>Danh sách chapter</SectionTitle>
+         <ChapterList mangaId={manga.id} chapters={chapters} />
+       </section>
++      <CommentSection targetType="manga" targetId={manga.id} />
+     </main>
+   );
+ }
+ 
+ export default function MangaPage({ params }: Props) {
+   return (
+     <Suspense
+       fallback={
+diff --git a/web/app/thong-bao/page.tsx b/web/app/thong-bao/page.tsx
+new file mode 100644
+index 0000000..9ef7dcf
+--- /dev/null
++++ b/web/app/thong-bao/page.tsx
+@@ -0,0 +1,12 @@
++import type { Metadata } from "next";
++import NotificationCenter from "@/components/notifications/NotificationCenter";
++
++export const metadata: Metadata = { title: "Thông báo" };
++
++export default function NotificationsPage() {
++  return (
++    <main className="wrap">
++      <NotificationCenter />
++    </main>
++  );
++}
+diff --git a/web/components/comments/CommentSection.tsx b/web/components/comments/CommentSection.tsx
+new file mode 100644
+index 0000000..5ed9d91
+--- /dev/null
++++ b/web/components/comments/CommentSection.tsx
+@@ -0,0 +1,252 @@
++"use client";
++
++import { useState } from "react";
++import type { CommentDto, CommentListDto } from "@/lib/contracts";
++import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
++
++type Props = {
++  targetType: "manga" | "chapter";
++  targetId: string;
++  label?: string;
++};
++
++function SpoilerText({ text }: { text: string }) {
++  const [shown, setShown] = useState(false);
++  if (!shown) {
++    return (
++      <button type="button" className="spoiler-hide" aria-expanded="false" onClick={() => setShown(true)}>
++        Nội dung có spoiler — bấm để xem
++      </button>
++    );
++  }
++  return (
++    <>
++      <p className="comment-body">{text}</p>
++      <button type="button" className="link-btn" aria-expanded="true" onClick={() => setShown(false)}>Ẩn lại</button>
++    </>
++  );
++}
++
++function CommentBody({ comment }: { comment: CommentDto }) {
++  if (comment.status === "hidden") return <p className="comment-muted">Bình luận đã bị ẩn để kiểm duyệt.</p>;
++  if (comment.status === "removed") return <p className="comment-muted">Bình luận đã bị xóa.</p>;
++  if (!comment.body) return <p className="comment-muted">Không có nội dung.</p>;
++  return comment.spoiler ? <SpoilerText text={comment.body} /> : <p className="comment-body">{comment.body}</p>;
++}
++
++export default function CommentSection({ targetType, targetId, label = "Bình luận" }: Props) {
++  const { session } = useAccountSession();
++  const identityKey = session.user?.id ?? "guest";
++  const [cursor, setCursor] = useState<string | null>(null);
++  const [draft, setDraft] = useState("");
++  const [spoiler, setSpoiler] = useState(false);
++  const [replyTo, setReplyTo] = useState<string | null>(null);
++  const [editId, setEditId] = useState<string | null>(null);
++  const [editDraft, setEditDraft] = useState("");
++  const [editSpoiler, setEditSpoiler] = useState(false);
++  const [reportId, setReportId] = useState<string | null>(null);
++  const [reason, setReason] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [actionError, setActionError] = useState<string | null>(null);
++  const [notice, setNotice] = useState<string | null>(null);
++
++  const query = `/api/v1/comments?targetType=${encodeURIComponent(targetType)}&targetId=${encodeURIComponent(targetId)}&limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
++  // The identity key is part of the resource key: switching accounts can never
++  // paint the previous account's ownership state into this section.
++  const remote = useRemoteResource<CommentListDto>(query, identityKey);
++  const signedIn = session.status === "authenticated";
++
++  function report(error: unknown) {
++    setActionError(error instanceof Error ? error.message : "Yêu cầu không thành công.");
++  }
++
++  async function submitComment(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setBusy(true);
++    setActionError(null);
++    setNotice(null);
++    try {
++      await accountMutate("/api/v1/comments", "POST", {
++        targetType, targetId, parentId: replyTo, body: draft, spoiler,
++      });
++      setDraft("");
++      setSpoiler(false);
++      setReplyTo(null);
++      setNotice("Đã đăng bình luận.");
++      remote.reload();
++    } catch (error) {
++      report(error);
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function updateComment(comment: CommentDto) {
++    setBusy(true);
++    setActionError(null);
++    try {
++      await accountMutate(`/api/v1/comments/${encodeURIComponent(comment.id)}`, "PATCH", {
++        body: editDraft, spoiler: editSpoiler,
++      });
++      setEditId(null);
++      remote.reload();
++    } catch (error) {
++      report(error);
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function removeComment(comment: CommentDto) {
++    setBusy(true);
++    setActionError(null);
++    try {
++      await accountMutate(`/api/v1/comments/${encodeURIComponent(comment.id)}`, "DELETE");
++      remote.reload();
++    } catch (error) {
++      report(error);
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function submitReport(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    if (!reportId) return;
++    setBusy(true);
++    setActionError(null);
++    try {
++      await accountMutate("/api/v1/reports", "POST", { commentId: reportId, reason });
++      setReportId(null);
++      setReason("");
++      setNotice("Đã gửi báo cáo tới đội kiểm duyệt.");
++    } catch (error) {
++      report(error);
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  function renderActions(comment: CommentDto, isReply = false) {
++    const owns = signedIn && comment.userId === session.user?.id;
++    return (
++      <div className="comment-actions">
++        {!isReply && comment.status === "visible" && signedIn ? (
++          <button type="button" className="link-btn" onClick={() => { setReplyTo(comment.id); setEditId(null); }}>Trả lời</button>
++        ) : null}
++        {owns && comment.status === "visible" ? (
++          <>
++            <button type="button" className="link-btn" onClick={() => {
++              setEditId(comment.id);
++              setEditDraft(comment.body ?? "");
++              setEditSpoiler(comment.spoiler);
++            }}>Sửa</button>
++            <button type="button" className="link-btn" disabled={busy} onClick={() => void removeComment(comment)}>Xóa</button>
++          </>
++        ) : null}
++        {signedIn && !owns && comment.status === "visible" ? (
++          <button type="button" className="link-btn" onClick={() => { setReportId(comment.id); setReason(""); }}>Báo cáo</button>
++        ) : null}
++      </div>
++    );
++  }
++
++  function renderComment(comment: CommentDto, isReply = false) {
++    const editing = editId === comment.id;
++    return (
++      <article key={comment.id} className={`comment${isReply ? " comment-reply" : ""}`}>
++        <div className="comment-head">
++          <strong>{comment.authorName}</strong>
++          <time dateTime={new Date(comment.createdAt).toISOString()}>
++            {new Date(comment.createdAt).toLocaleString("vi-VN")}
++          </time>
++          {comment.spoiler ? <span className="comment-flag">spoiler</span> : null}
++        </div>
++        {editing ? (
++          <form className="comment-edit" onSubmit={(event) => {
++            event.preventDefault();
++            void updateComment(comment);
++          }}>
++            <textarea value={editDraft} maxLength={2000} rows={3} onChange={(event) => setEditDraft(event.target.value)} />
++            <label className="account-check">
++              <input type="checkbox" checked={editSpoiler} onChange={(event) => setEditSpoiler(event.target.checked)} />
++              Chứa spoiler
++            </label>
++            <div className="comment-actions">
++              <button type="submit" className="btn btn-primary" disabled={busy}>Lưu</button>
++              <button type="button" className="link-btn" onClick={() => setEditId(null)}>Hủy</button>
++            </div>
++          </form>
++        ) : <CommentBody comment={comment} />}
++        {renderActions(comment, isReply)}
++      </article>
++    );
++  }
++
++  return (
++    <section className="surface comment-section">
++      <h2 className="section-title">{label}</h2>
++      {signedIn ? (
++        <form className="comment-composer" onSubmit={(event) => void submitComment(event)}>
++          <label htmlFor="comment-body">Viết bình luận (tối đa 2000 ký tự)</label>
++          <textarea
++            id="comment-body"
++            value={draft}
++            maxLength={2000}
++            rows={4}
++            placeholder={replyTo ? "Viết phản hồi…" : "Chia sẻ suy nghĩ của bạn…"}
++            onChange={(event) => setDraft(event.target.value)}
++          />
++          <div className="comment-composer-row">
++            <label className="account-check">
++              <input type="checkbox" checked={spoiler} onChange={(event) => setSpoiler(event.target.checked)} />
++              Chứa spoiler
++            </label>
++            {replyTo ? (
++              <button type="button" className="link-btn" onClick={() => setReplyTo(null)}>Hủy trả lời</button>
++            ) : null}
++            <button type="submit" className="btn btn-primary" disabled={busy || draft.trim().length === 0}>Gửi</button>
++          </div>
++        </form>
++      ) : (
++        <p className="account-hint">Đăng nhập để bình luận, phản hồi hoặc báo cáo.</p>
++      )}
++
++      {actionError ? <p className="account-error" role="alert">{actionError}</p> : null}
++      {notice ? <p className="account-hint" role="status">{notice}</p> : null}
++      {remote.error ? <p className="account-error" role="alert">{remote.error}</p> : null}
++      {remote.loading && !remote.data ? <p className="account-hint">Đang tải bình luận…</p> : null}
++
++      <div className="comment-list">
++        {(remote.data?.items ?? []).map((comment) => (
++          <div key={comment.id} className="comment-thread">
++            {renderComment(comment)}
++            {comment.replies.map((reply) => renderComment(reply, true))}
++          </div>
++        ))}
++        {remote.data && remote.data.items.length === 0 && !remote.loading ? (
++          <p className="account-hint">Chưa có bình luận nào.</p>
++        ) : null}
++      </div>
++      <div className="comment-actions">
++        {cursor ? <button type="button" className="link-btn" onClick={() => setCursor(null)}>Về trang đầu</button> : null}
++        {remote.data?.nextCursor ? (
++          <button type="button" className="link-btn" onClick={() => setCursor(remote.data!.nextCursor)}>Xem thêm</button>
++        ) : null}
++      </div>
++
++      {reportId ? (
++        <div className="report-dialog" role="dialog" aria-modal="true" aria-label="Báo cáo bình luận">
++          <form className="comment-composer" onSubmit={(event) => void submitReport(event)}>
++            <label htmlFor="report-reason">Lý do báo cáo</label>
++            <textarea id="report-reason" value={reason} maxLength={300} rows={3} onChange={(event) => setReason(event.target.value)} />
++            <div className="comment-actions">
++              <button type="submit" className="btn btn-primary" disabled={busy || reason.trim().length === 0}>Gửi báo cáo</button>
++              <button type="button" className="link-btn" onClick={() => setReportId(null)}>Hủy</button>
++            </div>
++          </form>
++        </div>
++      ) : null}
++    </section>
++  );
++}
+diff --git a/web/components/library-view.tsx b/web/components/library-view.tsx
+index abf7e71..e679874 100644
+--- a/web/components/library-view.tsx
++++ b/web/components/library-view.tsx
+@@ -1,14 +1,15 @@
+ "use client";
+ 
+ import Link from "next/link";
+-import { useSyncExternalStore, useState } from "react";
++import { useEffect, useSyncExternalStore, useState } from "react";
+ import { coverImageUrl, type LibraryEntryDto } from "@/lib/contracts";
+ import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
++import { refreshChapterNotifications } from "@/lib/community/client";
+ import { getLibrary, subscribe, toggleLibrary, type GuestLibraryEntry } from "@/lib/guest";
+ 
+ const EMPTY: GuestLibraryEntry[] = [];
+ 
+ function LocalLibrary() {
+   const library = useSyncExternalStore(subscribe, getLibrary, () => EMPTY);
+   if (library.length === 0) return <EmptyLibrary />;
+   return (
+@@ -50,20 +51,25 @@ function EmptyLibrary() {
+       <p>Thêm truyện từ trang chi tiết để theo dõi chương mới và đọc tiếp tại đây.</p>
+       <Link href="/" className="btn btn-primary">Khám phá truyện</Link>
+     </div>
+   );
+ }
+ 
+ function SyncedLibrary() {
+   const { session } = useAccountSession();
++  const identityKey = session.user?.id ?? "guest";
+   const remote = useRemoteResource<{ items: LibraryEntryDto[] }>(
+     "/api/v1/me/library",
+-    session.user?.id ?? "guest",
++    identityKey,
+   );
++  useEffect(() => {
++    // Opening the synced library is an explicit on-demand chapter check.
++    void refreshChapterNotifications().catch(() => undefined);
++  }, [identityKey]);
+   const [busy, setBusy] = useState<string | null>(null);
+   const [error, setError] = useState<string | null>(null);
+ 
+   if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải tủ truyện…</div>;
+   if (remote.error || !remote.data) {
+     return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được tủ truyện."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;
+   }
+   if (remote.data.items.length === 0) return <EmptyLibrary />;
+diff --git a/web/components/moderation/ModerationQueue.tsx b/web/components/moderation/ModerationQueue.tsx
+new file mode 100644
+index 0000000..5223ab5
+--- /dev/null
++++ b/web/components/moderation/ModerationQueue.tsx
+@@ -0,0 +1,100 @@
++"use client";
++
++import { useState } from "react";
++import type { ReportDto, ReportListDto } from "@/lib/contracts";
++import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
++
++export default function ModerationQueue() {
++  const { session } = useAccountSession();
++  const identityKey = session.user?.id ?? "guest";
++  const signedIn = session.status === "authenticated";
++  const queue = useRemoteResource<ReportListDto>(
++    signedIn ? "/api/v1/moderation/reports?limit=20" : null,
++    identityKey,
++  );
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++  const [notice, setNotice] = useState<string | null>(null);
++  const [targetType, setTargetType] = useState<"manga" | "chapter">("manga");
++  const [targetId, setTargetId] = useState("");
++  const [locked, setLocked] = useState(true);
++
++  async function act(path: string, method: "PATCH" | "PUT", body: unknown) {
++    setBusy(true);
++    setError(null);
++    setNotice(null);
++    try {
++      await accountMutate(path, method, body);
++      queue.reload();
++      setNotice("Đã cập nhật.");
++    } catch (cause) {
++      setError(cause instanceof Error ? cause.message : "Yêu cầu kiểm duyệt không thành công.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  function moderate(comment: ReportDto, action: "hide" | "remove" | "restore") {
++    void act(`/api/v1/moderation/comments/${encodeURIComponent(comment.commentId)}`, "PATCH", { action });
++  }
++
++  if (!signedIn) {
++    return <section className="surface account-card"><h1>Kiểm duyệt</h1><p className="account-hint">Cần đăng nhập để truy cập hàng đợi kiểm duyệt.</p></section>;
++  }
++  if (queue.loading && !queue.data) return <section className="surface account-card">Đang tải hàng đợi…</section>;
++  if (queue.error) {
++    return (
++      <section className="surface account-card" role="alert">
++        <h1>Kiểm duyệt</h1>
++        <p className="account-error">{queue.error}</p>
++        <button type="button" className="btn" onClick={queue.reload}>Thử lại</button>
++      </section>
++    );
++  }
++
++  return (
++    <section className="surface account-card moderation-card">
++      <h1>Hàng đợi kiểm duyệt</h1>
++      <p className="account-hint">Ẩn/xóa bình luận, đóng báo cáo và khóa một chủ đề theo loại + id.</p>
++      {error ? <p className="account-error" role="alert">{error}</p> : null}
++      {notice ? <p className="account-hint" role="status">{notice}</p> : null}
++      <div className="moderation-list">
++        {(queue.data?.items ?? []).map((report) => (
++          <article key={report.id} className="moderation-row">
++            <div>
++              <strong>{report.comment?.authorName ?? "Độc giả"}</strong>
++              <p className="moderation-body">{report.comment?.body ?? "(nội dung không còn)"}</p>
++              <p className="account-hint">Lý do: {report.reason}</p>
++            </div>
++            <div className="comment-actions">
++              <button type="button" className="btn" disabled={busy} onClick={() => moderate(report, "hide")}>Ẩn</button>
++              <button type="button" className="btn" disabled={busy} onClick={() => moderate(report, "remove")}>Xóa</button>
++              <button type="button" className="btn" disabled={busy} onClick={() => moderate(report, "restore")}>Khôi phục</button>
++              <button type="button" className="link-btn" disabled={busy} onClick={() => void act(`/api/v1/moderation/reports/${encodeURIComponent(report.id)}`, "PATCH", { action: "resolve" })}>Đóng</button>
++              <button type="button" className="link-btn" disabled={busy} onClick={() => void act(`/api/v1/moderation/reports/${encodeURIComponent(report.id)}`, "PATCH", { action: "dismiss" })}>Bỏ qua</button>
++            </div>
++          </article>
++        ))}
++        {(queue.data?.items ?? []).length === 0 ? <p className="account-hint">Không có báo cáo mở.</p> : null}
++      </div>
++      <form className="account-form" onSubmit={(event) => {
++        event.preventDefault();
++        void act("/api/v1/moderation/threads", "PUT", { targetType, targetId, locked });
++      }}>
++        <label>
++          Khóa chủ đề
++          <select value={targetType} onChange={(event) => setTargetType(event.target.value as "manga" | "chapter")}>
++            <option value="manga">Truyện</option>
++            <option value="chapter">Chương</option>
++          </select>
++        </label>
++        <label>Id chủ đề<input value={targetId} maxLength={200} onChange={(event) => setTargetId(event.target.value)} /></label>
++        <label className="account-check">
++          <input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} />
++          Đóng bình luận mới
++        </label>
++        <button type="submit" className="btn btn-primary" disabled={busy || targetId.trim().length === 0}>Áp dụng</button>
++      </form>
++    </section>
++  );
++}
+diff --git a/web/components/notifications/NotificationCenter.tsx b/web/components/notifications/NotificationCenter.tsx
+new file mode 100644
+index 0000000..8591518
+--- /dev/null
++++ b/web/components/notifications/NotificationCenter.tsx
+@@ -0,0 +1,144 @@
++"use client";
++
++import Link from "next/link";
++import { useEffect, useRef, useState } from "react";
++import type { NotificationDto, NotificationListDto } from "@/lib/contracts";
++import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
++import { refreshChapterNotifications } from "@/lib/community/client";
++
++type Props = { compact?: boolean };
++
++export default function NotificationCenter({ compact = false }: Props) {
++  const { session } = useAccountSession();
++  const identityKey = session.user?.id ?? "guest";
++  const signedIn = session.status === "authenticated";
++  const [open, setOpen] = useState(false);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  const inbox = useRemoteResource<NotificationListDto>(
++    signedIn ? "/api/v1/notifications?limit=20" : null,
++    identityKey,
++  );
++  const access = useRemoteResource<{ moderator: boolean }>(
++    signedIn ? "/api/v1/moderation/access" : null,
++    identityKey,
++  );
++  const reloadRef = useRef(inbox.reload);
++  useEffect(() => {
++    reloadRef.current = inbox.reload;
++  }, [inbox.reload]);
++
++  useEffect(() => {
++    if (!signedIn) return;
++    let alive = true;
++    // Demand-driven refresh: no scheduler or background worker is claimed.
++    void refreshChapterNotifications()
++      .then(() => { if (alive) reloadRef.current(); })
++      .catch(() => undefined);
++    return () => { alive = false; };
++  }, [identityKey, signedIn]);
++
++  async function markRead(ids: string[]) {
++    if (ids.length === 0) return;
++    setBusy(true);
++    setError(null);
++    try {
++      await accountMutate("/api/v1/notifications/read", "POST", { ids });
++      reloadRef.current();
++    } catch (cause) {
++      setError(cause instanceof Error ? cause.message : "Không đánh dấu được thông báo.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  function rows(items: NotificationDto[]) {
++    return (
++      <div className="notification-list">
++        {items.map((item) => (
++          <article key={item.id} className={`notification-item${item.readAt === null ? " unread" : ""}`}>
++            <div>
++              <strong>{item.title}</strong>
++              <p>{item.body}</p>
++              <time dateTime={new Date(item.createdAt).toISOString()}>
++                {new Date(item.createdAt).toLocaleString("vi-VN")}
++              </time>
++            </div>
++            <div className="comment-actions">
++              {item.href ? <Link href={item.href} onClick={() => void markRead([item.id])}>Mở</Link> : null}
++              {item.readAt === null ? (
++                <button type="button" className="link-btn" disabled={busy} onClick={() => void markRead([item.id])}>
++                  Đã đọc
++                </button>
++              ) : null}
++            </div>
++          </article>
++        ))}
++        {items.length === 0 ? <p className="account-hint">Không có thông báo nào.</p> : null}
++      </div>
++    );
++  }
++
++  if (!signedIn) {
++    if (compact) return null;
++    return (
++      <section className="surface account-card">
++        <h1>Thông báo</h1>
++        <p className="account-hint">Đăng nhập để xem thông báo bình luận, kiểm duyệt và chương mới.</p>
++      </section>
++    );
++  }
++
++  const items = inbox.data?.items ?? [];
++  const unread = inbox.data?.unreadCount ?? 0;
++  const unreadIds = items.filter((item) => item.readAt === null).map((item) => item.id);
++  const body = (
++    <>
++      {error ? <p className="account-error" role="alert">{error}</p> : null}
++      {inbox.error ? <p className="account-error" role="alert">{inbox.error}</p> : null}
++      {inbox.loading && !inbox.data ? <p className="account-hint">Đang tải thông báo…</p> : null}
++      {rows(items)}
++      <div className="comment-actions">
++        <button type="button" className="link-btn" disabled={busy || unreadIds.length === 0} onClick={() => void markRead(unreadIds)}>
++          Đánh dấu đã đọc
++        </button>
++        {compact ? <Link href="/thong-bao">Xem tất cả</Link> : null}
++        {access.data?.moderator ? <Link href="/kiem-duyet">Hàng đợi kiểm duyệt</Link> : null}
++      </div>
++    </>
++  );
++
++  if (!compact) {
++    return (
++      <section className="surface account-card notification-page">
++        <h1>Thông báo</h1>
++        {unread > 0 ? <p className="account-hint">{unread} thông báo chưa đọc.</p> : null}
++        {body}
++      </section>
++    );
++  }
++
++  return (
++    <div className="notification-center">
++      <button
++        type="button"
++        className="notification-bell"
++        aria-label={unread > 0 ? `Thông báo, ${unread} chưa đọc` : "Thông báo"}
++        aria-expanded={open}
++        onClick={() => setOpen((value) => !value)}
++      >
++        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
++          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
++        </svg>
++        {unread > 0 ? <span className="notification-badge" aria-hidden="true">{unread > 9 ? "9+" : unread}</span> : null}
++      </button>
++      {open ? (
++        <div className="notification-panel surface" role="dialog" aria-label="Trung tâm thông báo">
++          <h2>Thông báo</h2>
++          {body}
++        </div>
++      ) : null}
++    </div>
++  );
++}
+diff --git a/web/components/reader/ReaderClient.tsx b/web/components/reader/ReaderClient.tsx
+index 2ae2e41..34a3ce7 100644
+--- a/web/components/reader/ReaderClient.tsx
++++ b/web/components/reader/ReaderClient.tsx
+@@ -9,16 +9,17 @@ import type { ReaderSettingsDto } from "@/lib/validators";
+ import { accountGet, accountMutate, useAccountSession } from "@/lib/account/client";
+ import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
+ import {
+   DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
+   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
+ } from "@/lib/guest";
+ import ReaderPages from "./ReaderPages";
+ import ReaderToolbar from "./ReaderToolbar";
++import CommentSection from "@/components/comments/CommentSection";
+ 
+ type Props = {
+   manga: MangaSummaryDto;
+   chapter: ChapterDto;
+   chapters: ChapterDto[];
+   lang: string;
+   pages: string[];
+   pageError: string | null;
+@@ -447,11 +448,14 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+           </span>
+           {next ? (
+             <Link href={hrefFor(next)} className="nav-btn primary">Chương sau →</Link>
+           ) : (
+             <span className="nav-btn disabled" aria-disabled="true">Chương sau →</span>
+           )}
+         </div>
+       </nav>
++      <div className="reader-comments">
++        <CommentSection targetType="chapter" targetId={chapter.id} label="Bình luận chương" />
++      </div>
+     </div>
+   );
+ }
+diff --git a/web/components/site-header.tsx b/web/components/site-header.tsx
+index fe5e3b1..f0d0df5 100644
+--- a/web/components/site-header.tsx
++++ b/web/components/site-header.tsx
+@@ -1,13 +1,14 @@
+ "use client";
+ 
+ import Link from "next/link";
+ import ThemeToggle from "@/components/theme-toggle";
+ import { NavIcon } from "@/components/site-shell";
++import NotificationCenter from "@/components/notifications/NotificationCenter";
+ 
+ export default function SiteHeader() {
+   return (
+     <header className="site-header">
+       <div className="header-inner">
+         <div className="mobile-brand">
+           <Link href="/" className="logo" aria-label="KasLyyDex — trang chủ">
+             <span className="logo-mark"><NavIcon name="book" /></span>
+@@ -22,13 +23,14 @@ export default function SiteHeader() {
+             className="search-input"
+             type="search"
+             name="q"
+             maxLength={200}
+             placeholder="Nhập tên truyện…"
+             aria-label="Tìm truyện"
+           />
+         </form>
++        <NotificationCenter compact />
+         <ThemeToggle />
+       </div>
+     </header>
+   );
+ }
+diff --git a/web/components/site-shell.tsx b/web/components/site-shell.tsx
+index 36e7f62..19367b3 100644
+--- a/web/components/site-shell.tsx
++++ b/web/components/site-shell.tsx
+@@ -5,30 +5,32 @@ import { usePathname } from "next/navigation";
+ import SiteHeader from "@/components/site-header";
+ 
+ const LINKS = [
+   { href: "/", label: "Trang chủ", icon: "home", exact: true },
+   { href: "/search", label: "Khám phá", icon: "search", mobileHidden: true },
+   { href: "/the-loai", label: "Thể loại", icon: "genres" },
+   { href: "/bxh", label: "Xếp hạng", icon: "rank" },
+   { href: "/tu-truyen", label: "Tủ truyện", icon: "bookmark" },
++  { href: "/thong-bao", label: "Thông báo", icon: "bell" },
+   { href: "/tai-khoan", label: "Tài khoản", icon: "user" },
+ ];
+ 
+ export function NavIcon({ name }: { name: string }) {
+   const paths: Record<string, string> = {
+     home: "M3 10 12 3l9 7v10h-6v-6H9v6H3z",
+     genres: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
+     rank: "M7 4h10v5a5 5 0 0 1-10 0z M7 6H4a3 3 0 0 0 3 5 M17 6h3a3 3 0 0 1-3 5 M12 14v6m-4 0h8",
+     bookmark: "M6 4h12v16l-6-4-6 4z",
+     search: "M18 10a8 8 0 1 0-16 0 8 8 0 0 0 16 0z m-2 6 5 5",
+     sun: "M16 12a4 4 0 1 0-8 0 4 4 0 0 0 8 0z M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M19 5l-1.5 1.5m-11 11L5 19",
+     moon: "M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10Z",
+     book: "M12 5v15M3 4h4a5 5 0 0 1 5 3 5 5 0 0 1 5-3h4v14h-4a6 6 0 0 0-5 2 6 6 0 0 0-5-2H3z",
+     user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0",
++    bell: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4",
+   };
+   return (
+     <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+       <path d={paths[name] ?? paths.book} />
+     </svg>
+   );
+ }
+ 
+diff --git a/web/drizzle/0002_comments_moderation.sql b/web/drizzle/0002_comments_moderation.sql
+new file mode 100644
+index 0000000..e49edfe
+--- /dev/null
++++ b/web/drizzle/0002_comments_moderation.sql
+@@ -0,0 +1,79 @@
++CREATE TABLE "action_events" (
++	"id" text PRIMARY KEY NOT NULL,
++	"user_id" text NOT NULL,
++	"action" text NOT NULL,
++	"occurred_at" bigint NOT NULL
++);
++--> statement-breakpoint
++CREATE TABLE "comment_reports" (
++	"id" text PRIMARY KEY NOT NULL,
++	"user_id" text NOT NULL,
++	"comment_id" text NOT NULL,
++	"reason" text NOT NULL,
++	"status" text DEFAULT 'open' NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
++	"resolved_at" timestamp with time zone,
++	"resolved_by" text,
++	CONSTRAINT "comment_reports_status_check" CHECK ("comment_reports"."status" in ('open', 'resolved', 'dismissed'))
++);
++--> statement-breakpoint
++CREATE TABLE "comment_threads" (
++	"target_type" text NOT NULL,
++	"target_id" text NOT NULL,
++	"locked" boolean DEFAULT false NOT NULL,
++	"locked_by" text,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "comment_threads_target_type_target_id_pk" PRIMARY KEY("target_type","target_id"),
++	CONSTRAINT "comment_threads_target_type_check" CHECK ("comment_threads"."target_type" in ('manga', 'chapter'))
++);
++--> statement-breakpoint
++CREATE TABLE "comments" (
++	"id" text PRIMARY KEY NOT NULL,
++	"user_id" text NOT NULL,
++	"target_type" text NOT NULL,
++	"target_id" text NOT NULL,
++	"parent_id" text,
++	"body" text,
++	"spoiler" boolean DEFAULT false NOT NULL,
++	"status" text DEFAULT 'visible' NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "comments_status_check" CHECK ("comments"."status" in ('visible', 'hidden', 'removed')),
++	CONSTRAINT "comments_target_type_check" CHECK ("comments"."target_type" in ('manga', 'chapter')),
++	CONSTRAINT "comments_no_self_parent" CHECK ("comments"."parent_id" is null or "comments"."parent_id" <> "comments"."id")
++);
++--> statement-breakpoint
++CREATE TABLE "notification_cursors" (
++	"user_id" text NOT NULL,
++	"manga_id" text NOT NULL,
++	"language" text NOT NULL,
++	"last_publish" bigint NOT NULL,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "notification_cursors_user_id_manga_id_language_pk" PRIMARY KEY("user_id","manga_id","language")
++);
++--> statement-breakpoint
++CREATE TABLE "notifications" (
++	"id" text PRIMARY KEY NOT NULL,
++	"user_id" text NOT NULL,
++	"type" text NOT NULL,
++	"event_key" text NOT NULL,
++	"title" text NOT NULL,
++	"body" text NOT NULL,
++	"href" text,
++	"read_at" timestamp with time zone,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL
++);
++--> statement-breakpoint
++ALTER TABLE "action_events" ADD CONSTRAINT "action_events_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "comment_reports" ADD CONSTRAINT "comment_reports_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "comment_reports" ADD CONSTRAINT "comment_reports_comment_id_comments_id_fk" FOREIGN KEY ("comment_id") REFERENCES "public"."comments"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "comments" ADD CONSTRAINT "comments_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "notification_cursors" ADD CONSTRAINT "notification_cursors_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "notifications" ADD CONSTRAINT "notifications_user_id_profiles_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."profiles"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
++CREATE INDEX "action_events_window_idx" ON "action_events" USING btree ("user_id","action","occurred_at");--> statement-breakpoint
++CREATE UNIQUE INDEX "comment_reports_open_key" ON "comment_reports" USING btree ("user_id","comment_id") WHERE "comment_reports"."status" = 'open';--> statement-breakpoint
++CREATE INDEX "comment_reports_queue_idx" ON "comment_reports" USING btree ("status","created_at");--> statement-breakpoint
++CREATE INDEX "comments_thread_idx" ON "comments" USING btree ("target_type","target_id","created_at");--> statement-breakpoint
++CREATE INDEX "comments_parent_idx" ON "comments" USING btree ("parent_id");--> statement-breakpoint
++CREATE UNIQUE INDEX "notifications_event_key" ON "notifications" USING btree ("user_id","event_key");--> statement-breakpoint
++CREATE INDEX "notifications_inbox_idx" ON "notifications" USING btree ("user_id","created_at");
+\ No newline at end of file
+diff --git a/web/drizzle/meta/0002_snapshot.json b/web/drizzle/meta/0002_snapshot.json
+new file mode 100644
+index 0000000..bcea213
+--- /dev/null
++++ b/web/drizzle/meta/0002_snapshot.json
+@@ -0,0 +1,1076 @@
++{
++  "id": "8707edc7-2aa0-48d5-98b2-1150556dd1a8",
++  "prevId": "908cca23-c262-4af8-921e-162ca89ab681",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.action_events": {
++      "name": "action_events",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "action": {
++          "name": "action",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "occurred_at": {
++          "name": "occurred_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {
++        "action_events_window_idx": {
++          "name": "action_events_window_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "action",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "occurred_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "action_events_user_id_profiles_user_id_fk": {
++          "name": "action_events_user_id_profiles_user_id_fk",
++          "tableFrom": "action_events",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.chapter_progress": {
++      "name": "chapter_progress",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "chapter": {
++          "name": "chapter",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "page": {
++          "name": "page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "max_page": {
++          "name": "max_page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "total": {
++          "name": "total",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_read_at": {
++          "name": "last_read_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "chapter_progress_user_recent_idx": {
++          "name": "chapter_progress_user_recent_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "last_read_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "chapter_progress_user_id_profiles_user_id_fk": {
++          "name": "chapter_progress_user_id_profiles_user_id_fk",
++          "tableFrom": "chapter_progress",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "chapter_progress_user_id_manga_id_chapter_id_language_pk": {
++          "name": "chapter_progress_user_id_manga_id_chapter_id_language_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "chapter_id",
++            "language"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.comment_reports": {
++      "name": "comment_reports",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "comment_id": {
++          "name": "comment_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "reason": {
++          "name": "reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'open'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "resolved_at": {
++          "name": "resolved_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "resolved_by": {
++          "name": "resolved_by",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {
++        "comment_reports_open_key": {
++          "name": "comment_reports_open_key",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "comment_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"comment_reports\".\"status\" = 'open'",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "comment_reports_queue_idx": {
++          "name": "comment_reports_queue_idx",
++          "columns": [
++            {
++              "expression": "status",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "comment_reports_user_id_profiles_user_id_fk": {
++          "name": "comment_reports_user_id_profiles_user_id_fk",
++          "tableFrom": "comment_reports",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "comment_reports_comment_id_comments_id_fk": {
++          "name": "comment_reports_comment_id_comments_id_fk",
++          "tableFrom": "comment_reports",
++          "tableTo": "comments",
++          "columnsFrom": [
++            "comment_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comment_reports_status_check": {
++          "name": "comment_reports_status_check",
++          "value": "\"comment_reports\".\"status\" in ('open', 'resolved', 'dismissed')"
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.comment_threads": {
++      "name": "comment_threads",
++      "schema": "",
++      "columns": {
++        "target_type": {
++          "name": "target_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_id": {
++          "name": "target_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "locked": {
++          "name": "locked",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "locked_by": {
++          "name": "locked_by",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "comment_threads_target_type_target_id_pk": {
++          "name": "comment_threads_target_type_target_id_pk",
++          "columns": [
++            "target_type",
++            "target_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comment_threads_target_type_check": {
++          "name": "comment_threads_target_type_check",
++          "value": "\"comment_threads\".\"target_type\" in ('manga', 'chapter')"
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.comments": {
++      "name": "comments",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_type": {
++          "name": "target_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_id": {
++          "name": "target_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "parent_id": {
++          "name": "parent_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "body": {
++          "name": "body",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "spoiler": {
++          "name": "spoiler",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'visible'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "comments_thread_idx": {
++          "name": "comments_thread_idx",
++          "columns": [
++            {
++              "expression": "target_type",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "target_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "comments_parent_idx": {
++          "name": "comments_parent_idx",
++          "columns": [
++            {
++              "expression": "parent_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "comments_user_id_profiles_user_id_fk": {
++          "name": "comments_user_id_profiles_user_id_fk",
++          "tableFrom": "comments",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comments_status_check": {
++          "name": "comments_status_check",
++          "value": "\"comments\".\"status\" in ('visible', 'hidden', 'removed')"
++        },
++        "comments_target_type_check": {
++          "name": "comments_target_type_check",
++          "value": "\"comments\".\"target_type\" in ('manga', 'chapter')"
++        },
++        "comments_no_self_parent": {
++          "name": "comments_no_self_parent",
++          "value": "\"comments\".\"parent_id\" is null or \"comments\".\"parent_id\" <> \"comments\".\"id\""
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.library_entries": {
++      "name": "library_entries",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "lang": {
++          "name": "lang",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'reading'"
++        },
++        "followed_at": {
++          "name": "followed_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_chapter_id": {
++          "name": "last_chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "last_read_publish": {
++          "name": "last_read_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "library_entries_user_id_profiles_user_id_fk": {
++          "name": "library_entries_user_id_profiles_user_id_fk",
++          "tableFrom": "library_entries",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "library_entries_user_id_manga_id_pk": {
++          "name": "library_entries_user_id_manga_id_pk",
++          "columns": [
++            "user_id",
++            "manga_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.notification_cursors": {
++      "name": "notification_cursors",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_publish": {
++          "name": "last_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "notification_cursors_user_id_profiles_user_id_fk": {
++          "name": "notification_cursors_user_id_profiles_user_id_fk",
++          "tableFrom": "notification_cursors",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "notification_cursors_user_id_manga_id_language_pk": {
++          "name": "notification_cursors_user_id_manga_id_language_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "language"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.notifications": {
++      "name": "notifications",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "event_key": {
++          "name": "event_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "body": {
++          "name": "body",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "href": {
++          "name": "href",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "read_at": {
++          "name": "read_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "notifications_event_key": {
++          "name": "notifications_event_key",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "event_key",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "notifications_inbox_idx": {
++          "name": "notifications_inbox_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "notifications_user_id_profiles_user_id_fk": {
++          "name": "notifications_user_id_profiles_user_id_fk",
++          "tableFrom": "notifications",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.profiles": {
++      "name": "profiles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "username": {
++          "name": "username",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "display_name": {
++          "name": "display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "avatar_url": {
++          "name": "avatar_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "total_xp": {
++          "name": "total_xp",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "profiles_username_key": {
++          "name": "profiles_username_key",
++          "columns": [
++            {
++              "expression": "username",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.reader_preferences": {
++      "name": "reader_preferences",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "mode": {
++          "name": "mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vertical'"
++        },
++        "fit": {
++          "name": "fit",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": true
++        },
++        "bg": {
++          "name": "bg",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'light'"
++        },
++        "speed": {
++          "name": "speed",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 3
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "reader_preferences_user_id_profiles_user_id_fk": {
++          "name": "reader_preferences_user_id_profiles_user_id_fk",
++          "tableFrom": "reader_preferences",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.user_roles": {
++      "name": "user_roles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "role": {
++          "name": "role",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "user_roles_user_id_profiles_user_id_fk": {
++          "name": "user_roles_user_id_profiles_user_id_fk",
++          "tableFrom": "user_roles",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "user_roles_user_id_role_pk": {
++          "name": "user_roles_user_id_role_pk",
++          "columns": [
++            "user_id",
++            "role"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {},
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/web/drizzle/meta/_journal.json b/web/drizzle/meta/_journal.json
+index 523a4d9..8cfdb13 100644
+--- a/web/drizzle/meta/_journal.json
++++ b/web/drizzle/meta/_journal.json
+@@ -10,11 +10,18 @@
+       "breakpoints": true
+     },
+     {
+       "idx": 1,
+       "version": "7",
+       "when": 1795234527968,
+       "tag": "0001_account_data",
+       "breakpoints": true
++    },
++    {
++      "idx": 2,
++      "version": "7",
++      "when": 1795240987328,
++      "tag": "0002_comments_moderation",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/web/lib/community/client.ts b/web/lib/community/client.ts
+new file mode 100644
+index 0000000..00636f4
+--- /dev/null
++++ b/web/lib/community/client.ts
+@@ -0,0 +1,9 @@
++"use client";
++
++import { accountMutate } from "@/lib/account/client";
++
++/// On-demand chapter check. Called when an authenticated reader opens the
++/// library or notification center; the server dedupes and bounds the work.
++export function refreshChapterNotifications(): Promise<{ checked: number; created: number; skipped: boolean }> {
++  return accountMutate("/api/v1/notifications/refresh", "POST", {});
++}
+diff --git a/web/lib/community/handlers.ts b/web/lib/community/handlers.ts
+new file mode 100644
+index 0000000..4ededac
+--- /dev/null
++++ b/web/lib/community/handlers.ts
+@@ -0,0 +1,242 @@
++import "server-only";
++
++import type { AppDatabase } from "../db/client";
++import { DatabaseConfigurationError, getDatabase } from "../db/client";
++import { AuthConfigurationError, getAuth } from "../auth/server";
++import { identityFromSession, type AccountIdentity } from "../auth/identity";
++import type { ContentClient } from "../contracts";
++import { errorEnvelope } from "../contracts";
++import { serverContent } from "../content-server";
++import {
++  parseCommentInput,
++  parseCommentPatch,
++  parseCursor,
++  parseIds,
++  parseLimit,
++  parseModerationAction,
++  parseReportAction,
++  parseReportInput,
++  parseResourceId,
++  parseTargetType,
++  parseThreadInput,
++  readJson,
++  requireOrigin,
++} from "../validators";
++import { errorToResponse, privateJson } from "../me/handlers";
++import { ensureProfile, ServiceError } from "../me/service";
++import {
++  createComment,
++  createReport,
++  deleteComment,
++  editComment,
++  hasModeratorRole,
++  listComments,
++  listNotifications,
++  listReports,
++  moderateComment,
++  readNotifications,
++  refreshFollowedChapters,
++  requireModerator,
++  resolveReport,
++  setThreadLock,
++  threadState,
++} from "../moderation";
++
++export type CommunityDeps = {
++  db: () => AppDatabase;
++  identity: () => Promise<AccountIdentity | null>;
++  now: () => number;
++  allowlist: readonly string[];
++  content: () => Promise<ContentClient>;
++};
++
++export { errorToResponse, privateJson };
++
++/// Testable community API factory. Production supplies the pooled database and
++/// managed-session resolver; tests supply PGlite plus an opaque id obtained
++/// from the real SDK fixture. No header or environment bypass exists here.
++export function createCommunityApi(deps: CommunityDeps) {
++  const db = () => deps.db();
++  const now = () => deps.now();
++
++  async function withUser(
++    request: Request,
++    action: (user: AccountIdentity | null) => Promise<Response>,
++    options: { mutate?: boolean; optional?: boolean; moderator?: boolean } = {},
++  ): Promise<Response> {
++    try {
++      if (options.mutate) requireOrigin(request);
++      let user: AccountIdentity | null = null;
++      try {
++        user = await deps.identity();
++      } catch (error) {
++        if (!(options.optional && error instanceof AuthConfigurationError)) throw error;
++      }
++      if (!user) {
++        if (!options.optional) {
++          return privateJson(errorEnvelope("UNAUTHENTICATED", "Sign in to continue."), 401);
++        }
++        return action(null);
++      }
++      await ensureProfile(db(), user, { now: now(), allowlist: deps.allowlist });
++      if (options.moderator) await requireModerator(db(), user.id);
++      return await action(user);
++    } catch (error) {
++      return errorToResponse(error);
++    }
++  }
++
++  return {
++    commentsGet: (request: Request) => withUser(request, async (user) => {
++      const query = new URL(request.url).searchParams;
++      const targetType = parseTargetType(query.get("targetType"));
++      const targetId = parseResourceId(query.get("targetId"), "targetId");
++      const result = await listComments(
++        db(), targetType, targetId, parseCursor(query.get("cursor")),
++        parseLimit(query.get("limit")), user?.id ?? null,
++      );
++      return privateJson(result);
++    }, { optional: true }),
++
++    commentPost: (request: Request) => withUser(request, async (user) => {
++      const input = parseCommentInput(await readJson(request));
++      const comment = await createComment(db(), user!.id, input, now());
++      return privateJson({ comment }, 201);
++    }, { mutate: true }),
++
++    commentPatch: (request: Request, params: { id: string }) => withUser(request, async (user) => {
++      const id = parseResourceId(params.id, "id");
++      const patch = parseCommentPatch(await readJson(request));
++      const comment = await editComment(db(), user!.id, id, patch, now());
++      return privateJson({ comment });
++    }, { mutate: true }),
++
++    commentDelete: (request: Request, params: { id: string }) => withUser(request, async (user) => {
++      const id = parseResourceId(params.id, "id");
++      if (!(await deleteComment(db(), user!.id, id, now()))) {
++        return privateJson(errorEnvelope("NOT_FOUND", "Comment not found."), 404);
++      }
++      return privateJson({ deleted: true });
++    }, { mutate: true }),
++
++    reportPost: (request: Request) => withUser(request, async (user) => {
++      const input = parseReportInput(await readJson(request));
++      const report = await createReport(db(), user!.id, input, now());
++      return privateJson({ report }, 201);
++    }, { mutate: true }),
++
++    moderationAccessGet: (request: Request) => withUser(request, async (user) => {
++      return privateJson({ moderator: user ? await hasModeratorRole(db(), user.id) : false });
++    }, { optional: true }),
++
++    moderationReportsGet: (request: Request) => withUser(request, async (user) => {
++      const query = new URL(request.url).searchParams;
++      const result = await listReports(
++        db(), user!.id, parseCursor(query.get("cursor")), parseLimit(query.get("limit")),
++      );
++      return privateJson(result);
++    }, { moderator: true }),
++
++    reportPatch: (request: Request, params: { id: string }) => withUser(request, async (user) => {
++      const id = parseResourceId(params.id, "id");
++      const action = parseReportAction(await readJson(request));
++      if (!(await resolveReport(db(), user!.id, id, action, now()))) {
++        return privateJson(errorEnvelope("NOT_FOUND", "Open report not found."), 404);
++      }
++      return privateJson({ updated: true });
++    }, { mutate: true, moderator: true }),
++
++    commentModeratePatch: (request: Request, params: { id: string }) => withUser(request, async (user) => {
++      const id = parseResourceId(params.id, "id");
++      const action = parseModerationAction(await readJson(request));
++      const comment = await moderateComment(db(), user!.id, id, action, now());
++      return privateJson({ comment });
++    }, { mutate: true, moderator: true }),
++
++    threadGet: (request: Request) => withUser(request, async () => {
++      const query = new URL(request.url).searchParams;
++      const targetType = parseTargetType(query.get("targetType"));
++      const targetId = parseResourceId(query.get("targetId"), "targetId");
++      return privateJson({ thread: await threadState(db(), targetType, targetId) });
++    }),
++
++    threadPut: (request: Request) => withUser(request, async (user) => {
++      const input = parseThreadInput(await readJson(request));
++      const thread = await setThreadLock(
++        db(), user!.id, input.targetType, input.targetId, input.locked, now(),
++      );
++      return privateJson({ thread });
++    }, { mutate: true, moderator: true }),
++
++    notificationsGet: (request: Request) => withUser(request, async (user) => {
++      const query = new URL(request.url).searchParams;
++      const result = await listNotifications(
++        db(), user!.id, parseCursor(query.get("cursor")), parseLimit(query.get("limit")),
++      );
++      return privateJson(result);
++    }),
++
++    notificationsRefreshPost: (request: Request) => withUser(request, async (user) => {
++      const content = await deps.content();
++      const result = await refreshFollowedChapters(db(), user!.id, content, now());
++      return privateJson(result);
++    }, { mutate: true }),
++
++    notificationsReadPost: (request: Request) => withUser(request, async (user) => {
++      const body = await readJson(request);
++      const ids = parseIds(body.ids);
++      const updated = await readNotifications(db(), user!.id, ids, now());
++      return privateJson({ updated });
++    }, { mutate: true }),
++  };
++}
++
++export type CommunityApi = ReturnType<typeof createCommunityApi>;
++
++export function resolveSessionIdentity(data: unknown): AccountIdentity | null {
++  return identityFromSession(data);
++}
++
++function readOperatorAllowlist(env: NodeJS.ProcessEnv = process.env): string[] {
++  return (env.OPERATOR_EMAIL_ALLOWLIST ?? "")
++    .split(",")
++    .map((email) => email.trim().toLowerCase())
++    .filter(Boolean);
++}
++
++/// Production wiring: identity is read from the real managed-auth session
++/// cookie. There is no test header, role field or env bypass in this path.
++export function productionCommunityApi(): CommunityApi {
++  return createCommunityApi({
++    db: () => getDatabase(),
++    identity: async () => {
++      try {
++        const { data, error } = await getAuth().getSession();
++        if (error) return null;
++        return identityFromSession(data);
++      } catch (error) {
++        if (error instanceof AuthConfigurationError) throw error;
++        throw new ServiceError(503, "AUTH_UNAVAILABLE", "Managed authentication is temporarily unavailable.");
++      }
++    },
++    now: () => Date.now(),
++    allowlist: readOperatorAllowlist(),
++    content: () => serverContent(),
++  });
++}
++
++export async function wrapCommunityRoute(
++  run: (api: CommunityApi, request: Request) => Promise<Response>,
++  request: Request,
++): Promise<Response> {
++  try {
++    return await run(productionCommunityApi(), request);
++  } catch (error) {
++    if (error instanceof AuthConfigurationError || error instanceof DatabaseConfigurationError) {
++      const details: Record<string, string> = { service: error instanceof AuthConfigurationError ? "auth" : "database" };
++      if (error.missing.length > 0) details.missing = error.missing.join(",");
++      return privateJson(errorEnvelope(error.code, error.message, details), 503);
++    }
++    return errorToResponse(error);
++  }
++}
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index 5ca3029..d84b930 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -118,16 +118,70 @@ export type ChapterDto = {
+   pages: number;
+   external_url: string | null;
+   publish_at: string;
+   group: string;
+ };
+ 
+ export type PagesResponse = { pages: string[] };
+ 
++// Task 7 browser-safe community DTOs. Bodies are plain text; hidden/removed
++// bodies are null outside the authenticated moderator queue.
++export type CommentStatus = "visible" | "hidden" | "removed";
++
++export type CommentDto = {
++  id: string;
++  targetType: "manga" | "chapter";
++  targetId: string;
++  parentId: string | null;
++  userId: string;
++  authorName: string;
++  body: string | null;
++  spoiler: boolean;
++  status: CommentStatus;
++  createdAt: number;
++  updatedAt: number;
++  replies: CommentDto[];
++};
++
++export type CommentListDto = { items: CommentDto[]; nextCursor: string | null };
++
++export type ReportDto = {
++  id: string;
++  commentId: string;
++  reason: string;
++  status: "open" | "resolved" | "dismissed";
++  createdAt: number;
++  comment: CommentDto | null;
++};
++
++export type ReportListDto = { items: ReportDto[]; nextCursor: string | null };
++
++export type NotificationDto = {
++  id: string;
++  type: string;
++  title: string;
++  body: string;
++  href: string | null;
++  readAt: number | null;
++  createdAt: number;
++};
++
++export type NotificationListDto = {
++  items: NotificationDto[];
++  unreadCount: number;
++  nextCursor: string | null;
++};
++
++export type ThreadDto = {
++  targetType: "manga" | "chapter";
++  targetId: string;
++  locked: boolean;
++};
++
+ export type ContentEndpoint =
+   | "latest"
+   | "popular"
+   | "tags"
+   | "rank"
+   | "search"
+   | "manga"
+   | "chapter"
+diff --git a/web/lib/db/schema.ts b/web/lib/db/schema.ts
+index 1f4f1d4..b12e149 100644
+--- a/web/lib/db/schema.ts
++++ b/web/lib/db/schema.ts
+@@ -1,9 +1,10 @@
+-import { bigint, boolean, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
++import { bigint, boolean, check, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
++import { sql } from "drizzle-orm";
+ 
+ // Application-owned tables only. Neon Managed Auth owns its identity/session
+ // tables in its own schema and they are never managed from this file. Opaque
+ // auth user ids stay text: never parse them as UUIDs or derive trust from them.
+ export const profiles = pgTable("profiles", {
+   userId: text("user_id").primaryKey(),
+   // Stored normalized (trimmed + lowercase); the unique index is the final guard.
+   username: text("username"),
+@@ -63,8 +64,88 @@ export const chapterProgress = pgTable("chapter_progress", {
+ export const readerPreferences = pgTable("reader_preferences", {
+   userId: text("user_id").primaryKey().references(() => profiles.userId, { onDelete: "cascade" }),
+   mode: text("mode").notNull().default("vertical"),
+   fit: boolean("fit").notNull().default(true),
+   bg: text("bg").notNull().default("light"),
+   speed: integer("speed").notNull().default(3),
+   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+ });
++
++// Task 7: application-owned community tables. Locks live on the thread, never
++// on a comment status; all user ids stay opaque text from the managed session.
++export const commentThreads = pgTable("comment_threads", {
++  targetType: text("target_type").notNull(),
++  targetId: text("target_id").notNull(),
++  locked: boolean("locked").notNull().default(false),
++  lockedBy: text("locked_by"),
++  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [
++  primaryKey({ columns: [table.targetType, table.targetId] }),
++  check("comment_threads_target_type_check", sql`${table.targetType} in ('manga', 'chapter')`),
++]);
++
++export const comments = pgTable("comments", {
++  id: text("id").primaryKey(),
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  targetType: text("target_type").notNull(),
++  targetId: text("target_id").notNull(),
++  parentId: text("parent_id"),
++  body: text("body"),
++  spoiler: boolean("spoiler").notNull().default(false),
++  status: text("status").notNull().default("visible"),
++  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
++  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [
++  index("comments_thread_idx").on(table.targetType, table.targetId, table.createdAt),
++  index("comments_parent_idx").on(table.parentId),
++  check("comments_status_check", sql`${table.status} in ('visible', 'hidden', 'removed')`),
++  check("comments_target_type_check", sql`${table.targetType} in ('manga', 'chapter')`),
++  check("comments_no_self_parent", sql`${table.parentId} is null or ${table.parentId} <> ${table.id}`),
++]);
++
++export const commentReports = pgTable("comment_reports", {
++  id: text("id").primaryKey(),
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  commentId: text("comment_id").notNull().references(() => comments.id, { onDelete: "cascade" }),
++  reason: text("reason").notNull(),
++  status: text("status").notNull().default("open"),
++  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
++  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
++  resolvedBy: text("resolved_by"),
++}, (table) => [
++  uniqueIndex("comment_reports_open_key").on(table.userId, table.commentId)
++    .where(sql`${table.status} = 'open'`),
++  index("comment_reports_queue_idx").on(table.status, table.createdAt),
++  check("comment_reports_status_check", sql`${table.status} in ('open', 'resolved', 'dismissed')`),
++]);
++
++export const notifications = pgTable("notifications", {
++  id: text("id").primaryKey(),
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  type: text("type").notNull(),
++  eventKey: text("event_key").notNull(),
++  title: text("title").notNull(),
++  body: text("body").notNull(),
++  href: text("href"),
++  readAt: timestamp("read_at", { withTimezone: true }),
++  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [
++  uniqueIndex("notifications_event_key").on(table.userId, table.eventKey),
++  index("notifications_inbox_idx").on(table.userId, table.createdAt),
++]);
++
++export const notificationCursors = pgTable("notification_cursors", {
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  mangaId: text("manga_id").notNull(),
++  language: text("language").notNull(),
++  lastPublish: bigint("last_publish", { mode: "number" }).notNull(),
++  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
++}, (table) => [primaryKey({ columns: [table.userId, table.mangaId, table.language] })]);
++
++// Durable, sliding-window counters. pg_advisory_xact_lock in the service keeps
++// concurrent requests for one user/action from racing past the limit.
++export const actionEvents = pgTable("action_events", {
++  id: text("id").primaryKey(),
++  userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
++  action: text("action").notNull(),
++  occurredAt: bigint("occurred_at", { mode: "number" }).notNull(),
++}, (table) => [index("action_events_window_idx").on(table.userId, table.action, table.occurredAt)]);
+diff --git a/web/lib/moderation.ts b/web/lib/moderation.ts
+new file mode 100644
+index 0000000..b5386c9
+--- /dev/null
++++ b/web/lib/moderation.ts
+@@ -0,0 +1,622 @@
++import "server-only";
++
++import { randomUUID } from "node:crypto";
++import { and, count, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
++import type { AppDatabase } from "./db/client";
++import * as tables from "./db/schema";
++import { ServiceError } from "./me/service";
++import type {
++  CommentDto,
++  CommentStatus,
++  NotificationDto,
++  ReportDto,
++  ThreadDto,
++} from "./contracts";
++import type { ContentClient } from "./contracts";
++
++type CommentTargetType = "manga" | "chapter";
++// Transactions from `db.transaction()` have no `$client`; every service call
++// runs unchanged on the pooled database or inside that transaction.
++type Db = Omit<AppDatabase, "$client">;
++
++const COMMENT_LIMIT = 5;
++const COMMENT_WINDOW_MS = 60_000;
++const REPORT_LIMIT = 10;
++const REPORT_WINDOW_MS = 3_600_000;
++const LIBRARY_SCAN_LIMIT = 20;
++const CHAPTERS_PER_MANGA = 3;
++const MAX_CHAPTER_AGE_MS = 5 * 60_000;
++
++function date(ms: number): Date {
++  return new Date(Number.isFinite(ms) ? ms : Date.now());
++}
++
++function ms(value: Date | null): number | null {
++  return value ? value.getTime() : null;
++}
++
++function uniqueViolation(error: unknown): boolean {
++  if (!error || typeof error !== "object") return false;
++  const code = "code" in error ? String((error as { code: unknown }).code) : "";
++  const message = `${"message" in error ? String((error as { message: unknown }).message) : ""} ${
++    "cause" in error && error.cause && typeof error.cause === "object" && "message" in error.cause
++      ? String((error.cause as { message: unknown }).message)
++      : ""
++  }`;
++  return code === "23505" || /duplicate key|unique constraint/i.test(message);
++}
++
++/// Stored roles are the only moderator authority. Client role/title/level
++/// fields never reach this check.
++export async function hasModeratorRole(db: Db, userId: string): Promise<boolean> {
++  const rows = await db.select({ role: tables.userRoles.role })
++    .from(tables.userRoles)
++    .where(and(eq(tables.userRoles.userId, userId), inArray(tables.userRoles.role, ["moderator", "admin"])))
++    .limit(1);
++  return rows.length > 0;
++}
++
++export async function requireModerator(db: Db, userId: string): Promise<void> {
++  if (!(await hasModeratorRole(db, userId))) {
++    throw new ServiceError(403, "FORBIDDEN", "Moderator permission is required.");
++  }
++}
++
++/// Sliding window backed by SQL, not by a process-local Map. The xact advisory
++/// lock serialises concurrent requests for one user/action; a rejected request
++/// rolls its event back with the surrounding transaction.
++async function consumeRateLimit(
++  db: Db,
++  userId: string,
++  action: "comment" | "report",
++  now: number,
++): Promise<void> {
++  const max = action === "comment" ? COMMENT_LIMIT : REPORT_LIMIT;
++  const windowMs = action === "comment" ? COMMENT_WINDOW_MS : REPORT_WINDOW_MS;
++  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${"community-rate:" + action + ":" + userId}))`);
++  await db.delete(tables.actionEvents).where(and(
++    eq(tables.actionEvents.userId, userId),
++    eq(tables.actionEvents.action, action),
++    sql`${tables.actionEvents.occurredAt} <= ${now - windowMs}`,
++  ));
++  await db.insert(tables.actionEvents).values({
++    id: randomUUID(), userId, action, occurredAt: now,
++  });
++  const rows = await db.select({ value: count() }).from(tables.actionEvents).where(and(
++    eq(tables.actionEvents.userId, userId),
++    eq(tables.actionEvents.action, action),
++    gt(tables.actionEvents.occurredAt, now - windowMs),
++  ));
++  if ((rows[0]?.value ?? 0) > max) {
++    throw new ServiceError(429, "RATE_LIMITED", action === "comment"
++      ? "Too many comments. Try again shortly."
++      : "Too many reports. Try again later.");
++  }
++}
++
++async function ensureThread(
++  db: Db,
++  targetType: CommentTargetType,
++  targetId: string,
++  now: number,
++) {
++  await db.insert(tables.commentThreads).values({ targetType, targetId, updatedAt: date(now) })
++    .onConflictDoNothing();
++  const rows = await db.select().from(tables.commentThreads)
++    .where(and(eq(tables.commentThreads.targetType, targetType), eq(tables.commentThreads.targetId, targetId)))
++    .for("update")
++    .limit(1);
++  return rows[0];
++}
++
++type CommentRow = typeof tables.comments.$inferSelect & { authorName: string | null };
++
++function commentDto(row: CommentRow, replies: CommentDto[] = []): CommentDto {
++  return {
++    id: row.id,
++    targetType: row.targetType as CommentTargetType,
++    targetId: row.targetId,
++    parentId: row.parentId,
++    userId: row.userId,
++    authorName: row.authorName ?? "Độc giả",
++    // Hidden and removed bodies never leave the service, even for the owner.
++    body: row.status === "visible" ? row.body : null,
++    spoiler: row.spoiler,
++    status: row.status as CommentStatus,
++    createdAt: row.createdAt.getTime(),
++    updatedAt: row.updatedAt.getTime(),
++    replies,
++  };
++}
++
++async function loadComment(db: Db, id: string): Promise<CommentRow | null> {
++  const rows = await db.select({
++    comment: tables.comments,
++    authorName: tables.profiles.displayName,
++  }).from(tables.comments)
++    .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
++    .where(eq(tables.comments.id, id))
++    .limit(1);
++  const row = rows[0];
++  return row ? { ...row.comment, authorName: row.authorName } : null;
++}
++
++function beforeCursor(time: number, id: string) {
++  return or(
++    lt(tables.comments.createdAt, date(time)),
++    and(eq(tables.comments.createdAt, date(time)), lt(tables.comments.id, id)),
++  );
++}
++
++export async function listComments(
++  db: Db,
++  targetType: CommentTargetType,
++  targetId: string,
++  cursor: { time: number; id: string } | null,
++  limit: number,
++  viewerId: string | null,
++): Promise<{ items: CommentDto[]; nextCursor: string | null }> {
++  const visibility = viewerId
++    ? or(eq(tables.comments.status, "visible"), eq(tables.comments.userId, viewerId))
++    : eq(tables.comments.status, "visible");
++  const roots = await db.select({
++    comment: tables.comments,
++    authorName: tables.profiles.displayName,
++  }).from(tables.comments)
++    .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
++    .where(and(
++      eq(tables.comments.targetType, targetType),
++      eq(tables.comments.targetId, targetId),
++      isNull(tables.comments.parentId),
++      visibility,
++      cursor ? beforeCursor(cursor.time, cursor.id) : undefined,
++    ))
++    .orderBy(desc(tables.comments.createdAt), desc(tables.comments.id))
++    .limit(limit + 1);
++  const hasMore = roots.length > limit;
++  const page = roots.slice(0, limit);
++  const visibleRootIds = page.filter((row) => row.comment.status === "visible").map((row) => row.comment.id);
++
++  const replies = visibleRootIds.length > 0
++    ? await db.select({
++      comment: tables.comments,
++      authorName: tables.profiles.displayName,
++    }).from(tables.comments)
++      .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
++      .where(and(inArray(tables.comments.parentId, visibleRootIds), visibility))
++      .orderBy(tables.comments.createdAt, tables.comments.id)
++      .limit(500)
++    : [];
++  const grouped = new Map<string, CommentDto[]>();
++  for (const row of replies) {
++    const parentId = row.comment.parentId!;
++    const list = grouped.get(parentId) ?? [];
++    list.push(commentDto({ ...row.comment, authorName: row.authorName }));
++    grouped.set(parentId, list);
++  }
++  const last = page.at(-1);
++  return {
++    items: page.map((row) => commentDto(
++      { ...row.comment, authorName: row.authorName },
++      grouped.get(row.comment.id) ?? [],
++    )),
++    nextCursor: hasMore && last
++      ? `${last.comment.createdAt.getTime()}.${last.comment.id}`
++      : null,
++  };
++}
++
++/// Reusable, deduplicated outbox. Task 8 emits level-up events with the same
++/// interface and its own event keys; no email or push is involved.
++export async function emitNotification(db: Db, input: {
++  userId: string;
++  type: string;
++  eventKey: string;
++  title: string;
++  body: string;
++  href?: string | null;
++}): Promise<boolean> {
++  if (input.userId.length === 0 || input.eventKey.length === 0 || input.eventKey.length > 300) {
++    throw new ServiceError(400, "INVALID_INPUT", "Invalid notification event.");
++  }
++  const result = await db.insert(tables.notifications).values({
++    id: randomUUID(),
++    userId: input.userId,
++    type: input.type.slice(0, 40),
++    eventKey: input.eventKey,
++    title: input.title.slice(0, 200),
++    body: input.body.slice(0, 2000),
++    href: input.href?.slice(0, 300) ?? null,
++  }).onConflictDoNothing({ target: [tables.notifications.userId, tables.notifications.eventKey] })
++    .returning({ id: tables.notifications.id });
++  return result.length > 0;
++}
++
++export async function createComment(
++  db: Db,
++  userId: string,
++  input: { targetType: CommentTargetType; targetId: string; parentId: string | null; body: string; spoiler: boolean },
++  now: number,
++): Promise<CommentDto> {
++  return db.transaction(async (tx) => {
++    const thread = await ensureThread(tx, input.targetType, input.targetId, now);
++    if (thread?.locked) throw new ServiceError(409, "THREAD_LOCKED", "This discussion is locked.");
++
++    if (input.parentId) {
++      const parent = await tx.select().from(tables.comments)
++        .where(eq(tables.comments.id, input.parentId)).limit(1);
++      const root = parent[0];
++      if (!root || root.targetType !== input.targetType || root.targetId !== input.targetId || root.parentId !== null) {
++        throw new ServiceError(400, "INVALID_REPLY", "Replies must target a root in the same thread.");
++      }
++      if (root.status !== "visible" || !root.body) {
++        throw new ServiceError(409, "PARENT_UNAVAILABLE", "That comment cannot be replied to.");
++      }
++    }
++
++    await consumeRateLimit(tx, userId, "comment", now);
++    const id = randomUUID();
++    await tx.insert(tables.comments).values({
++      id,
++      userId,
++      targetType: input.targetType,
++      targetId: input.targetId,
++      parentId: input.parentId,
++      body: input.body,
++      spoiler: input.spoiler,
++      status: "visible",
++      createdAt: date(now),
++      updatedAt: date(now),
++    });
++
++    if (input.parentId) {
++      const parent = await loadComment(tx, input.parentId);
++      if (parent && parent.userId !== userId) {
++        await emitNotification(tx, {
++          userId: parent.userId,
++          type: "comment_reply",
++          eventKey: `reply:${id}`,
++          title: "Có phản hồi bình luận",
++          body: input.spoiler ? "Một phản hồi có spoiler — mở bình luận để xem." : input.body.slice(0, 180),
++          href: input.targetType === "chapter" ? `/read/${input.targetId}` : `/manga/${input.targetId}`,
++        });
++      }
++    }
++    const created = await loadComment(tx, id);
++    return commentDto(created!);
++  });
++}
++
++export async function editComment(
++  db: Db,
++  userId: string,
++  id: string,
++  patch: { body?: string; spoiler?: boolean },
++  now: number,
++): Promise<CommentDto> {
++  return db.transaction(async (tx) => {
++    const existing = await tx.select().from(tables.comments).where(eq(tables.comments.id, id)).limit(1);
++    if (!existing[0]) throw new ServiceError(404, "NOT_FOUND", "Comment not found.");
++    if (existing[0].userId !== userId) {
++      throw new ServiceError(403, "FORBIDDEN", "You do not own this comment.");
++    }
++    if (existing[0].status !== "visible") {
++      throw new ServiceError(409, "CONTENT_UNAVAILABLE", "Moderated comments cannot be edited.");
++    }
++    const thread = await ensureThread(tx, existing[0].targetType as CommentTargetType, existing[0].targetId, now);
++    if (thread?.locked) throw new ServiceError(409, "THREAD_LOCKED", "This discussion is locked.");
++    const values: Partial<typeof tables.comments.$inferInsert> = { updatedAt: date(now) };
++    if (patch.body !== undefined) values.body = patch.body;
++    if (patch.spoiler !== undefined) values.spoiler = patch.spoiler;
++    await tx.update(tables.comments).set(values).where(eq(tables.comments.id, id));
++    return commentDto((await loadComment(tx, id))!);
++  });
++}
++
++export async function deleteComment(db: Db, userId: string, id: string, now: number): Promise<boolean> {
++  const existing = await db.select({ userId: tables.comments.userId }).from(tables.comments)
++    .where(eq(tables.comments.id, id)).limit(1);
++  if (!existing[0]) return false;
++  if (existing[0].userId !== userId) throw new ServiceError(403, "FORBIDDEN", "You do not own this comment.");
++  const result = await db.update(tables.comments).set({
++    status: "removed", body: null, updatedAt: date(now),
++  }).where(and(eq(tables.comments.id, id), eq(tables.comments.userId, userId)))
++    .returning({ id: tables.comments.id });
++  return result.length > 0;
++}
++
++export async function createReport(
++  db: Db,
++  userId: string,
++  input: { commentId: string; reason: string },
++  now: number,
++): Promise<ReportDto> {
++  return db.transaction(async (tx) => {
++    const target = await tx.select().from(tables.comments)
++      .where(eq(tables.comments.id, input.commentId)).limit(1);
++    const comment = target[0];
++    if (!comment || comment.status !== "visible") {
++      throw new ServiceError(404, "NOT_FOUND", "Comment not found.");
++    }
++    if (comment.userId === userId) throw new ServiceError(403, "SELF_REPORT", "You cannot report your own comment.");
++    await consumeRateLimit(tx, userId, "report", now);
++    const id = randomUUID();
++    try {
++      await tx.insert(tables.commentReports).values({
++        id, userId, commentId: input.commentId, reason: input.reason, status: "open", createdAt: date(now),
++      });
++    } catch (error) {
++      if (uniqueViolation(error)) throw new ServiceError(409, "DUPLICATE_REPORT", "This comment is already reported.");
++      throw error;
++    }
++    return {
++      id, commentId: input.commentId, reason: input.reason, status: "open" as const,
++      createdAt: now, comment: null,
++    };
++  });
++}
++
++export async function listReports(
++  db: Db,
++  actorId: string,
++  cursor: { time: number; id: string } | null,
++  limit: number,
++): Promise<{ items: ReportDto[]; nextCursor: string | null }> {
++  await requireModerator(db, actorId);
++  const rows = await db.select({
++    report: tables.commentReports,
++    comment: tables.comments,
++    authorName: tables.profiles.displayName,
++  }).from(tables.commentReports)
++    .innerJoin(tables.comments, eq(tables.comments.id, tables.commentReports.commentId))
++    .leftJoin(tables.profiles, eq(tables.profiles.userId, tables.comments.userId))
++    .where(and(
++      eq(tables.commentReports.status, "open"),
++      cursor ? or(
++        lt(tables.commentReports.createdAt, date(cursor.time)),
++        and(eq(tables.commentReports.createdAt, date(cursor.time)), lt(tables.commentReports.id, cursor.id)),
++      ) : undefined,
++    ))
++    .orderBy(desc(tables.commentReports.createdAt), desc(tables.commentReports.id))
++    .limit(limit + 1);
++  const hasMore = rows.length > limit;
++  const page = rows.slice(0, limit);
++  const last = page.at(-1);
++  return {
++    items: page.map((row) => ({
++      id: row.report.id,
++      commentId: row.report.commentId,
++      reason: row.report.reason,
++      status: row.report.status as ReportDto["status"],
++      createdAt: row.report.createdAt.getTime(),
++      // Moderator-only queue is the sole route that can see a moderated body.
++      comment: commentDto({ ...row.comment, authorName: row.authorName }),
++    })),
++    nextCursor: hasMore && last ? `${last.report.createdAt.getTime()}.${last.report.id}` : null,
++  };
++}
++
++export async function resolveReport(
++  db: Db,
++  actorId: string,
++  reportId: string,
++  action: "resolve" | "dismiss",
++  now: number,
++): Promise<boolean> {
++  await requireModerator(db, actorId);
++  const result = await db.update(tables.commentReports).set({
++    status: action === "resolve" ? "resolved" : "dismissed",
++    resolvedAt: date(now),
++    resolvedBy: actorId,
++  }).where(and(eq(tables.commentReports.id, reportId), eq(tables.commentReports.status, "open")))
++    .returning({ id: tables.commentReports.id });
++  return result.length > 0;
++}
++
++export async function moderateComment(
++  db: Db,
++  actorId: string,
++  commentId: string,
++  action: "hide" | "remove" | "restore",
++  now: number,
++): Promise<CommentDto> {
++  return db.transaction(async (tx) => {
++    await requireModerator(tx, actorId);
++    const existing = await loadComment(tx, commentId);
++    if (!existing) throw new ServiceError(404, "NOT_FOUND", "Comment not found.");
++    const status: CommentStatus = action === "hide" ? "hidden" : action === "remove" ? "removed" : "visible";
++    await tx.update(tables.comments).set({
++      status,
++      // Removal destroys the stored body; hiding preserves it for moderators.
++      ...(action === "remove" ? { body: null } : {}),
++      updatedAt: date(now),
++    }).where(eq(tables.comments.id, commentId));
++    if (existing.userId !== actorId && action !== "restore") {
++      await emitNotification(tx, {
++        userId: existing.userId,
++        type: "moderation",
++        eventKey: `moderation:${commentId}:${action}`,
++        title: "Bình luận bị kiểm duyệt",
++        body: action === "hide"
++          ? "Bình luận của bạn đã bị ẩn để kiểm duyệt."
++          : "Bình luận của bạn đã bị xóa.",
++        href: existing.targetType === "chapter" ? `/read/${existing.targetId}` : `/manga/${existing.targetId}`,
++      });
++    }
++    return commentDto((await loadComment(tx, commentId))!);
++  });
++}
++
++export async function setThreadLock(
++  db: Db,
++  actorId: string,
++  targetType: CommentTargetType,
++  targetId: string,
++  locked: boolean,
++  now: number,
++): Promise<ThreadDto> {
++  return db.transaction(async (tx) => {
++    await requireModerator(tx, actorId);
++    await ensureThread(tx, targetType, targetId, now);
++    await tx.update(tables.commentThreads).set({
++      locked,
++      lockedBy: locked ? actorId : null,
++      updatedAt: date(now),
++    }).where(and(
++      eq(tables.commentThreads.targetType, targetType),
++      eq(tables.commentThreads.targetId, targetId),
++    ));
++    return { targetType, targetId, locked };
++  });
++}
++
++export async function threadState(
++  db: Db,
++  targetType: CommentTargetType,
++  targetId: string,
++): Promise<ThreadDto> {
++  const rows = await db.select().from(tables.commentThreads)
++    .where(and(eq(tables.commentThreads.targetType, targetType), eq(tables.commentThreads.targetId, targetId)))
++    .limit(1);
++  return { targetType, targetId, locked: rows[0]?.locked === true };
++}
++
++function notificationDto(row: typeof tables.notifications.$inferSelect): NotificationDto {
++  return {
++    id: row.id,
++    type: row.type,
++    title: row.title,
++    body: row.body,
++    href: row.href,
++    readAt: ms(row.readAt),
++    createdAt: row.createdAt.getTime(),
++  };
++}
++
++export async function listNotifications(
++  db: Db,
++  userId: string,
++  cursor: { time: number; id: string } | null,
++  limit: number,
++): Promise<{ items: NotificationDto[]; unreadCount: number; nextCursor: string | null }> {
++  const unread = await db.select({ value: count() }).from(tables.notifications)
++    .where(and(eq(tables.notifications.userId, userId), isNull(tables.notifications.readAt)));
++  const rows = await db.select().from(tables.notifications)
++    .where(and(
++      eq(tables.notifications.userId, userId),
++      cursor ? or(
++        lt(tables.notifications.createdAt, date(cursor.time)),
++        and(eq(tables.notifications.createdAt, date(cursor.time)), lt(tables.notifications.id, cursor.id)),
++      ) : undefined,
++    ))
++    .orderBy(desc(tables.notifications.createdAt), desc(tables.notifications.id))
++    .limit(limit + 1);
++  const hasMore = rows.length > limit;
++  const page = rows.slice(0, limit);
++  const last = page.at(-1);
++  return {
++    items: page.map(notificationDto),
++    unreadCount: unread[0]?.value ?? 0,
++    nextCursor: hasMore && last ? `${last.createdAt.getTime()}.${last.id}` : null,
++  };
++}
++
++export async function readNotifications(
++  db: Db,
++  userId: string,
++  ids: string[],
++  now: number,
++): Promise<number> {
++  const result = await db.update(tables.notifications).set({ readAt: date(now) })
++    .where(and(
++      eq(tables.notifications.userId, userId),
++      inArray(tables.notifications.id, ids),
++      isNull(tables.notifications.readAt),
++    ))
++    .returning({ id: tables.notifications.id });
++  return result.length;
++}
++
++function parsePublish(value: string): number | null {
++  if (typeof value !== "string") return null;
++  const parsed = Date.parse(value);
++  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
++}
++
++/// On-demand only: no background worker is started or implied. The first
++/// observed publish time for a followed manga is a baseline, never a batch of
++/// historic "new chapter" notifications.
++export async function refreshFollowedChapters(
++  db: Db,
++  userId: string,
++  content: ContentClient,
++  now: number,
++): Promise<{ checked: number; created: number; skipped: boolean }> {
++  return db.transaction(async (tx) => {
++    const acquired = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${'chapter-refresh:' + userId})) as acquired`);
++    const result = acquired as unknown as { rows?: Array<{ acquired: boolean }> };
++    const rows = result.rows ?? [];
++    if (rows[0]?.acquired === false) return { checked: 0, created: 0, skipped: true };
++
++    const followed = await tx.select({
++      mangaId: tables.libraryEntries.mangaId,
++      title: tables.libraryEntries.title,
++    }).from(tables.libraryEntries)
++      .where(and(eq(tables.libraryEntries.userId, userId), ne(tables.libraryEntries.status, "dropped")))
++      .orderBy(desc(tables.libraryEntries.followedAt))
++      .limit(LIBRARY_SCAN_LIMIT);
++
++    let created = 0;
++    for (const entry of followed) {
++      let chapters;
++      try {
++        chapters = await content.chapters(entry.mangaId);
++      } catch {
++        continue;
++      }
++      for (const language of ["vi", "en"] as const) {
++        const candidates = (chapters[language] ?? [])
++          .map((item) => ({ item, published: parsePublish(item.publish_at) }))
++          .filter((value): value is { item: typeof value.item; published: number } =>
++            value.published !== null && value.published <= now + MAX_CHAPTER_AGE_MS)
++          .sort((a, b) => a.published - b.published);
++        if (candidates.length === 0) continue;
++        const newest = candidates.at(-1)!.published;
++        const existing = await tx.select().from(tables.notificationCursors).where(and(
++          eq(tables.notificationCursors.userId, userId),
++          eq(tables.notificationCursors.mangaId, entry.mangaId),
++          eq(tables.notificationCursors.language, language),
++        )).limit(1);
++        if (!existing[0]) {
++          await tx.insert(tables.notificationCursors).values({
++            userId, mangaId: entry.mangaId, language, lastPublish: newest, updatedAt: date(now),
++          });
++          continue;
++        }
++        const cursor = existing[0].lastPublish;
++        for (const { item } of candidates
++          .filter((value) => value.published > cursor)
++          .slice(0, CHAPTERS_PER_MANGA)) {
++          const emitted = await emitNotification(tx, {
++            userId,
++            type: "new_chapter",
++            eventKey: `chapter:${userId}:${entry.mangaId}:${item.id}:${language}`,
++            title: "Chương mới",
++            body: `${entry.title} — ${item.chapter ?? "chương mới"} (${language})`,
++            href: `/read/${item.id}?manga=${encodeURIComponent(entry.mangaId)}&lang=${language}`,
++          });
++          if (emitted) created += 1;
++        }
++        if (newest > cursor) {
++          await tx.update(tables.notificationCursors).set({ lastPublish: newest, updatedAt: date(now) })
++            .where(and(
++              eq(tables.notificationCursors.userId, userId),
++              eq(tables.notificationCursors.mangaId, entry.mangaId),
++              eq(tables.notificationCursors.language, language),
++            ));
++        }
++      }
++    }
++    return { checked: followed.length, created, skipped: false };
++  });
++}
+diff --git a/web/lib/validators.ts b/web/lib/validators.ts
+index fbceb88..90347e3 100644
+--- a/web/lib/validators.ts
++++ b/web/lib/validators.ts
+@@ -357,16 +357,135 @@ export function parseImportPayload(body: Record<string, unknown>, nowMs = Date.n
+   let settings: ReaderSettingsDto | null = null;
+   if (body.settings !== undefined) {
+     if (!isObject(body.settings)) throw new ValidationError(400, "INVALID_INPUT", "settings must be an object.");
+     settings = parseSettingsInput(body.settings);
+   }
+   return { library, history, settings, skipped, invalid: skipped };
+ }
+ 
++// Task 7 community boundaries. IDs are opaque text, roles never arrive from a
++// request, and every collection has a hard page ceiling.
++export type CommentTargetType = "manga" | "chapter";
++
++export function parseTargetType(value: unknown): CommentTargetType {
++  if (value !== "manga" && value !== "chapter") {
++    throw new ValidationError(400, "INVALID_INPUT", "targetType must be manga or chapter.");
++  }
++  return value;
++}
++
++export function parseCommentBody(value: unknown): string {
++  if (typeof value !== "string") throw new ValidationError(400, "INVALID_INPUT", "Comment body is required.");
++  const trimmed = value.trim();
++  if (trimmed.length < 1 || trimmed.length > 2000) {
++    throw new ValidationError(400, "INVALID_INPUT", "Comment body must be 1-2000 characters.");
++  }
++  // Newlines and tabs are rendered as text; every other control byte is noise.
++  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(trimmed)) {
++    throw new ValidationError(400, "INVALID_INPUT", "Comment body contains unsupported characters.");
++  }
++  return trimmed;
++}
++
++export function parseCommentInput(body: Record<string, unknown>): {
++  targetType: CommentTargetType;
++  targetId: string;
++  parentId: string | null;
++  body: string;
++  spoiler: boolean;
++} {
++  assertAllowedKeys(body, ["targetType", "targetId", "parentId", "body", "spoiler"]);
++  if (body.spoiler !== undefined && typeof body.spoiler !== "boolean") {
++    throw new ValidationError(400, "INVALID_INPUT", "spoiler must be a boolean.");
++  }
++  return {
++    targetType: parseTargetType(body.targetType),
++    targetId: parseResourceId(body.targetId, "targetId"),
++    parentId: body.parentId === undefined || body.parentId === null || body.parentId === ""
++      ? null
++      : parseResourceId(body.parentId, "parentId"),
++    body: parseCommentBody(body.body),
++    spoiler: body.spoiler === true,
++  };
++}
++
++export function parseCommentPatch(body: Record<string, unknown>): { body?: string; spoiler?: boolean } {
++  assertAllowedKeys(body, ["body", "spoiler"]);
++  const patch: { body?: string; spoiler?: boolean } = {};
++  if (Object.hasOwn(body, "body")) patch.body = parseCommentBody(body.body);
++  if (Object.hasOwn(body, "spoiler")) {
++    if (typeof body.spoiler !== "boolean") throw new ValidationError(400, "INVALID_INPUT", "spoiler must be a boolean.");
++    patch.spoiler = body.spoiler;
++  }
++  if (Object.keys(patch).length === 0) throw new ValidationError(400, "INVALID_INPUT", "Nothing to update.");
++  return patch;
++}
++
++export function parseReportInput(body: Record<string, unknown>): { commentId: string; reason: string } {
++  assertAllowedKeys(body, ["commentId", "reason"]);
++  return {
++    commentId: parseResourceId(body.commentId, "commentId"),
++    reason: requiredText(body.reason, "reason", 300),
++  };
++}
++
++export function parseModerationAction(body: Record<string, unknown>): "hide" | "remove" | "restore" {
++  assertAllowedKeys(body, ["action"]);
++  if (body.action !== "hide" && body.action !== "remove" && body.action !== "restore") {
++    throw new ValidationError(400, "INVALID_INPUT", "Unknown moderation action.");
++  }
++  return body.action;
++}
++
++export function parseReportAction(body: Record<string, unknown>): "resolve" | "dismiss" {
++  assertAllowedKeys(body, ["action"]);
++  if (body.action !== "resolve" && body.action !== "dismiss") {
++    throw new ValidationError(400, "INVALID_INPUT", "Unknown report action.");
++  }
++  return body.action;
++}
++
++export function parseThreadInput(body: Record<string, unknown>): {
++  targetType: CommentTargetType;
++  targetId: string;
++  locked: boolean;
++} {
++  assertAllowedKeys(body, ["targetType", "targetId", "locked"]);
++  if (typeof body.locked !== "boolean") throw new ValidationError(400, "INVALID_INPUT", "locked must be a boolean.");
++  return { targetType: parseTargetType(body.targetType), targetId: parseResourceId(body.targetId, "targetId"), locked: body.locked };
++}
++
++export function parseLimit(raw: unknown, fallback = 20, max = 50): number {
++  if (raw === null || raw === undefined || raw === "") return fallback;
++  const value = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
++  return integerIn(value, 1, max, "limit");
++}
++
++export function parseCursor(raw: unknown): { time: number; id: string } | null {
++  if (raw === null || raw === undefined || raw === "") return null;
++  if (typeof raw !== "string") throw new ValidationError(400, "INVALID_INPUT", "Invalid cursor.");
++  const dot = raw.indexOf(".");
++  if (dot < 1) throw new ValidationError(400, "INVALID_INPUT", "Invalid cursor.");
++  const time = Number(raw.slice(0, dot));
++  const id = raw.slice(dot + 1);
++  if (!Number.isSafeInteger(time) || time < 0 || id.length < 1 || id.length > MAX_ID || /[/?#]/.test(id)) {
++    throw new ValidationError(400, "INVALID_INPUT", "Invalid cursor.");
++  }
++  return { time, id };
++}
++
++export function parseIds(value: unknown, max = 100): string[] {
++  if (!Array.isArray(value) || value.length === 0 || value.length > max) {
++    throw new ValidationError(400, "INVALID_INPUT", `Provide 1-${max} ids.`);
++  }
++  const ids = value.map((item) => parseResourceId(item, "id"));
++  return [...new Set(ids)];
++}
++
+ /// Explicit operator configuration only. A client never sends a role, and an
+ /// unverified email can never bootstrap one.
+ export function roleFromVerifiedAllowlist(
+   identity: { email: string | null; emailVerified: boolean },
+   allowlist: readonly string[],
+ ): "admin" | null {
+   if (!identity.emailVerified || !identity.email || allowlist.length === 0) return null;
+   const allowed = new Set(allowlist.map((email) => email.trim().toLowerCase()).filter(Boolean));
+diff --git a/web/package.json b/web/package.json
+index 7e5c6b8..2154f50 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -11,17 +11,19 @@
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+     "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs",
+     "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
+     "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs",
+-    "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs"
++    "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs",
++    "test:task7": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs",
++    "test:task7:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs"
+   },
+   "dependencies": {
+     "@neon/auth": "^0.8.2",
+     "drizzle-orm": "^0.45.4",
+     "jose": "^6.2.18",
+     "next": "16.4.6",
+     "pg": "^8.23.1",
+     "react": "19.3.0",
+diff --git a/web/scripts/community-playwright.test.mjs b/web/scripts/community-playwright.test.mjs
+new file mode 100644
+index 0000000..5653606
+--- /dev/null
++++ b/web/scripts/community-playwright.test.mjs
+@@ -0,0 +1,267 @@
++import assert from "node:assert/strict";
++import { existsSync } from "node:fs";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
++
++// Browser fixture: the SDK session is real (loopback Neon-auth fixture), while
++// community API responses are intercepted at the browser boundary. That proves
++// rendering, spoiler state, dialogs and authorized calls without a local
++// PostgreSQL wire server; SQL ownership is covered in community.test.mjs.
++const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const MANGA_ID = "manga-fixture";
++const COMMENT_ID = "comment-xss";
++const SPOILER_ID = "comment-spoiler";
++
++let contentFixture;
++let authFixture;
++let next;
++let browser;
++let baseUrl;
++let cookies;
++let pageErrors = [];
++
++function json(res, body, status = 200) {
++  res.writeHead(status, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++const manga = {
++  id: MANGA_ID, title: "Fixture Manga", cover_file: null, status: "ongoing", year: 2026,
++  description: "Browser fixture", tags: [], tag_ids: [], author: "", artist: "",
++  rating: null, follows: null, latest_chapter: null,
++};
++
++const comments = {
++  items: [
++    {
++      id: COMMENT_ID, targetType: "manga", targetId: MANGA_ID, parentId: null,
++      userId: "google|other", authorName: "Other reader", status: "visible", spoiler: false,
++      body: '<img src=x onerror="window.__xss=1">hello', createdAt: Date.now(), updatedAt: Date.now(), replies: [],
++    },
++    {
++      id: SPOILER_ID, targetType: "manga", targetId: MANGA_ID, parentId: null,
++      userId: "google|other", authorName: "Other reader", status: "visible", spoiler: true,
++      body: "Spoiler nội dung", createdAt: Date.now() - 1000, updatedAt: Date.now() - 1000,
++      replies: [{
++        id: "reply-1", targetType: "manga", targetId: MANGA_ID, parentId: SPOILER_ID,
++        userId: "google|other", authorName: "Reply reader", status: "visible", spoiler: false,
++        body: "Một phản hồi", createdAt: Date.now(), updatedAt: Date.now(), replies: [],
++      }],
++    },
++    {
++      id: "comment-hidden", targetType: "manga", targetId: MANGA_ID, parentId: null,
++      userId: "google|sdk-identity", authorName: "Fixture Reader", status: "hidden",
++      spoiler: false, body: null, createdAt: Date.now() - 2000, updatedAt: Date.now() - 2000, replies: [],
++    },
++  ],
++  nextCursor: null,
++};
++
++const notification = {
++  id: "notif-1", type: "comment_reply", title: "Có phản hồi bình luận", body: "Một phản hồi mới",
++  href: `/manga/${MANGA_ID}`, readAt: null, createdAt: Date.now(),
++};
++
++const notifications = {
++  items: [notification, {
++    id: "notif-2", type: "new_chapter", title: "Chương mới", body: "Fixture Manga — 2",
++    href: null, readAt: null, createdAt: Date.now() - 1000,
++  }],
++  unreadCount: 2,
++  nextCursor: null,
++};
++
++async function signedInPage(routes = []) {
++  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: "dark" });
++  await context.addCookies(cookies);
++  for (const [pattern, handler] of routes) await context.route(pattern, handler);
++  const page = await context.newPage();
++  page.on("pageerror", (error) => pageErrors.push(error.message));
++  return { context, page };
++}
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  contentFixture = await startHttpServer((req, res) => {
++    const url = req.url ?? "";
++    if (url.startsWith("/api/content/manga/") && url.endsWith("/chapters")) {
++      return json(res, { vi: [], en: [] });
++    }
++    if (url.startsWith("/api/content/manga/")) return json(res, manga);
++    return json(res, {});
++  });
++  authFixture = await startHttpServer((req, res) => {
++    if (req.url?.includes("get-session")) {
++      const signedIn = (req.headers.cookie ?? "").includes("session_token=fixture");
++      return json(res, signedIn ? {
++        session: { id: "session-opaque", userId: "google|sdk-identity", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
++        user: {
++          id: "google|sdk-identity", name: "Fixture Reader", email: "reader@example.com",
++          emailVerified: true, image: null,
++        },
++      } : { session: null, user: null });
++    }
++    res.writeHead(200, {
++      "content-type": "application/json",
++      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
++    });
++    res.end(JSON.stringify({ ok: true }));
++  });
++  next = await startNext({
++    RUST_CONTENT_API_ORIGIN: contentFixture.baseUrl,
++    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++  });
++  baseUrl = next.baseUrl;
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++
++  const context = await browser.newContext();
++  const page = await context.newPage();
++  await page.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
++  await page.locator('input[type="email"]').fill("reader@example.com");
++  await page.locator('input[type="password"]').fill("fixture-password");
++  await page.getByRole("button", { name: "Đăng nhập", exact: true }).click();
++  await page.getByText("Đã đăng nhập").waitFor({ timeout: 15_000 });
++  cookies = await context.cookies();
++  await context.close();
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(next?.child);
++  await authFixture?.close();
++  await contentFixture?.close();
++});
++
++test("comments render as plain text and spoilers stay concealed until revealed", async () => {
++  const { context, page } = await signedInPage([
++    ["**/api/v1/comments?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(comments) })],
++    ["**/api/v1/notifications?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(notifications) })],
++    ["**/api/v1/notifications/refresh", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ checked: 1, created: 0, skipped: false }) })],
++    ["**/api/v1/moderation/access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ moderator: false }) })],
++  ]);
++  try {
++    await page.goto(`${baseUrl}/manga/${MANGA_ID}`, { waitUntil: "networkidle" });
++    const section = page.locator(".comment-section");
++    await section.waitFor();
++    assert.equal(await page.evaluate(() => window.__xss ?? null), null, "comment script must not execute");
++    assert.equal(await section.locator("img").count(), 0, "comment markup must never become an element");
++    assert.ok((await section.textContent()).includes('<img src=x onerror="window.__xss=1">hello'), "raw text remains visible");
++    assert.equal(await section.getByText("Spoiler nội dung").count(), 0, "spoiler body is not in the DOM before reveal");
++    await section.getByRole("button", { name: "Nội dung có spoiler — bấm để xem" }).first().click();
++    await section.getByText("Spoiler nội dung").waitFor();
++    assert.ok((await section.textContent()).includes("Bình luận đã bị ẩn để kiểm duyệt"), "moderated bodies show status text only");
++  } finally {
++    await context.close();
++  }
++});
++
++test("report dialog sends a bounded reason and displays API errors", async () => {
++  const posts = [];
++  const { context, page } = await signedInPage([
++    ["**/api/v1/comments?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(comments) })],
++    ["**/api/v1/notifications?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(notifications) })],
++    ["**/api/v1/notifications/refresh", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ checked: 1, created: 0, skipped: false }) })],
++    ["**/api/v1/moderation/access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ moderator: false }) })],
++    ["**/api/v1/reports", (route) => {
++      posts.push({ method: route.request().method(), body: route.request().postDataJSON() });
++      if (posts.length === 1) return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ report: { id: "r" } }) });
++      return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: { code: "DUPLICATE_REPORT", message: "Báo cáo đã tồn tại.", details: {} } }) });
++    }],
++  ]);
++  try {
++    await page.goto(`${baseUrl}/manga/${MANGA_ID}`, { waitUntil: "networkidle" });
++    const section = page.locator(".comment-section");
++    await section.getByRole("button", { name: "Báo cáo" }).first().click();
++    const dialog = page.getByRole("dialog", { name: "Báo cáo bình luận" });
++    await dialog.locator("textarea").fill("Nội dung spam");
++    await dialog.getByRole("button", { name: "Gửi báo cáo" }).click();
++    await section.getByText("Đã gửi báo cáo tới đội kiểm duyệt.").waitFor();
++    assert.equal(posts[0].method, "POST");
++    assert.equal(posts[0].body.commentId, COMMENT_ID);
++    assert.equal(posts[0].body.reason, "Nội dung spam");
++
++    await section.getByRole("button", { name: "Báo cáo" }).nth(1).click();
++    await dialog.locator("textarea").fill("Báo cáo trùng");
++    await dialog.getByRole("button", { name: "Gửi báo cáo" }).click();
++    await section.getByRole("alert").filter({ hasText: "Báo cáo đã tồn tại." }).waitFor();
++  } finally {
++    await context.close();
++  }
++});
++
++test("moderator queue calls authorized APIs and reports errors", async () => {
++  const calls = [];
++  const reportList = {
++    items: [{
++      id: "report-1", commentId: COMMENT_ID, reason: "spam", status: "open", createdAt: Date.now(),
++      comment: {
++        id: COMMENT_ID, targetType: "manga", targetId: MANGA_ID, parentId: null,
++        userId: "google|other", authorName: "Other reader", status: "visible", spoiler: false,
++        body: "bad comment", createdAt: Date.now(), updatedAt: Date.now(), replies: [],
++      },
++    }],
++    nextCursor: null,
++  };
++  const { context, page } = await signedInPage([
++    ["**/api/v1/moderation/reports?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reportList) })],
++    ["**/api/v1/moderation/comments/*", (route) => {
++      calls.push({ url: route.request().url(), body: route.request().postDataJSON(), method: route.request().method() });
++      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ comment: reportList.items[0].comment }) });
++    }],
++    ["**/api/v1/moderation/threads", (route) => {
++      calls.push({ url: route.request().url(), body: route.request().postDataJSON(), method: route.request().method() });
++      return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Không có quyền kiểm duyệt.", details: {} } }) });
++    }],
++    ["**/api/v1/notifications?*", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(notifications) })],
++    ["**/api/v1/notifications/refresh", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ checked: 1, created: 0, skipped: false }) })],
++  ]);
++  try {
++    await page.goto(`${baseUrl}/kiem-duyet`, { waitUntil: "networkidle" });
++    const queue = page.locator(".moderation-card");
++    await queue.getByText("bad comment").waitFor();
++    await queue.getByRole("button", { name: "Ẩn" }).click();
++    await queue.getByText("Đã cập nhật.").waitFor();
++    assert.ok(calls.some((call) => call.url.includes(`/api/v1/moderation/comments/${COMMENT_ID}`) && call.body.action === "hide" && call.method === "PATCH"));
++
++    await queue.locator('input[maxlength="200"]').fill(MANGA_ID);
++    await queue.getByRole("button", { name: "Áp dụng" }).click();
++    await queue.getByRole("alert").filter({ hasText: "Không có quyền kiểm duyệt." }).waitFor();
++    assert.ok(calls.some((call) => call.url.endsWith("/api/v1/moderation/threads") && call.body.locked === true && call.body.targetId === MANGA_ID));
++  } finally {
++    await context.close();
++  }
++});
++
++test("notification center shows an unread badge and marks only owned ids read", async () => {
++  const reads = [];
++  let unreadCount = 2;
++  const { context, page } = await signedInPage([
++    ["**/api/v1/notifications/refresh", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ checked: 1, created: 0, skipped: false }) })],
++    ["**/api/v1/notifications?*", (route) => route.fulfill({
++      status: 200, contentType: "application/json",
++      body: JSON.stringify({ ...notifications, unreadCount }),
++    })],
++    ["**/api/v1/notifications/read", (route) => {
++      reads.push(route.request().postDataJSON());
++      unreadCount = 1;
++      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ updated: 1 }) });
++    }],
++    ["**/api/v1/moderation/access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ moderator: true }) })],
++  ]);
++  try {
++    await page.goto(`${baseUrl}/thong-bao`, { waitUntil: "networkidle" });
++    await page.getByRole("heading", { name: "Thông báo" }).waitFor();
++    await page.getByText("Có phản hồi bình luận").waitFor();
++    const badge = page.locator(".notification-badge");
++    assert.equal((await badge.textContent())?.trim(), "2");
++    await page.getByRole("button", { name: "Đã đọc" }).first().click();
++    await page.getByText("1 thông báo chưa đọc.").waitFor();
++    assert.equal(reads.length, 1);
++    assert.deepEqual(reads[0].ids, ["notif-1"]);
++    assert.equal(pageErrors.length, 0, `unexpected page errors: ${pageErrors.join(" | ")}`);
++  } finally {
++    await context.close();
++  }
++});
+diff --git a/web/scripts/community.test.mjs b/web/scripts/community.test.mjs
+new file mode 100644
+index 0000000..915057c
+--- /dev/null
++++ b/web/scripts/community.test.mjs
+@@ -0,0 +1,620 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import { after, before, test } from "node:test";
++import { fileURLToPath } from "node:url";
++import { PGlite } from "@electric-sql/pglite";
++import { drizzle } from "drizzle-orm/pglite";
++import { startNext, stop } from "./test-helpers.mjs";
++
++// Task 7 RED/GREEN harness. SQL runs in embedded PGlite via the checked-in
++// migrations; identity comes from the real Neon SDK against a loopback auth
++// fixture. No application code accepts a fake header, env bypass or role field.
++const community = await import("../lib/moderation.ts");
++const { createCommunityApi } = await import("../lib/community/handlers.ts");
++const validators = await import("../lib/validators.ts");
++const { identityFromSession } = await import("../lib/auth/identity.ts");
++const schema = await import("../lib/db/schema.ts");
++
++const DAY = 86_400_000;
++let now = Date.parse("2026-07-01T12:00:00.000Z");
++const MIGRATIONS = [
++  "0000_application.sql",
++  "0001_account_data.sql",
++  "0002_comments_moderation.sql",
++];
++
++async function migratedDb() {
++  const pg = new PGlite();
++  const db = drizzle(pg, { schema });
++  for (const file of MIGRATIONS) {
++    await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
++  }
++  return { pg, db };
++}
++
++function identity(id = "google|opaque-reader", overrides = {}) {
++  return {
++    id,
++    email: "reader@example.com",
++    emailVerified: true,
++    name: "Reader",
++    image: null,
++    sessionId: "session-reader",
++    ...overrides,
++  };
++}
++
++function request(path, init = {}, origin = "http://localhost") {
++  return new Request(`http://localhost${path}`, {
++    ...init,
++    headers: { origin, ...(init.headers ?? {}) },
++  });
++}
++
++function jsonRequest(path, method, body, origin = "http://localhost") {
++  return request(path, {
++    method,
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify(body),
++  }, origin);
++}
++
++function api(db, user = null, overrides = {}) {
++  return createCommunityApi({
++    db: () => db,
++    identity: async () => user,
++    now: () => now,
++    allowlist: overrides.allowlist ?? [],
++    content: overrides.content ?? (async () => ({ chapters: async () => ({ vi: [], en: [] }) })),
++  });
++}
++
++async function seed(db, ids) {
++  for (const id of ids) {
++    await db.insert(schema.profiles).values({ userId: id, displayName: `Name ${id}` }).onConflictDoNothing();
++  }
++}
++
++async function postComment(handle, body, id = "c1") {
++  const response = await handle.commentPost(jsonRequest("/api/v1/comments", "POST", body), { id });
++  return { response, payload: await response.json() };
++}
++
++function chapter(id, chapterNumber, publishAt) {
++  return {
++    id, chapter: chapterNumber, volume: null, title: `Chapter ${chapterNumber}`, lang: "vi",
++    pages: 1, external_url: null, publish_at: new Date(publishAt).toISOString(), group: "fixture",
++  };
++}
++
++let authFixture;
++let configuredNext;
++let fixtureSession;
++
++before(async () => {
++  const { startHttpServer: http } = await import("./test-helpers.mjs");
++  authFixture = await http((req, res) => {
++    if (req.url?.includes("get-session")) {
++      res.writeHead(200, { "content-type": "application/json" });
++      res.end(JSON.stringify({
++        session: { id: "session-opaque", userId: "google|sdk-identity", expiresAt: new Date(now + DAY).toISOString() },
++        user: {
++          id: "google|sdk-identity", name: "SDK Reader", email: "reader@example.com",
++          emailVerified: true, image: null, role: "admin", level: 999, totalXp: 999_999,
++        },
++      }));
++      return;
++    }
++    res.writeHead(200, { "content-type": "application/json" });
++    res.end(JSON.stringify({ ok: true }));
++  });
++  configuredNext = await startNext({
++    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++  });
++  const signIn = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
++  });
++  assert.equal(signIn.status, 200);
++  const response = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`, {
++    headers: { cookie: "__Secure-neon-auth.session_token=fixture" },
++  });
++  fixtureSession = await response.json();
++  assert.equal(fixtureSession.user.id, "google|sdk-identity");
++});
++
++after(async () => {
++  await stop(configuredNext?.child);
++  await authFixture?.close();
++});
++
++test("migration owns comment, report, notification and rate tables without auth schemas", async () => {
++  const { pg } = await migratedDb();
++  try {
++    const tables = await pg.query(`
++      SELECT table_name FROM information_schema.tables
++      WHERE table_schema = 'public' ORDER BY table_name
++    `);
++    const names = tables.rows.map((row) => row.table_name);
++    for (const table of [
++      "comments", "comment_threads", "comment_reports", "notifications",
++      "notification_cursors", "action_events",
++    ]) {
++      assert.ok(names.includes(table), `${table} must be created by the application migration`);
++    }
++    assert.equal((await pg.query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'neon_auth'")).rows.length, 0);
++
++    await pg.exec("INSERT INTO profiles (user_id) VALUES ('opaque-1'), ('opaque-2');");
++    await pg.exec(`INSERT INTO comment_threads (target_type, target_id) VALUES ('manga','m1');`);
++    await pg.exec(`INSERT INTO comments (id, user_id, target_type, target_id, body, spoiler, status) VALUES
++      ('c1','opaque-1','manga','m1','hello',true,'visible');`);
++    await pg.exec(`INSERT INTO comment_reports (id, user_id, comment_id, reason) VALUES ('r1','opaque-2','c1','spam');`);
++    await assert.rejects(
++      pg.exec(`INSERT INTO comment_reports (id, user_id, comment_id, reason) VALUES ('r2','opaque-2','c1','again');`),
++      /duplicate key|unique/i,
++      "only one open report per user and comment",
++    );
++    await pg.exec(`UPDATE comment_reports SET status = 'resolved' WHERE id = 'r1';`);
++    await pg.exec(`INSERT INTO comment_reports (id, user_id, comment_id, reason) VALUES ('r3','opaque-2','c1','new report');`);
++
++    await pg.exec(`INSERT INTO notifications (id, user_id, type, event_key, title, body) VALUES
++      ('n1','opaque-1','comment_reply','reply:c1','New','body');`);
++    await assert.rejects(
++      pg.exec(`INSERT INTO notifications (id, user_id, type, event_key, title, body) VALUES
++        ('n2','opaque-1','level_up','reply:c1','Other','body');`),
++      /duplicate key|unique/i,
++      "notification event keys deduplicate across every producer",
++    );
++    await assert.rejects(
++      pg.exec(`INSERT INTO comments (id,user_id,target_type,target_id,body,status) VALUES
++        ('bad','opaque-1','manga','m1','x','locked');`),
++      /check constraint|violates check/i,
++    );
++    await pg.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
++    for (const table of ["comments", "comment_reports", "notifications"]) {
++      const rows = await pg.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
++      assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
++    }
++  } finally {
++    await pg.close();
++  }
++});
++
++test("real SDK session identity owns comments; client role fields grant nothing", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const resolved = identityFromSession(fixtureSession);
++    assert.equal(resolved.id, "google|sdk-identity");
++    const handle = api(db, resolved);
++    const created = await postComment(handle, {
++      targetType: "manga", targetId: "m1", body: "  from sdk  ", spoiler: true,
++    });
++    assert.equal(created.response.status, 201);
++    assert.equal(created.payload.comment.userId, "google|sdk-identity");
++    assert.equal(created.payload.comment.spoiler, true);
++    assert.equal(created.payload.comment.status, "visible");
++
++    const moderator = await handle.moderationReportsGet(request("/api/v1/moderation/reports?limit=5"));
++    assert.equal(moderator.status, 403, "SDK reader is not a moderator");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("comments persist spoiler, validate bodies and reject unknown fields", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api(db, identity());
++    const created = await postComment(handle, {
++      targetType: "chapter", targetId: "c9", body: "  spoiler text  ", spoiler: true,
++    });
++    assert.equal(created.response.status, 201);
++    assert.equal(created.payload.comment.body, "spoiler text");
++    assert.equal(created.payload.comment.spoiler, true);
++
++    const invalid = await postComment(handle, {
++      targetType: "manga", targetId: "m1", body: "x".repeat(2001), spoiler: false,
++    }, "too-long");
++    assert.equal(invalid.response.status, 400);
++    assert.equal(invalid.payload.error.code, "INVALID_INPUT");
++    const unknown = await postComment(handle, {
++      targetType: "manga", targetId: "m1", body: "hello", spoiler: false, level: 999, role: "moderator",
++    }, "unknown-field");
++    assert.equal(unknown.response.status, 400);
++    assert.equal(unknown.payload.error.code, "INVALID_INPUT");
++    const html = await postComment(handle, {
++      targetType: "manga", targetId: "m1", body: "<img src=x onerror=alert(1)>", spoiler: false,
++    }, "html-text");
++    assert.equal(html.response.status, 201);
++    assert.equal(html.payload.comment.body, "<img src=x onerror=alert(1)>", "stored as plain text, not markup");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("aliases may edit or remove only their own comments", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = api(db, identity("opaque|alice"));
++    const bob = api(db, identity("opaque|bob"));
++    const created = await postComment(alice, { targetType: "manga", targetId: "m1", body: "mine" });
++    assert.equal(created.response.status, 201);
++    const commentId = created.payload.comment.id;
++
++    const ownerEdit = await alice.commentPatch(
++      jsonRequest(`/api/v1/comments/${commentId}`, "PATCH", { body: "edited", spoiler: false }),
++      { id: commentId },
++    );
++    assert.equal(ownerEdit.status, 200);
++    const bobEdit = await bob.commentPatch(
++      jsonRequest(`/api/v1/comments/${commentId}`, "PATCH", { body: "stolen by bob", spoiler: false }),
++      { id: commentId },
++    );
++    assert.equal(bobEdit.status, 403);
++    assert.equal((await bobEdit.json()).error.code, "FORBIDDEN");
++
++    const bobDelete = await bob.commentDelete(request(`/api/v1/comments/${commentId}`, { method: "DELETE" }), { id: commentId });
++    assert.equal(bobDelete.status, 403);
++    const aliceDelete = await alice.commentDelete(request(`/api/v1/comments/${commentId}`, { method: "DELETE" }), { id: commentId });
++    assert.equal(aliceDelete.status, 200);
++    const list = await alice.commentsGet(request("/api/v1/comments?targetType=manga&targetId=m1"));
++    const body = await list.json();
++    assert.equal(body.items.length, 1);
++    assert.equal(body.items[0].status, "removed");
++    assert.equal(body.items[0].body, null, "removed body never leaves the public API");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("replies are one level, same-thread and reject removed or locked roots", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = api(db, identity("opaque|alice"));
++    const bob = api(db, identity("opaque|bob"));
++    const root = await postComment(alice, { targetType: "manga", targetId: "m1", body: "root" });
++    assert.equal(root.response.status, 201);
++    const rootId = root.payload.comment.id;
++    const otherRoot = await postComment(alice, { targetType: "manga", targetId: "m2", body: "other" });
++    assert.equal(otherRoot.response.status, 201);
++
++    const reply = await postComment(bob, {
++      targetType: "manga", targetId: "m1", parentId: rootId, body: "reply", spoiler: true,
++    });
++    assert.equal(reply.response.status, 201);
++    assert.equal(reply.payload.comment.parentId, rootId);
++
++    const deep = await postComment(alice, {
++      targetType: "manga", targetId: "m1", parentId: reply.payload.comment.id, body: "too deep",
++    });
++    assert.equal(deep.response.status, 400);
++    assert.equal(deep.payload.error.code, "INVALID_REPLY");
++    const crossThread = await postComment(alice, {
++      targetType: "manga", targetId: "m2", parentId: rootId, body: "wrong thread",
++    });
++    assert.equal(crossThread.response.status, 400);
++    const wrongType = await postComment(alice, {
++      targetType: "chapter", targetId: "m1", parentId: rootId, body: "wrong target",
++    });
++    assert.equal(wrongType.response.status, 400);
++
++    await db.insert(schema.userRoles).values({ userId: "opaque|alice", role: "moderator" }).onConflictDoNothing();
++    await community.setThreadLock(db, "opaque|alice", "manga", "m1", true, now);
++    const duringLock = await postComment(bob, { targetType: "manga", targetId: "m1", body: "locked" });
++    assert.equal(duringLock.response.status, 409);
++    assert.equal(duringLock.payload.error.code, "THREAD_LOCKED");
++    await community.setThreadLock(db, "opaque|alice", "manga", "m1", false, now);
++
++    await community.moderateComment(db, "opaque|alice", rootId, "hide", now);
++    const toHidden = await postComment(bob, {
++      targetType: "manga", targetId: "m1", parentId: rootId, body: "hidden parent",
++    });
++    assert.equal(toHidden.response.status, 409);
++    assert.equal(toHidden.payload.error.code, "PARENT_UNAVAILABLE");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("thread lock and comment creation serialize instead of racing", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = identity("opaque|alice");
++    const bob = identity("opaque|bob");
++    await seed(db, [alice.id]);
++    await db.insert(schema.userRoles).values({ userId: alice.id, role: "moderator" });
++    const handle = api(db, alice);
++    const first = await postComment(handle, { targetType: "manga", targetId: "m1", body: "before lock" });
++    assert.equal(first.response.status, 201);
++
++    // One SQL engine serialises these transactions; whichever wins, the lock
++    // state and accepted comments must agree and later writes stay closed.
++    const [locked, attempts] = await Promise.all([
++      community.setThreadLock(db, alice.id, "manga", "m1", true, now),
++      Promise.allSettled([0, 1, 2].map((index) => postComment(api(db, bob), {
++        targetType: "manga", targetId: "m1", body: `race ${index}`,
++      }))),
++    ]);
++    assert.equal(locked.locked, true);
++    const accepted = attempts.filter((entry) => entry.status === "fulfilled" && entry.value.response.status === 201).length;
++    const stored = await db.select().from(schema.comments);
++    assert.equal(stored.length, 1 + accepted, "accepted comments match the committed responses");
++    assert.equal((await postComment(api(db, bob), { targetType: "manga", targetId: "m1", body: "after lock" })).response.status, 409);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("public reads never expose hidden or removed bodies through replies", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = identity("opaque|alice");
++    const bob = identity("opaque|bob");
++    const handle = api(db, alice);
++    const root = await postComment(handle, { targetType: "manga", targetId: "m1", body: "visible root" });
++    const reply = await postComment(api(db, bob), {
++      targetType: "manga", targetId: "m1", parentId: root.payload.comment.id, body: "secret reply",
++    });
++    await db.insert(schema.userRoles).values({ userId: alice.id, role: "moderator" }).onConflictDoNothing();
++    await community.moderateComment(db, alice.id, reply.payload.comment.id, "hide", now);
++    await community.moderateComment(db, alice.id, root.payload.comment.id, "remove", now);
++
++    const anonymous = await api(db, null).commentsGet(request("/api/v1/comments?targetType=manga&targetId=m1"));
++    const publicBody = await anonymous.json();
++    assert.equal(publicBody.items.length, 0, "removed roots and their replies vanish for guests");
++
++    const owner = await api(db, bob).commentsGet(request("/api/v1/comments?targetType=manga&targetId=m1"));
++    const ownerBody = await owner.json();
++    assert.equal(ownerBody.items.length, 0, "hidden replies do not expose a removed root");
++    assert.ok(!JSON.stringify(ownerBody).includes("secret reply"));
++
++    const mod = await api(db, alice, { allowlist: [alice.email] }).moderationReportsGet(
++      request("/api/v1/moderation/reports?limit=20"),
++    );
++    assert.equal(mod.status, 200);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("durable SQL limits stop concurrent comments and hourly reports", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = api(db, identity("opaque|alice"));
++    const attempts = await Promise.allSettled(Array.from({ length: 8 }, (_, index) =>
++      postComment(alice, { targetType: "manga", targetId: "m1", body: `burst ${index}` }, `burst-${index}`)));
++    const successes = attempts.filter((entry) => entry.status === "fulfilled" && entry.value.response.status === 201);
++    const limited = attempts.filter((entry) => entry.status === "fulfilled" && entry.value.response.status === 429);
++    assert.equal(successes.length, 5, "at most five comments per minute survive");
++    assert.equal(limited.length, 3);
++    assert.equal(limited[0].value.payload.error.code, "RATE_LIMITED");
++    const rows = await db.select().from(schema.comments);
++    assert.equal(rows.length, 5);
++
++    const bob = await postComment(api(db, identity("opaque|bob")), {
++      targetType: "manga", targetId: "m1", body: "other user",
++    }, "bob-1");
++    assert.equal(bob.response.status, 201, "limits are per user");
++
++    // Reports need distinct visible comments owned by someone else; seeded
++    // directly so the report limiter is measured on its own.
++    for (let index = 0; index < 12; index += 1) {
++      const owner = `opaque|author-${index}`;
++      await db.insert(schema.profiles).values({ userId: owner }).onConflictDoNothing();
++      await db.insert(schema.comments).values({
++        id: `report-c${index}`, userId: owner, targetType: "manga", targetId: "m1",
++        body: "reportable", spoiler: false, status: "visible",
++      });
++    }
++    const reporter = api(db, identity("opaque|reporter"));
++    const reportAttempts = await Promise.allSettled(Array.from({ length: 12 }, (_, index) =>
++      reporter.reportPost(
++        jsonRequest("/api/v1/reports", "POST", { commentId: `report-c${index}`, reason: `reason ${index}` }),
++        { id: "reporter" },
++      )));
++    const reportSuccess = reportAttempts.filter((entry) => entry.status === "fulfilled" && entry.value.status === 201);
++    assert.equal(reportSuccess.length, 10, "at most ten reports per hour per user");
++  } finally {
++    await pg.close();
++  }
++});
++
++test("reports reject self-reports and duplicates but allow reopening after resolution", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const author = identity("opaque|author");
++    const reporter = identity("opaque|reporter");
++    const mod = identity("opaque|mod", { email: "mod@example.com" });
++    const handle = api(db, author);
++    const target = await postComment(handle, { targetType: "manga", targetId: "m1", body: "report me" });
++    const targetId = target.payload.comment.id;
++
++    const self = await api(db, author).reportPost(
++      jsonRequest("/api/v1/reports", "POST", { commentId: targetId, reason: "mine" }), { id: "author" });
++    assert.equal(self.status, 403);
++    assert.equal((await self.json()).error.code, "SELF_REPORT");
++
++    const first = await api(db, reporter).reportPost(
++      jsonRequest("/api/v1/reports", "POST", { commentId: targetId, reason: "spam" }), { id: "reporter" });
++    assert.equal(first.status, 201);
++    const reportId = (await first.json()).report.id;
++    const duplicate = await api(db, reporter).reportPost(
++      jsonRequest("/api/v1/reports", "POST", { commentId: targetId, reason: "again" }), { id: "reporter" });
++    assert.equal(duplicate.status, 409);
++    assert.equal((await duplicate.json()).error.code, "DUPLICATE_REPORT");
++
++    await seed(db, [mod.id]);
++    await db.insert(schema.userRoles).values({ userId: mod.id, role: "moderator" });
++    const resolved = await api(db, mod).reportPatch(
++      jsonRequest(`/api/v1/moderation/reports/${reportId}`, "PATCH", { action: "resolve" }), { id: reportId });
++    assert.equal(resolved.status, 200);
++    const reopened = await api(db, reporter).reportPost(
++      jsonRequest("/api/v1/reports", "POST", { commentId: targetId, reason: "new issue" }), { id: "reporter" });
++    assert.equal(reopened.status, 201);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("moderator actions require a stored role in both handler and service", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const mod = identity("opaque|mod", { email: "mod@example.com" });
++    const author = identity("opaque|author");
++    const created = await postComment(api(db, author), { targetType: "chapter", targetId: "ch1", body: "moderate me" });
++    const commentId = created.payload.comment.id;
++
++    const unsigned = await api(db, null).commentModeratePatch(
++      jsonRequest(`/api/v1/moderation/comments/${commentId}`, "PATCH", { action: "hide" }), { id: commentId });
++    assert.equal(unsigned.status, 401);
++    const reader = await api(db, author).commentModeratePatch(
++      jsonRequest(`/api/v1/moderation/comments/${commentId}`, "PATCH", { action: "hide" }), { id: commentId });
++    assert.equal(reader.status, 403);
++    await assert.rejects(
++      community.moderateComment(db, author.id, commentId, "hide", now, []),
++      (error) => error.code === "FORBIDDEN",
++    );
++
++    await seed(db, [mod.id]);
++    await db.insert(schema.userRoles).values({ userId: mod.id, role: "moderator" });
++    const allowed = await api(db, mod).commentModeratePatch(
++      jsonRequest(`/api/v1/moderation/comments/${commentId}`, "PATCH", { action: "hide" }), { id: commentId });
++    assert.equal(allowed.status, 200);
++    const queue = await api(db, mod).moderationReportsGet(request("/api/v1/moderation/reports?limit=20"));
++    assert.equal(queue.status, 200);
++    const readBody = await community.listComments(db, "chapter", "ch1", null, 20, mod.id);
++    assert.equal(readBody.items.length, 0, "hidden comments stay out of the privacy-safe public DTO");
++
++    const lock = await api(db, mod).threadPut(
++      jsonRequest("/api/v1/moderation/threads", "PUT", { targetType: "chapter", targetId: "ch1", locked: true }), {});
++    assert.equal(lock.status, 200);
++    const state = await api(db, mod).threadGet(request("/api/v1/moderation/threads?targetType=chapter&targetId=ch1"));
++    assert.equal((await state.json()).thread.locked, true);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("reply and moderation events notify owners, dedupe and respect mark-read ownership", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const alice = identity("opaque|alice");
++    const bob = identity("opaque|bob");
++    const mod = identity("opaque|mod", { email: "mod@example.com" });
++    const aliceApi = api(db, alice);
++    const root = await postComment(aliceApi, { targetType: "manga", targetId: "m1", body: "notify me" });
++    const reply = await postComment(api(db, bob), {
++      targetType: "manga", targetId: "m1", parentId: root.payload.comment.id, body: "spoiler here", spoiler: true,
++    });
++
++    const inbox = await aliceApi.notificationsGet(request("/api/v1/notifications?limit=20"));
++    const inboxBody = await inbox.json();
++    assert.equal(inboxBody.unreadCount, 1);
++    assert.equal(inboxBody.items[0].type, "comment_reply");
++    assert.ok(!JSON.stringify(inboxBody).includes("spoiler here"), "spoiler text is concealed in notifications");
++
++    const deduped = await community.emitNotification(db, {
++      userId: alice.id, type: "comment_reply", eventKey: `reply:${reply.payload.comment.id}`, title: "again", body: "again",
++    });
++    assert.equal(deduped, false, "duplicate event keys are ignored for every producer");
++    const levelUp = await community.emitNotification(db, {
++      userId: alice.id, type: "level_up", eventKey: "level:2", title: "Cấp 2", body: "Task 8 event",
++    });
++    assert.equal(levelUp, true, "the same interface serves future level-up events");
++
++    const bobMark = await api(db, bob).notificationsReadPost(
++      jsonRequest("/api/v1/notifications/read", "POST", { ids: [inboxBody.items[0].id] }), { id: "bob" });
++    assert.equal(bobMark.status, 200);
++    assert.equal((await bobMark.json()).updated, 0, "another user's notification cannot be marked read");
++    const aliceMark = await aliceApi.notificationsReadPost(
++      jsonRequest("/api/v1/notifications/read", "POST", { ids: [inboxBody.items[0].id] }), { id: "alice" });
++    assert.equal((await aliceMark.json()).updated, 1);
++    const after = await (await aliceApi.notificationsGet(request("/api/v1/notifications?limit=20"))).json();
++    assert.equal(after.unreadCount, 1, "only the unread level-up event remains");
++
++    await seed(db, [mod.id]);
++    await db.insert(schema.userRoles).values({ userId: mod.id, role: "moderator" });
++    await community.moderateComment(db, mod.id, root.payload.comment.id, "hide", now);
++    const moderated = await (await aliceApi.notificationsGet(request("/api/v1/notifications?limit=20"))).json();
++    assert.equal(moderated.unreadCount, 2);
++    assert.ok(moderated.items.some((item) => item.type === "moderation"));
++  } finally {
++    await pg.close();
++  }
++});
++
++test("new-chapter refresh baselines first follow, dedupes and bounds content calls", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const reader = identity("opaque|reader");
++    const handle = api(db, reader);
++    await seed(db, [reader.id]);
++    await db.insert(schema.libraryEntries).values({
++      userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
++      followedAt: now - DAY, lastReadPublish: 0, revision: 1,
++    });
++    const old = chapter("ch-old", "1", now - 10 * DAY);
++    const fresh = chapter("ch-new", "2", now - 60_000);
++    let calls = 0;
++    const content = {
++      chapters: async () => {
++        calls += 1;
++        return { vi: [old, fresh], en: [] };
++      },
++    };
++    const first = await api(db, reader, { content: async () => content }).notificationsRefreshPost(
++      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
++    const firstBody = await first.json();
++    assert.equal(first.status, 200, JSON.stringify(firstBody));
++    assert.equal(firstBody.created, 0, "first refresh only stores a baseline");
++    const cursors = await db.select().from(schema.notificationCursors);
++    assert.equal(cursors.length, 1);
++    assert.equal(cursors[0].lastPublish, now - 60_000, "baseline uses the newest observed chapter, not the old archive");
++
++    const later = now + 60_000;
++    const secondHandle = createCommunityApi({
++      db: () => db, identity: async () => reader, now: () => later, allowlist: [],
++      content: async () => ({ chapters: async () => ({ vi: [old, fresh], en: [] }) }),
++    });
++    // The new chapter is older than the baseline clock, so move the cursor back
++    // to simulate a follow before that chapter existed.
++    await db.update(schema.notificationCursors).set({ lastPublish: now - 2 * DAY });
++    const second = await secondHandle.notificationsRefreshPost(
++      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
++    assert.equal(second.status, 200);
++    assert.equal((await second.json()).created, 1);
++    const third = await handle.notificationsRefreshPost(
++      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
++    assert.equal((await third.json()).created, 0, "repeated refresh never duplicates a chapter");
++    assert.ok(calls >= 1);
++
++    const many = Array.from({ length: 40 }, (_, index) => ({
++      userId: reader.id, mangaId: `m${index}`, title: "Many", lang: "vi", status: "reading",
++      followedAt: now - index, lastReadPublish: 0, revision: 1,
++    }));
++    for (const item of many) {
++      await db.insert(schema.libraryEntries).values(item).onConflictDoNothing();
++    }
++    let boundedCalls = 0;
++    const bounded = api(db, reader, { content: async () => ({
++      chapters: async () => { boundedCalls += 1; return { vi: [], en: [] }; },
++    }) });
++    await bounded.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
++    assert.ok(boundedCalls <= 20, `refresh must stay bounded, saw ${boundedCalls} content calls`);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("request validators bound pagination, bodies and cursors", () => {
++  assert.equal(validators.parseLimit("7", 20, 50), 7);
++  assert.throws(() => validators.parseLimit("999", 20, 50), (error) => error.status === 400);
++  assert.throws(() => validators.parseLimit("nope", 20, 50), (error) => error.status === 400);
++  assert.deepEqual(validators.parseCursor("1234.abc"), { time: 1234, id: "abc" });
++  assert.throws(() => validators.parseCursor("bad"), (error) => error.status === 400);
++  assert.throws(() => validators.parseIds(["x".repeat(201)]), (error) => error.status === 400);
++  assert.throws(() => validators.parseCommentBody("   "), (error) => error.status === 400);
++  assert.equal(validators.parseCommentBody("  ok  "), "ok");
++});
+diff --git a/web/scripts/database.test.mjs b/web/scripts/database.test.mjs
+index 81bf1a4..41efd0a 100644
+--- a/web/scripts/database.test.mjs
++++ b/web/scripts/database.test.mjs
+@@ -6,16 +6,17 @@ import { PGlite } from "@electric-sql/pglite";
+ import { getTableName } from "drizzle-orm";
+ 
+ const { readDatabaseConfig } = await import("../lib/db/client.ts");
+ const { profiles } = await import("../lib/db/schema.ts");
+ 
+ const migrationUrls = [
+   new URL("../drizzle/0000_application.sql", import.meta.url),
+   new URL("../drizzle/0001_account_data.sql", import.meta.url),
++  new URL("../drizzle/0002_comments_moderation.sql", import.meta.url),
+ ];
+ 
+ async function freshDatabase() {
+   const db = new PGlite();
+   let sql = "";
+   for (const url of migrationUrls) {
+     const next = await readFile(fileURLToPath(url), "utf8");
+     sql += `${next}\n`;
+@@ -34,18 +35,24 @@ test("application migrations own account tables and never touch Neon Auth tables
+       SELECT table_schema, table_name
+       FROM information_schema.tables
+       WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+       ORDER BY table_schema, table_name
+     `);
+     assert.deepEqual(
+       tables.rows.map((row) => `${row.table_schema}.${row.table_name}`),
+       [
++        "public.action_events",
+         "public.chapter_progress",
++        "public.comment_reports",
++        "public.comment_threads",
++        "public.comments",
+         "public.library_entries",
++        "public.notification_cursors",
++        "public.notifications",
+         "public.profiles",
+         "public.reader_preferences",
+         "public.user_roles",
+       ],
+       "only application-owned account tables may be created",
+     );
+ 
+     const columns = await db.query(`
+@@ -105,41 +112,50 @@ test("profiles accept opaque user ids and enforce uniqueness inside a transactio
+     );
+     const rolledBack = await db.query("SELECT user_id FROM profiles WHERE user_id = $1", ["rollback-user"]);
+     assert.equal(rolledBack.rows.length, 0);
+   } finally {
+     await db.close();
+   }
+ });
+ 
+-test("account tables enforce ownership keys, unique usernames and cascade cleanup", async () => {
++test("application tables enforce ownership keys, unique usernames and cascade cleanup", async () => {
+   const { db } = await freshDatabase();
+   try {
+     await db.exec("INSERT INTO profiles (user_id) VALUES ('opaque-1'), ('opaque-2');");
+     await db.exec("INSERT INTO user_roles (user_id, role) VALUES ('opaque-1', 'admin');");
+     await db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'One', 100);");
+     await db.exec("INSERT INTO reader_preferences (user_id) VALUES ('opaque-1');");
+     await db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 3, 3, 10, 100);");
++    await db.exec("INSERT INTO comment_threads (target_type, target_id) VALUES ('manga', 'm1');");
++    await db.exec("INSERT INTO comments (id, user_id, target_type, target_id, body) VALUES ('c1', 'opaque-1', 'manga', 'm1', 'hello');");
++    await db.exec("INSERT INTO comment_reports (id, user_id, comment_id, reason) VALUES ('r1', 'opaque-2', 'c1', 'spam');");
++    await db.exec("INSERT INTO notifications (id, user_id, type, event_key, title, body) VALUES ('n1', 'opaque-1', 'level_up', 'level:2', 'Level', 'body');");
++    await db.exec("INSERT INTO notification_cursors (user_id, manga_id, language, last_publish) VALUES ('opaque-1', 'm1', 'vi', 100);");
++    await db.exec("INSERT INTO action_events (id, user_id, action, occurred_at) VALUES ('e1', 'opaque-1', 'comment', 100);");
+ 
+     await assert.rejects(
+       db.exec("INSERT INTO library_entries (user_id, manga_id, title, followed_at) VALUES ('opaque-1', 'm1', 'Duplicate', 200);"),
+       /duplicate key|unique/i,
+     );
+     await assert.rejects(
+       db.exec("INSERT INTO chapter_progress (user_id, manga_id, chapter_id, language, page, max_page, total, last_read_at) VALUES ('opaque-1', 'm1', 'c1', 'vi', 9, 9, 10, 200);"),
+       /duplicate key|unique/i,
+     );
+     await db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-1';");
+     await assert.rejects(
+       db.exec("UPDATE profiles SET username = 'reader.one' WHERE user_id = 'opaque-2';"),
+       /duplicate key|unique/i,
+     );
+ 
+     await db.exec("DELETE FROM profiles WHERE user_id = 'opaque-1';");
+-    for (const table of ["user_roles", "library_entries", "reader_preferences", "chapter_progress"]) {
++    for (const table of [
++      "user_roles", "library_entries", "reader_preferences", "chapter_progress",
++      "comments", "comment_reports", "notification_cursors", "notifications", "action_events",
++    ]) {
+       const rows = await db.query(`SELECT 1 FROM ${table} WHERE user_id = 'opaque-1'`);
+       assert.equal(rows.rows.length, 0, `${table} must cascade with the profile`);
+     }
+   } finally {
+     await db.close();
+   }
+ });
+ 

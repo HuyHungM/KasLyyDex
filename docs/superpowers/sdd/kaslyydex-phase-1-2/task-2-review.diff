@@ -1,0 +1,1631 @@
+diff --git a/crates/contracts/src/lib.rs b/crates/contracts/src/lib.rs
+new file mode 100644
+index 0000000..65b0d46
+--- /dev/null
++++ b/crates/contracts/src/lib.rs
+@@ -0,0 +1,248 @@
++use domain::{ChapterId, MangaId};
++use serde::{Deserialize, Serialize};
++use std::collections::BTreeMap;
++
++pub use domain::{
++    Chapter, CultivationLevel, CultivationRealm, Manga, ReaderBackground, ReaderMode,
++    ReaderSettings, ReadingProgress, SystemRole,
++};
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ApiError {
++    pub code: String,
++    pub message: String,
++    #[serde(default)]
++    pub details: BTreeMap<String, String>,
++}
++
++impl ApiError {
++    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
++        Self {
++            code: code.into(),
++            message: message.into(),
++            details: BTreeMap::new(),
++        }
++    }
++
++    pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
++        self.details.insert(key.into(), value.into());
++        self
++    }
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ApiErrorEnvelope {
++    pub error: ApiError,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct MangaSummaryDto {
++    pub id: MangaId,
++    pub title: String,
++    pub cover_file: Option<String>,
++    pub status: String,
++    pub year: Option<i32>,
++    pub description: String,
++    pub tags: Vec<String>,
++    #[serde(default)]
++    pub tag_ids: Vec<String>,
++    pub author: String,
++    pub artist: String,
++    #[serde(default)]
++    pub rating: Option<f64>,
++    #[serde(default)]
++    pub follows: Option<u64>,
++    #[serde(default)]
++    pub latest_chapter: Option<String>,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ChapterDto {
++    pub id: ChapterId,
++    #[serde(default)]
++    pub chapter: Option<String>,
++    #[serde(default)]
++    pub volume: Option<String>,
++    pub title: String,
++    pub lang: String,
++    pub pages: u64,
++    pub external_url: Option<String>,
++    pub publish_at: String,
++    pub group: String,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct PagesResponse {
++    pub pages: Vec<String>,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ChaptersResponse {
++    pub vi: Vec<ChapterDto>,
++    pub en: Vec<ChapterDto>,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct SearchResponse {
++    pub results: Vec<MangaSummaryDto>,
++    pub total: u64,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct LatestChapterDto {
++    pub id: ChapterId,
++    #[serde(default)]
++    pub chapter: Option<String>,
++    pub lang: String,
++    pub publish_at: String,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct LatestMangaDto {
++    #[serde(flatten)]
++    pub manga: MangaSummaryDto,
++    pub chapters: Vec<LatestChapterDto>,
++}
++
++#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
++pub struct TagDto {
++    pub id: String,
++    pub name: String,
++    pub group: String,
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ReaderSettingsDto {
++    pub mode: ReaderMode,
++    pub fit: bool,
++    pub bg: ReaderBackground,
++    pub speed: u8,
++}
++
++impl From<ReaderSettings> for ReaderSettingsDto {
++    fn from(value: ReaderSettings) -> Self {
++        Self {
++            mode: value.mode,
++            fit: value.fit,
++            bg: value.bg,
++            speed: value.speed,
++        }
++    }
++}
++
++impl From<ReaderSettingsDto> for ReaderSettings {
++    fn from(value: ReaderSettingsDto) -> Self {
++        Self {
++            mode: value.mode,
++            fit: value.fit,
++            bg: value.bg,
++            speed: value.speed,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::{json, Value};
++
++    #[test]
++    fn manga_summary_contract_keeps_existing_fields_and_accepts_legacy_omissions() {
++        let legacy = json!({
++            "id": "manga-id",
++            "title": "Title",
++            "cover_file": null,
++            "status": "ongoing",
++            "year": 2024,
++            "description": "Description",
++            "tags": ["Action"],
++            "author": "Author",
++            "artist": "Artist"
++        });
++        let manga: MangaSummaryDto = serde_json::from_value(legacy).unwrap();
++        let encoded = serde_json::to_value(&manga).unwrap();
++        for field in [
++            "id",
++            "title",
++            "cover_file",
++            "status",
++            "year",
++            "description",
++            "tags",
++            "tag_ids",
++            "author",
++            "artist",
++            "rating",
++            "follows",
++            "latest_chapter",
++        ] {
++            assert!(encoded.get(field).is_some(), "missing `{field}`");
++        }
++        assert_eq!(encoded["id"], "manga-id");
++        assert_eq!(encoded["tags"], json!(["Action"]));
++
++        let latest = LatestMangaDto {
++            manga,
++            chapters: vec![LatestChapterDto {
++                id: "chapter-id".into(),
++                chapter: Some("1".into()),
++                lang: "vi".into(),
++                publish_at: "2026-11-20T00:00:00Z".into(),
++            }],
++        };
++        let latest = serde_json::to_value(latest).unwrap();
++        assert!(latest.get("manga").is_none());
++        assert_eq!(latest["title"], "Title");
++        assert_eq!(latest["chapters"][0]["id"], "chapter-id");
++    }
++
++    #[test]
++    fn chapter_and_pages_contracts_keep_existing_json_shapes() {
++        let chapter = ChapterDto {
++            id: "chapter-id".into(),
++            chapter: Some("1".into()),
++            volume: None,
++            title: String::new(),
++            lang: "vi".into(),
++            pages: 12,
++            external_url: None,
++            publish_at: String::new(),
++            group: String::new(),
++        };
++        let chapters = serde_json::to_value(chapter).unwrap();
++        for field in [
++            "id",
++            "chapter",
++            "volume",
++            "title",
++            "lang",
++            "pages",
++            "external_url",
++            "publish_at",
++            "group",
++        ] {
++            assert!(chapters.get(field).is_some(), "missing `{field}`");
++        }
++        let pages: Value = serde_json::to_value(PagesResponse {
++            pages: vec!["/api/img?u=x".into()],
++        })
++        .unwrap();
++        assert_eq!(pages, json!({ "pages": ["/api/img?u=x"] }));
++    }
++
++    #[test]
++    fn structured_errors_have_stable_nested_envelope() {
++        let error =
++            ApiError::new("VALIDATION_ERROR", "Invalid input").with_detail("field", "title");
++        assert_eq!(
++            serde_json::to_value(ApiErrorEnvelope { error }).unwrap(),
++            json!({
++                "error": {
++                    "code": "VALIDATION_ERROR",
++                    "message": "Invalid input",
++                    "details": { "field": "title" }
++                }
++            })
++        );
++    }
++}
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 1d292fe..231809f 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -1,6 +1,10 @@
++use contracts::{
++    ChapterDto, ChaptersResponse, LatestChapterDto, LatestMangaDto, MangaSummaryDto, PagesResponse,
++    SearchResponse, TagDto,
++};
+ use moka::future::Cache;
+ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+-use serde_json::{json, Value};
++use serde_json::Value;
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+@@ -10,11 +14,13 @@ const LIST_PARAMS: &str = "&includes[]=cover_art&includes[]=author&contentRating
+ #[derive(Clone)]
+ pub struct Md {
+     pub http: reqwest::Client,
+-    lists: Cache<String, Arc<Value>>,
+-    manga: Cache<String, Arc<Value>>,
+-    chapters: Cache<String, Arc<Value>>,
+-    tags: Cache<(), Arc<Value>>,
+-    ranks: Cache<String, Arc<Value>>,
++    popular: Cache<(), Arc<Vec<MangaSummaryDto>>>,
++    latest: Cache<(), Arc<Vec<LatestMangaDto>>>,
++    search: Cache<String, Arc<SearchResponse>>,
++    manga: Cache<String, Arc<MangaSummaryDto>>,
++    chapters: Cache<String, Arc<ChaptersResponse>>,
++    tags: Cache<(), Arc<Vec<TagDto>>>,
++    ranks: Cache<String, Arc<Vec<MangaSummaryDto>>>,
+ }
+ 
+ type Err = String;
+@@ -27,11 +33,34 @@ impl Md {
+     pub fn new(http: reqwest::Client) -> Self {
+         Self {
+             http,
+-            lists: Cache::builder().time_to_live(Duration::from_secs(60)).max_capacity(256).build(),
+-            manga: Cache::builder().time_to_live(Duration::from_secs(3600)).max_capacity(512).build(),
+-            chapters: Cache::builder().time_to_live(Duration::from_secs(60)).max_capacity(512).build(),
+-            tags: Cache::builder().time_to_live(Duration::from_secs(86_400)).max_capacity(1).build(),
+-            ranks: Cache::builder().time_to_live(Duration::from_secs(300)).max_capacity(2).build(),
++            popular: Cache::builder()
++                .time_to_live(Duration::from_secs(60))
++                .max_capacity(1)
++                .build(),
++            latest: Cache::builder()
++                .time_to_live(Duration::from_secs(60))
++                .max_capacity(1)
++                .build(),
++            search: Cache::builder()
++                .time_to_live(Duration::from_secs(60))
++                .max_capacity(256)
++                .build(),
++            manga: Cache::builder()
++                .time_to_live(Duration::from_secs(3600))
++                .max_capacity(512)
++                .build(),
++            chapters: Cache::builder()
++                .time_to_live(Duration::from_secs(60))
++                .max_capacity(512)
++                .build(),
++            tags: Cache::builder()
++                .time_to_live(Duration::from_secs(86_400))
++                .max_capacity(1)
++                .build(),
++            ranks: Cache::builder()
++                .time_to_live(Duration::from_secs(300))
++                .max_capacity(2)
++                .build(),
+         }
+     }
+ 
+@@ -53,11 +82,15 @@ impl Md {
+         res.json::<Value>().await.map_err(api_err)
+     }
+ 
+-    pub async fn popular(&self) -> Result<Arc<Value>, Err> {
++    pub async fn popular(&self) -> Result<Arc<Vec<MangaSummaryDto>>, Err> {
+         let md = self.clone();
+-        self.lists
+-            .try_get_with("popular".to_string(), async move {
+-                let j = md.get(&format!("/manga?limit=18&offset=0{LIST_PARAMS}&order[followedCount]=desc")).await?;
++        self.popular
++            .try_get_with((), async move {
++                let j = md
++                    .get(&format!(
++                        "/manga?limit=18&offset=0{LIST_PARAMS}&order[followedCount]=desc"
++                    ))
++                    .await?;
+                 Ok(Arc::new(summaries(&j)))
+             })
+             .await
+@@ -65,119 +98,167 @@ impl Md {
+     }
+ 
+     /// Chapter feed = only manga with real readable pages in vi/en.
+-    pub async fn latest(&self) -> Result<Arc<Value>, Err> {
++    pub async fn latest(&self) -> Result<Arc<Vec<LatestMangaDto>>, Err> {
+         let md = self.clone();
+-        self.lists
+-            .try_get_with("latest".to_string(), async move {
++        self.latest
++            .try_get_with((), async move {
+                 let feed = md
+                     .get("/chapter?limit=100&order[readableAt]=desc&translatedLanguage[]=vi&translatedLanguage[]=en")
+                     .await?;
+                 let groups = latest_groups(&feed);
+                 if groups.is_empty() {
+-                    return Ok(Arc::new(json!([])));
++                    return Ok(Arc::new(Vec::new()));
+                 }
+                 let query = groups.iter().map(|(id, _)| format!("ids[]={id}")).collect::<Vec<_>>().join("&");
+                 let j = md.get(&format!("/manga?limit=18{LIST_PARAMS}&{query}")).await?;
+                 let ordered: Vec<_> = groups.into_iter().filter_map(|(id, chapters)| {
+-                    let mut manga = summary(items(&j).iter().find(|m| m["id"] == id)?);
+-                    manga["chapters"] = json!(chapters);
+-                    Some(manga)
++                    Some(LatestMangaDto {
++                        manga: summary(items(&j).iter().find(|m| m["id"] == id)?),
++                        chapters,
++                    })
+                 }).collect();
+-                Ok(Arc::new(json!(ordered)))
++                Ok(Arc::new(ordered))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
+-    pub async fn tags(&self) -> Result<Arc<Value>, Err> {
+-        self.tags.try_get_with((), async {
+-            let data = self.get("/manga/tag").await?;
+-            let tags: Vec<_> = items(&data).iter().map(|tag| json!({
+-                "id": tag["id"], "name": pick(&tag["attributes"]["name"]),
+-                "group": tag["attributes"]["group"],
+-            })).collect();
+-            Ok(Arc::new(json!(tags)))
+-        }).await.map_err(|e: Arc<Err>| (*e).clone())
++    pub async fn tags(&self) -> Result<Arc<Vec<TagDto>>, Err> {
++        self.tags
++            .try_get_with((), async {
++                let data = self.get("/manga/tag").await?;
++                let tags = items(&data)
++                    .iter()
++                    .map(|tag| TagDto {
++                        id: tag["id"].as_str().unwrap_or_default().to_owned(),
++                        name: pick(&tag["attributes"]["name"]),
++                        group: tag["attributes"]["group"]
++                            .as_str()
++                            .unwrap_or_default()
++                            .to_owned(),
++                    })
++                    .collect();
++                Ok(Arc::new(tags))
++            })
++            .await
++            .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
+-    pub async fn search_filtered(&self, q: &str, page: u32, tags: &[String], status: Option<&str>, sort: &str) -> Result<Arc<Value>, Err> {
++    pub async fn search_filtered(
++        &self,
++        q: &str,
++        page: u32,
++        tags: &[String],
++        status: Option<&str>,
++        sort: &str,
++    ) -> Result<Arc<SearchResponse>, Err> {
+         let path = search_path(q, page, tags, status, sort).ok_or("Bộ lọc không hợp lệ.")?;
+         let md = self.clone();
+-        self.lists
++        self.search
+             .try_get_with(path.clone(), async move {
+                 let j = md.get(&path).await?;
+-                let (mut results, chapters) = futures::join!(md.with_stats(&j), md.search_chapters(&j));
++                let (mut results, chapters) =
++                    futures::join!(md.with_stats(&j), md.search_chapters(&j));
+                 for (result, manga) in results.iter_mut().zip(items(&j)) {
+                     if let Some(id) = manga["attributes"]["latestUploadedChapter"].as_str() {
+                         if let Some(chapter) = items(&chapters).iter().find(|c| c["id"] == id) {
+-                            result["latest_chapter"] = chapter["attributes"]["chapter"].clone();
++                            result.latest_chapter =
++                                chapter["attributes"]["chapter"].as_str().map(str::to_owned);
+                         }
+                     }
+                 }
+-                Ok(Arc::new(json!({ "results": results, "total": j["total"].as_u64().unwrap_or(0) })))
++                Ok(Arc::new(SearchResponse {
++                    results,
++                    total: j["total"].as_u64().unwrap_or(0),
++                }))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
+     async fn search_chapters(&self, manga: &Value) -> Value {
+-        let ids = items(manga).iter().filter_map(|m| m["attributes"]["latestUploadedChapter"].as_str())
++        let ids = items(manga)
++            .iter()
++            .filter_map(|m| m["attributes"]["latestUploadedChapter"].as_str())
+             .map(|id| format!("ids[]={}", utf8_percent_encode(id, NON_ALPHANUMERIC)))
+-            .collect::<Vec<_>>().join("&");
+-        if ids.is_empty() { return Value::Null; }
+-        self.get(&format!("/chapter?limit=24&translatedLanguage[]=vi&translatedLanguage[]=en&{ids}"))
+-            .await.unwrap_or_default()
++            .collect::<Vec<_>>()
++            .join("&");
++        if ids.is_empty() {
++            return Value::Null;
++        }
++        self.get(&format!(
++            "/chapter?limit=24&translatedLanguage[]=vi&translatedLanguage[]=en&{ids}"
++        ))
++        .await
++        .unwrap_or_default()
+     }
+ 
+-    pub async fn rank(&self, kind: &str) -> Result<Arc<Value>, Err> {
++    pub async fn rank(&self, kind: &str) -> Result<Arc<Vec<MangaSummaryDto>>, Err> {
+         let order = sort_param(kind).ok_or("Kiểu xếp hạng không hợp lệ.")?;
+-        self.ranks.try_get_with(kind.to_owned(), async {
+-            let data = self.get(&format!("/manga?limit=24{LIST_PARAMS}&{order}")).await?;
+-            Ok(Arc::new(json!(self.with_stats(&data).await)))
+-        }).await.map_err(|e: Arc<Err>| (*e).clone())
++        self.ranks
++            .try_get_with(kind.to_owned(), async {
++                let data = self
++                    .get(&format!("/manga?limit=24{LIST_PARAMS}&{order}"))
++                    .await?;
++                Ok(Arc::new(self.with_stats(&data).await))
++            })
++            .await
++            .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
+     async fn stats(&self, ids: impl Iterator<Item = &str>) -> Result<Value, Err> {
+-        let query = ids.map(|id| format!("manga[]={}", utf8_percent_encode(id, NON_ALPHANUMERIC)))
+-            .collect::<Vec<_>>().join("&");
++        let query = ids
++            .map(|id| format!("manga[]={}", utf8_percent_encode(id, NON_ALPHANUMERIC)))
++            .collect::<Vec<_>>()
++            .join("&");
+         if query.is_empty() {
+             return Ok(Value::Null);
+         }
+         self.get(&format!("/statistics/manga?{query}")).await
+     }
+ 
+-    async fn with_stats(&self, data: &Value) -> Vec<Value> {
+-        let stats = self.stats(items(data).iter().filter_map(|m| m["id"].as_str())).await.unwrap_or_default();
+-        items(data).iter().map(|m| summary_with_stats(m, &stats)).collect()
++    async fn with_stats(&self, data: &Value) -> Vec<MangaSummaryDto> {
++        let stats = self
++            .stats(items(data).iter().filter_map(|m| m["id"].as_str()))
++            .await
++            .unwrap_or_default();
++        items(data)
++            .iter()
++            .map(|m| summary_with_stats(m, &stats))
++            .collect()
+     }
+ 
+-    pub async fn manga(&self, id: &str) -> Result<Arc<Value>, Err> {
++    pub async fn manga(&self, id: &str) -> Result<Arc<MangaSummaryDto>, Err> {
+         let id = id.to_string();
+         let md = self.clone();
+         self.manga
+             .try_get_with(id.clone(), async move {
+                 let path = format!("/manga/{id}?{LIST_PARAMS}");
+-                let (manga, stats) = futures::join!(md.get(&path), md.stats(std::iter::once(id.as_str())));
+-                Ok(Arc::new(summary_with_stats(&manga?["data"], &stats.unwrap_or_default())))
++                let (manga, stats) =
++                    futures::join!(md.get(&path), md.stats(std::iter::once(id.as_str())));
++                Ok(Arc::new(summary_with_stats(
++                    &manga?["data"],
++                    &stats.unwrap_or_default(),
++                )))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
+     /// Both languages in one round trip (server joins in parallel).
+-    pub async fn chapters(&self, id: &str) -> Result<Arc<Value>, Err> {
++    pub async fn chapters(&self, id: &str) -> Result<Arc<ChaptersResponse>, Err> {
+         let id = id.to_string();
+         let md = self.clone();
+         self.chapters
+             .try_get_with(id.clone(), async move {
+                 let (vi, en) = futures::join!(md.feed(&id, "vi"), md.feed(&id, "en"));
+-                Ok(Arc::new(json!({ "vi": vi?, "en": en? })))
++                Ok(Arc::new(ChaptersResponse { vi: vi?, en: en? }))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
+-    async fn feed(&self, id: &str, lang: &str) -> Result<Value, Err> {
++    async fn feed(&self, id: &str, lang: &str) -> Result<Vec<ChapterDto>, Err> {
+         let mut raw: Vec<Value> = Vec::new();
+         let mut offset = 0u32;
+         let mut total = u64::MAX;
+@@ -195,7 +276,7 @@ impl Md {
+             offset += 500;
+         }
+         let mut seen = std::collections::HashSet::new();
+-        let mut out: Vec<Value> = Vec::new();
++        let mut out: Vec<ChapterDto> = Vec::new();
+         for c in raw {
+             let a = &c["attributes"];
+             let key = a["chapter"].as_str().unwrap_or("oneshot").to_string();
+@@ -212,32 +293,45 @@ impl Md {
+                         .join(", ")
+                 })
+                 .unwrap_or_default();
+-            out.push(json!({
+-                "id": c["id"],
+-                "chapter": a["chapter"],
+-                "volume": a["volume"],
+-                "title": a["title"].as_str().unwrap_or(""),
+-                "lang": a["translatedLanguage"].as_str().unwrap_or(lang),
+-                "pages": a["pages"].as_u64().unwrap_or(0),
+-                "external_url": a["externalUrl"],
+-                "publish_at": a["readableAt"].as_str().or(a["publishAt"].as_str()).unwrap_or(""),
+-                "group": group,
+-            }));
++            out.push(ChapterDto {
++                id: c["id"].as_str().unwrap_or_default().into(),
++                chapter: a["chapter"].as_str().map(str::to_owned),
++                volume: a["volume"].as_str().map(str::to_owned),
++                title: a["title"].as_str().unwrap_or_default().to_owned(),
++                lang: a["translatedLanguage"].as_str().unwrap_or(lang).to_owned(),
++                pages: a["pages"].as_u64().unwrap_or(0),
++                external_url: a["externalUrl"].as_str().map(str::to_owned),
++                publish_at: a["readableAt"]
++                    .as_str()
++                    .or(a["publishAt"].as_str())
++                    .unwrap_or_default()
++                    .to_owned(),
++                group,
++            });
+         }
+         out.sort_by(|a, b| {
+-            let num = |v: &Value| v["chapter"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+-            num(a).partial_cmp(&num(b)).unwrap_or(std::cmp::Ordering::Equal)
++            let num = |v: &ChapterDto| {
++                v.chapter
++                    .as_deref()
++                    .and_then(|s| s.parse::<f64>().ok())
++                    .unwrap_or(0.0)
++            };
++            num(a)
++                .partial_cmp(&num(b))
++                .unwrap_or(std::cmp::Ordering::Equal)
+         });
+-        Ok(json!(out))
++        Ok(out)
+     }
+ 
+     /// At-home URLs are short-lived: never cache. Returns same-origin proxy paths.
+-    pub async fn pages(&self, chapter_id: &str) -> Result<Value, Err> {
++    pub async fn pages(&self, chapter_id: &str) -> Result<PagesResponse, Err> {
+         let j = self.get(&format!("/at-home/server/{chapter_id}")).await?;
+         let ch = &j["chapter"];
+         let (directory, files) = if ch["data"].as_array().is_some_and(|a| !a.is_empty()) {
+             ("data", &ch["data"])
+-        } else { ("data-saver", &ch["dataSaver"]) };
++        } else {
++            ("data-saver", &ch["dataSaver"])
++        };
+         let base = j["baseUrl"].as_str().unwrap_or("");
+         let hash = ch["hash"].as_str().unwrap_or("");
+         let pages: Vec<String> = files
+@@ -250,7 +344,7 @@ impl Md {
+                 format!("/api/img?u={}", utf8_percent_encode(&url, NON_ALPHANUMERIC))
+             })
+             .collect();
+-        Ok(json!({ "pages": pages }))
++        Ok(PagesResponse { pages })
+     }
+ }
+ 
+@@ -269,7 +363,7 @@ fn pick(map: &Value) -> String {
+         .to_string()
+ }
+ 
+-fn summary(m: &Value) -> Value {
++fn summary(m: &Value) -> MangaSummaryDto {
+     let a = &m["attributes"];
+     let rels = m["relationships"].as_array().cloned().unwrap_or_default();
+     let cover = rels
+@@ -289,34 +383,59 @@ fn summary(m: &Value) -> Value {
+             .and_then(|alts| alts.iter().map(pick).find(|t| !t.is_empty()))
+             .unwrap_or_else(|| "Không rõ".into());
+     }
+-    json!({
+-        "id": m["id"],
+-        "title": title,
+-        "cover_file": cover,
+-        "status": a["status"].as_str().unwrap_or(""),
+-        "year": a["year"],
+-        "description": pick(&a["description"]),
+-        "tags": a["tags"].as_array().map(|ts| ts.iter().map(|t| pick(&t["attributes"]["name"])).filter(|t| !t.is_empty()).collect::<Vec<_>>()).unwrap_or_default(),
+-        "tag_ids": a["tags"].as_array().map(|ts| ts.iter().filter_map(|t| t["id"].as_str()).collect::<Vec<_>>()).unwrap_or_default(),
+-        "author": if names.len() > 1 { names.last().cloned().unwrap_or_default() } else { names.first().cloned().unwrap_or_default() },
+-        "artist": names.first().cloned().unwrap_or_default(),
+-    })
++    MangaSummaryDto {
++        id: m["id"].as_str().unwrap_or_default().into(),
++        title,
++        cover_file: cover,
++        status: a["status"].as_str().unwrap_or_default().to_owned(),
++        year: a["year"].as_i64().and_then(|year| i32::try_from(year).ok()),
++        description: pick(&a["description"]),
++        tags: a["tags"]
++            .as_array()
++            .map(|ts| {
++                ts.iter()
++                    .map(|t| pick(&t["attributes"]["name"]))
++                    .filter(|t| !t.is_empty())
++                    .collect::<Vec<_>>()
++            })
++            .unwrap_or_default(),
++        tag_ids: a["tags"]
++            .as_array()
++            .map(|ts| {
++                ts.iter()
++                    .filter_map(|t| t["id"].as_str().map(str::to_owned))
++                    .collect::<Vec<_>>()
++            })
++            .unwrap_or_default(),
++        author: if names.len() > 1 {
++            names.last().cloned().unwrap_or_default()
++        } else {
++            names.first().cloned().unwrap_or_default()
++        },
++        artist: names.first().cloned().unwrap_or_default(),
++        rating: None,
++        follows: None,
++        latest_chapter: None,
++    }
+ }
+ 
+ fn items(data: &Value) -> &[Value] {
+-    data["data"].as_array().map(Vec::as_slice).unwrap_or_default()
++    data["data"]
++        .as_array()
++        .map(Vec::as_slice)
++        .unwrap_or_default()
+ }
+ 
+-fn summaries(j: &Value) -> Value {
+-    json!(items(j).iter().map(summary).collect::<Vec<_>>())
++fn summaries(j: &Value) -> Vec<MangaSummaryDto> {
++    items(j).iter().map(summary).collect()
+ }
+ 
+-fn summary_with_stats(manga: &Value, stats: &Value) -> Value {
++fn summary_with_stats(manga: &Value, stats: &Value) -> MangaSummaryDto {
+     let mut item = summary(manga);
+     if let Some(id) = manga["id"].as_str() {
+         let stats = &stats["statistics"][id];
+-        item["rating"] = stats["rating"]["bayesian"].clone();
+-        item["follows"] = stats["follows"].clone();
++        item.rating = stats["rating"]["bayesian"].as_f64();
++        item.follows = stats["follows"].as_u64();
+     }
+     item
+ }
+@@ -342,11 +461,20 @@ pub fn status_param(status: &str) -> Option<&'static str> {
+     })
+ }
+ 
+-fn search_path(q: &str, page: u32, tags: &[String], status: Option<&str>, sort: &str) -> Option<String> {
++fn search_path(
++    q: &str,
++    page: u32,
++    tags: &[String],
++    status: Option<&str>,
++    sort: &str,
++) -> Option<String> {
+     let offset = page.saturating_sub(1).checked_mul(24)?;
+     let mut path = format!("/manga?limit=24&offset={offset}");
+     if !q.is_empty() {
+-        path.push_str(&format!("&title={}", utf8_percent_encode(q, NON_ALPHANUMERIC)));
++        path.push_str(&format!(
++            "&title={}",
++            utf8_percent_encode(q, NON_ALPHANUMERIC)
++        ));
+     }
+     path.push_str(LIST_PARAMS);
+     path.push('&');
+@@ -355,22 +483,31 @@ fn search_path(q: &str, page: u32, tags: &[String], status: Option<&str>, sort:
+         path.push_str(&format!("&status[]={}", status_param(status)?));
+     }
+     for tag in tags {
+-        path.push_str(&format!("&includedTags[]={}", utf8_percent_encode(tag, NON_ALPHANUMERIC)));
++        path.push_str(&format!(
++            "&includedTags[]={}",
++            utf8_percent_encode(tag, NON_ALPHANUMERIC)
++        ));
+     }
+     Some(path)
+ }
+ 
+-fn latest_groups(feed: &Value) -> Vec<(&str, Vec<Value>)> {
+-    let mut groups: Vec<(&str, Vec<Value>)> = Vec::new();
++fn latest_groups(feed: &Value) -> Vec<(&str, Vec<LatestChapterDto>)> {
++    let mut groups: Vec<(&str, Vec<LatestChapterDto>)> = Vec::new();
+     for chapter in items(feed) {
+         let attributes = &chapter["attributes"];
+-        let Some(id) = chapter["id"].as_str() else { continue };
++        let Some(id) = chapter["id"].as_str() else {
++            continue;
++        };
+         if attributes["pages"].as_u64().unwrap_or(0) == 0 || !attributes["externalUrl"].is_null() {
+             continue;
+         }
+-        let Some(manga) = chapter["relationships"].as_array()
++        let Some(manga) = chapter["relationships"]
++            .as_array()
+             .and_then(|relationships| relationships.iter().find(|r| r["type"] == "manga"))
+-            .and_then(|r| r["id"].as_str()) else { continue };
++            .and_then(|r| r["id"].as_str())
++        else {
++            continue;
++        };
+         let index = match groups.iter().position(|(id, _)| *id == manga) {
+             Some(index) => index,
+             None if groups.len() < 18 => {
+@@ -380,9 +517,20 @@ fn latest_groups(feed: &Value) -> Vec<(&str, Vec<Value>)> {
+             None => continue,
+         };
+         let list = &mut groups[index].1;
+-        if list.len() < 3 && !list.iter().any(|c| c["id"] == id) {
+-            list.push(json!({"id": id, "chapter": attributes["chapter"],
+-                "lang": attributes["translatedLanguage"], "publish_at": attributes["readableAt"].as_str().or(attributes["publishAt"].as_str()).unwrap_or("")}));
++        if list.len() < 3 && !list.iter().any(|c| c.id.as_str() == id) {
++            list.push(LatestChapterDto {
++                id: id.into(),
++                chapter: attributes["chapter"].as_str().map(str::to_owned),
++                lang: attributes["translatedLanguage"]
++                    .as_str()
++                    .unwrap_or_default()
++                    .to_owned(),
++                publish_at: attributes["readableAt"]
++                    .as_str()
++                    .or(attributes["publishAt"].as_str())
++                    .unwrap_or_default()
++                    .to_owned(),
++            });
+         }
+     }
+     groups
+@@ -391,12 +539,15 @@ fn latest_groups(feed: &Value) -> Vec<(&str, Vec<Value>)> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use serde_json::json;
+ 
+     #[test]
+     fn catalog_filters_use_known_upstream_values() {
+         for (sort, upstream) in [
+-            ("follows", "order[followedCount]=desc"), ("rating", "order[rating]=desc"),
+-            ("new", "order[latestUploadedChapter]=desc"), ("year", "order[year]=desc"),
++            ("follows", "order[followedCount]=desc"),
++            ("rating", "order[rating]=desc"),
++            ("new", "order[latestUploadedChapter]=desc"),
++            ("year", "order[year]=desc"),
+             ("title", "order[title]=asc"),
+         ] {
+             assert_eq!(sort_param(sort), Some(upstream));
+@@ -406,17 +557,56 @@ mod tests {
+         }
+         assert_eq!(sort_param("bad"), None);
+         assert_eq!(status_param("bad"), None);
+-        let path = search_path("a&b", 2, &["test-a".into(), "test-b".into()], Some("completed"), "title").unwrap();
++        let path = search_path(
++            "a&b",
++            2,
++            &["test-a".into(), "test-b".into()],
++            Some("completed"),
++            "title",
++        )
++        .unwrap();
+         assert!(path.contains("offset=24&title=a%26b"));
+         assert!(path.contains("status[]=completed&includedTags[]=test%2Da&includedTags[]=test%2Db"));
+     }
+ 
+     #[test]
+-    fn latest_groups_only_readable_chapters_with_language() {
+-        let chapter = |id, pages, external, manga| json!({
+-            "id": id, "attributes": {"pages": pages, "externalUrl": external,
+-            "translatedLanguage": "vi"}, "relationships": [{"type": "manga", "id": manga}]
++    fn manga_projection_keeps_summary_fields_and_adds_stats() {
++        let manga = json!({
++            "id": "manga-id",
++            "attributes": {
++                "title": {"en": "Title"},
++                "status": "ongoing",
++                "year": 2024,
++                "description": {"en": "Description"},
++                "tags": [{"id": "tag-id", "attributes": {"name": {"en": "Action"}}}]
++            },
++            "relationships": [
++                {"type": "cover_art", "attributes": {"fileName": "cover.jpg"}},
++                {"type": "author", "attributes": {"name": "Author"}}
++            ]
+         });
++        let stats = json!({"statistics": {"manga-id": {
++            "rating": {"bayesian": 8.5}, "follows": 42
++        }}});
++        let encoded = serde_json::to_value(summary_with_stats(&manga, &stats)).unwrap();
++        assert_eq!(encoded["id"], "manga-id");
++        assert_eq!(encoded["title"], "Title");
++        assert_eq!(encoded["cover_file"], "cover.jpg");
++        assert_eq!(encoded["year"], 2024);
++        assert_eq!(encoded["tags"], json!(["Action"]));
++        assert_eq!(encoded["tag_ids"], json!(["tag-id"]));
++        assert_eq!(encoded["rating"], 8.5);
++        assert_eq!(encoded["follows"], 42);
++    }
++
++    #[test]
++    fn latest_groups_only_readable_chapters_with_language() {
++        let chapter = |id, pages, external, manga| {
++            json!({
++                "id": id, "attributes": {"pages": pages, "externalUrl": external,
++                "translatedLanguage": "vi"}, "relationships": [{"type": "manga", "id": manga}]
++            })
++        };
+         let feed = json!({"data": [chapter("c0", 1, Some("https://example.com"), "m0"),
+             chapter("c1", 2, None, "m1"), chapter("c2", 2, None, "m1"),
+             chapter("c3", 2, None, "m1"), chapter("c4", 2, None, "m1")]});
+@@ -424,6 +614,6 @@ mod tests {
+         assert_eq!(groups.len(), 1);
+         assert_eq!(groups[0].0, "m1");
+         assert_eq!(groups[0].1.len(), 3);
+-        assert_eq!(groups[0].1[0]["lang"], "vi");
++        assert_eq!(groups[0].1[0].lang, "vi");
+     }
+ }
+diff --git a/crates/domain/src/lib.rs b/crates/domain/src/lib.rs
+new file mode 100644
+index 0000000..047b473
+--- /dev/null
++++ b/crates/domain/src/lib.rs
+@@ -0,0 +1,265 @@
++use serde::{Deserialize, Serialize};
++use std::fmt;
++
++macro_rules! id_type {
++    ($name:ident) => {
++        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
++        #[serde(transparent)]
++        pub struct $name(pub String);
++
++        impl $name {
++            pub fn new(value: impl Into<String>) -> Self {
++                Self(value.into())
++            }
++
++            pub fn as_str(&self) -> &str {
++                &self.0
++            }
++        }
++
++        impl From<String> for $name {
++            fn from(value: String) -> Self {
++                Self(value)
++            }
++        }
++
++        impl From<&str> for $name {
++            fn from(value: &str) -> Self {
++                Self(value.to_owned())
++            }
++        }
++
++        impl AsRef<str> for $name {
++            fn as_ref(&self) -> &str {
++                self.as_str()
++            }
++        }
++
++        impl fmt::Display for $name {
++            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++                f.write_str(self.as_str())
++            }
++        }
++    };
++}
++
++id_type!(MangaId);
++id_type!(ChapterId);
++id_type!(UserId);
++
++#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum ReaderMode {
++    #[default]
++    Vertical,
++    Horizontal,
++}
++
++impl ReaderMode {
++    pub const fn as_str(self) -> &'static str {
++        match self {
++            Self::Vertical => "vertical",
++            Self::Horizontal => "horizontal",
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum ReaderBackground {
++    #[default]
++    Light,
++    Sepia,
++    Dark,
++}
++
++impl ReaderBackground {
++    pub const fn as_str(self) -> &'static str {
++        match self {
++            Self::Light => "light",
++            Self::Sepia => "sepia",
++            Self::Dark => "dark",
++        }
++    }
++}
++
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ReaderSettings {
++    #[serde(default)]
++    pub mode: ReaderMode,
++    #[serde(default = "default_fit")]
++    pub fit: bool,
++    #[serde(default)]
++    pub bg: ReaderBackground,
++    #[serde(default = "default_speed")]
++    pub speed: u8,
++}
++
++const fn default_fit() -> bool {
++    true
++}
++
++const fn default_speed() -> u8 {
++    3
++}
++
++impl Default for ReaderSettings {
++    fn default() -> Self {
++        Self {
++            mode: ReaderMode::Vertical,
++            fit: default_fit(),
++            bg: ReaderBackground::Light,
++            speed: default_speed(),
++        }
++    }
++}
++
++impl ReaderSettings {
++    pub fn is_valid(&self) -> bool {
++        (1..=5).contains(&self.speed)
++    }
++
++    pub fn normalized(mut self) -> Self {
++        if !self.is_valid() {
++            self.speed = default_speed();
++        }
++        self
++    }
++}
++
++#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
++pub struct ReadingProgress {
++    pub page_index: usize,
++    pub total_pages: usize,
++    pub percent: u8,
++}
++
++impl ReadingProgress {
++    pub fn new(page_index: usize, total_pages: usize) -> Option<Self> {
++        if total_pages == 0 || page_index >= total_pages {
++            return None;
++        }
++        Some(Self {
++            page_index,
++            total_pages,
++            percent: (((page_index as u128 + 1) * 100) / total_pages as u128) as u8,
++        })
++    }
++}
++
++#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
++pub struct Manga {
++    pub id: MangaId,
++    pub title: String,
++}
++
++#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
++pub struct Chapter {
++    pub id: ChapterId,
++    pub manga_id: MangaId,
++    pub title: String,
++}
++
++#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
++#[serde(transparent)]
++pub struct CultivationLevel(u16);
++
++impl<'de> Deserialize<'de> for CultivationLevel {
++    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
++    where
++        D: serde::Deserializer<'de>,
++    {
++        let level = u16::deserialize(deserializer)?;
++        Self::new(level).ok_or_else(|| serde::de::Error::custom("level must be between 1 and 1000"))
++    }
++}
++
++impl CultivationLevel {
++    pub fn new(level: u16) -> Option<Self> {
++        (1..=1000).contains(&level).then_some(Self(level))
++    }
++
++    pub const fn get(self) -> u16 {
++        self.0
++    }
++}
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum CultivationRealm {
++    Mortal,
++    QiRefining,
++    FoundationEstablishment,
++    GoldenCore,
++    NascentSoul,
++    SpiritSevering,
++    VoidRefinement,
++    BodyIntegration,
++    Mahayana,
++    TribulationTranscendence,
++    TrueImmortal,
++    ImmortalKing,
++    ImmortalEmperor,
++}
++
++impl CultivationRealm {
++    pub fn for_level(level: CultivationLevel) -> Self {
++        match level.get() {
++            1..=9 => Self::Mortal,
++            10..=49 => Self::QiRefining,
++            50..=99 => Self::FoundationEstablishment,
++            100..=199 => Self::GoldenCore,
++            200..=299 => Self::NascentSoul,
++            300..=399 => Self::SpiritSevering,
++            400..=499 => Self::VoidRefinement,
++            500..=599 => Self::BodyIntegration,
++            600..=699 => Self::Mahayana,
++            700..=799 => Self::TribulationTranscendence,
++            800..=899 => Self::TrueImmortal,
++            900..=999 => Self::ImmortalKing,
++            1000 => Self::ImmortalEmperor,
++            _ => unreachable!("CultivationLevel is validated"),
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn cultivation_level_and_realm_boundaries_are_validated() {
++        assert!(CultivationLevel::new(0).is_none());
++        assert!(CultivationLevel::new(1001).is_none());
++        assert!(serde_json::from_str::<CultivationLevel>("0").is_err());
++        assert!(serde_json::from_str::<CultivationLevel>("1001").is_err());
++        for (level, realm) in [
++            (1, CultivationRealm::Mortal),
++            (10, CultivationRealm::QiRefining),
++            (50, CultivationRealm::FoundationEstablishment),
++            (100, CultivationRealm::GoldenCore),
++            (200, CultivationRealm::NascentSoul),
++            (300, CultivationRealm::SpiritSevering),
++            (400, CultivationRealm::VoidRefinement),
++            (500, CultivationRealm::BodyIntegration),
++            (600, CultivationRealm::Mahayana),
++            (700, CultivationRealm::TribulationTranscendence),
++            (800, CultivationRealm::TrueImmortal),
++            (900, CultivationRealm::ImmortalKing),
++            (1000, CultivationRealm::ImmortalEmperor),
++        ] {
++            assert_eq!(
++                CultivationRealm::for_level(CultivationLevel::new(level).unwrap()),
++                realm
++            );
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum SystemRole {
++    User,
++    Moderator,
++    Admin,
++}
+diff --git a/crates/reader-core/src/lib.rs b/crates/reader-core/src/lib.rs
+new file mode 100644
+index 0000000..9613d36
+--- /dev/null
++++ b/crates/reader-core/src/lib.rs
+@@ -0,0 +1,118 @@
++pub use domain::{ReaderBackground, ReaderMode, ReaderSettings, ReadingProgress};
++
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub enum ReaderError {
++    InvalidPageCount,
++    PageOutOfBounds {
++        page_index: usize,
++        total_pages: usize,
++    },
++}
++
++impl std::fmt::Display for ReaderError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::InvalidPageCount => f.write_str("total_pages must be greater than zero"),
++            Self::PageOutOfBounds {
++                page_index,
++                total_pages,
++            } => {
++                write!(f, "page index {page_index} is outside 0..{total_pages}")
++            }
++        }
++    }
++}
++
++impl std::error::Error for ReaderError {}
++
++#[derive(Clone, Debug, PartialEq)]
++pub struct ReaderState {
++    page_index: usize,
++    total_pages: usize,
++    settings: ReaderSettings,
++}
++
++impl ReaderState {
++    pub fn new(total_pages: usize) -> Result<Self, ReaderError> {
++        Self::with_settings(total_pages, ReaderSettings::default())
++    }
++
++    pub fn with_settings(
++        total_pages: usize,
++        settings: ReaderSettings,
++    ) -> Result<Self, ReaderError> {
++        if total_pages == 0 {
++            return Err(ReaderError::InvalidPageCount);
++        }
++        Ok(Self {
++            page_index: 0,
++            total_pages,
++            settings: settings.normalized(),
++        })
++    }
++
++    pub fn page_index(&self) -> usize {
++        self.page_index
++    }
++
++    pub fn total_pages(&self) -> usize {
++        self.total_pages
++    }
++
++    pub fn settings(&self) -> &ReaderSettings {
++        &self.settings
++    }
++
++    pub fn set_settings(&mut self, settings: ReaderSettings) {
++        self.settings = settings.normalized();
++    }
++
++    pub fn set_page(&mut self, page_index: usize) -> Result<(), ReaderError> {
++        if page_index >= self.total_pages {
++            return Err(ReaderError::PageOutOfBounds {
++                page_index,
++                total_pages: self.total_pages,
++            });
++        }
++        self.page_index = page_index;
++        Ok(())
++    }
++
++    pub fn next_page(&mut self) -> bool {
++        if self.can_next() {
++            self.page_index += 1;
++            true
++        } else {
++            false
++        }
++    }
++
++    pub fn previous_page(&mut self) -> bool {
++        if self.can_previous() {
++            self.page_index -= 1;
++            true
++        } else {
++            false
++        }
++    }
++
++    pub fn progress_percent(&self) -> u8 {
++        self.reading_progress().percent
++    }
++
++    pub fn reading_progress(&self) -> ReadingProgress {
++        ReadingProgress::new(self.page_index, self.total_pages)
++            .expect("ReaderState is always valid")
++    }
++
++    pub fn can_next(&self) -> bool {
++        self.page_index + 1 < self.total_pages
++    }
++
++    pub fn can_previous(&self) -> bool {
++        self.page_index > 0
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index 4c0c332..ed2fb6f 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -4,16 +4,25 @@ use axum::http::{header, HeaderValue, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::get;
+ use axum::{Json, Router};
++use contracts::{ApiError, ApiErrorEnvelope};
+ use manga_core::Md;
+-use serde_json::Value;
++use serde::Serialize;
+ use std::collections::HashMap;
+-use std::sync::Arc;
+ use tower_http::compression::CompressionLayer;
+ use tower_http::services::{ServeDir, ServeFile};
+ 
+-type Err = (StatusCode, String);
++type Err = (StatusCode, Json<ApiErrorEnvelope>);
+ 
+-fn json_cached(v: Arc<Value>, secs: u32) -> Response {
++fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Err {
++    (
++        status,
++        Json(ApiErrorEnvelope {
++            error: ApiError::new(code, message),
++        }),
++    )
++}
++
++fn json_cached<T: Serialize>(v: T, secs: u32) -> Response {
+     let mut res = Json(v).into_response();
+     res.headers_mut().insert(
+         header::CACHE_CONTROL,
+@@ -30,9 +39,17 @@ async fn latest(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.latest().await.map_err(bad)?, 60))
+ }
+ 
+-async fn search(State(md): State<Md>, Query(q): Query<HashMap<String, String>>) -> Result<Response, Err> {
++async fn search(
++    State(md): State<Md>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Result<Response, Err> {
+     let q = parse_search_query(q)?;
+-    Ok(json_cached(md.search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort).await.map_err(bad)?, 60))
++    Ok(json_cached(
++        md.search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort)
++            .await
++            .map_err(bad)?,
++        60,
++    ))
+ }
+ 
+ #[derive(Debug)]
+@@ -46,9 +63,19 @@ struct SearchQuery {
+ 
+ fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
+     let value = |key| q.get(key).map(|s| s.trim()).filter(|s| !s.is_empty());
+-    let invalid = |name| (StatusCode::BAD_REQUEST, format!("{name} không hợp lệ."));
++    let invalid = |name| {
++        api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            format!("{name} không hợp lệ."),
++        )
++    };
+     let page = match value("page") {
+-        Some(raw) => raw.parse::<u32>().ok().filter(|p| (1..=416).contains(p)).ok_or_else(|| invalid("Số trang"))?,
++        Some(raw) => raw
++            .parse::<u32>()
++            .ok()
++            .filter(|p| (1..=416).contains(p))
++            .ok_or_else(|| invalid("Số trang"))?,
+         None => 1,
+     };
+     let query = value("q").unwrap_or("");
+@@ -61,71 +88,109 @@ fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
+     if status.is_some_and(|s| manga_core::mangadex::status_param(s).is_none()) {
+         return Err(invalid("Trạng thái"));
+     }
+-    let mut tags: Vec<_> = value("tags").into_iter().flat_map(|s| s.split(',')).collect();
++    let mut tags: Vec<_> = value("tags")
++        .into_iter()
++        .flat_map(|s| s.split(','))
++        .collect();
+     if tags.len() > 8 || !tags.iter().all(|id| is_uuid(id)) {
+         return Err(invalid("Thể loại"));
+     }
+     tags.sort_unstable();
+     tags.dedup();
+-    Ok(SearchQuery { q: query.to_owned(), page, tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
+-        status: status.map(str::to_owned), sort: sort.to_owned() })
++    Ok(SearchQuery {
++        q: query.to_owned(),
++        page,
++        tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
++        status: status.map(str::to_owned),
++        sort: sort.to_owned(),
++    })
+ }
+ 
+ fn is_uuid(id: &str) -> bool {
+-    id.len() == 36 && id.bytes().enumerate().all(|(i, b)| match i {
+-        8 | 13 | 18 | 23 => b == b'-',
+-        _ => b.is_ascii_hexdigit(),
+-    })
++    id.len() == 36
++        && id.bytes().enumerate().all(|(i, b)| match i {
++            8 | 13 | 18 | 23 => b == b'-',
++            _ => b.is_ascii_hexdigit(),
++        })
+ }
+ 
+ async fn tags(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.tags().await.map_err(bad)?, 86_400))
+ }
+ 
+-async fn rank(State(md): State<Md>, Query(q): Query<HashMap<String, String>>) -> Result<Response, Err> {
++async fn rank(
++    State(md): State<Md>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Result<Response, Err> {
+     let kind = q.get("kind").map(String::as_str).unwrap_or("follows");
+     if !matches!(kind, "follows" | "rating") {
+-        return Err((StatusCode::BAD_REQUEST, "Kiểu xếp hạng không hợp lệ.".into()));
++        return Err(api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Kiểu xếp hạng không hợp lệ.",
++        ));
+     }
+     Ok(json_cached(md.rank(kind).await.map_err(bad)?, 300))
+ }
+ 
+ async fn manga(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+-        return Err((StatusCode::BAD_REQUEST, "Mã truyện không hợp lệ.".into()));
++        return Err(api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Mã truyện không hợp lệ.",
++        ));
+     }
+     Ok(json_cached(md.manga(&id).await.map_err(bad)?, 3600))
+ }
+ 
+ async fn chapters(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+-        return Err((StatusCode::BAD_REQUEST, "Mã truyện không hợp lệ.".into()));
++        return Err(api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Mã truyện không hợp lệ.",
++        ));
+     }
+     Ok(json_cached(md.chapters(&id).await.map_err(bad)?, 60))
+ }
+ 
+ async fn pages(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+-        return Err((StatusCode::BAD_REQUEST, "Mã chương không hợp lệ.".into()));
++        return Err(api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Mã chương không hợp lệ.",
++        ));
+     }
+-    Ok(json_cached(Arc::new(md.pages(&id).await.map_err(bad)?), 120))
++    Ok(json_cached(md.pages(&id).await.map_err(bad)?, 120))
+ }
+ 
+ /// Same-origin image proxy: disk-cached, host allowlist enforced in core.
+-async fn img(State(md): State<Md>, Query(q): Query<HashMap<String, String>>) -> Result<Response, Err> {
++async fn img(
++    State(md): State<Md>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Result<Response, Err> {
+     let raw = q.get("u").cloned().unwrap_or_default();
+-    let path = manga_core::imgcache::ensure(&md.http, &raw).await.map_err(bad)?;
++    let path = manga_core::imgcache::ensure(&md.http, &raw)
++        .await
++        .map_err(bad)?;
+     let ctype = if path.extension().map(|e| e == "png").unwrap_or(false) {
+         "image/png"
+     } else {
+         "image/jpeg"
+     };
+-    let bytes = tokio::fs::read(&path).await.map_err(|e| bad(e.to_string()))?;
++    let bytes = tokio::fs::read(&path)
++        .await
++        .map_err(|e| bad(e.to_string()))?;
+     Ok((
+         StatusCode::OK,
+         [
+             (header::CONTENT_TYPE, HeaderValue::from_static(ctype)),
+-            (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable")),
++            (
++                header::CACHE_CONTROL,
++                HeaderValue::from_static("public, max-age=31536000, immutable"),
++            ),
+         ],
+         Body::from(bytes),
+     )
+@@ -133,7 +198,7 @@ async fn img(State(md): State<Md>, Query(q): Query<HashMap<String, String>>) ->
+ }
+ 
+ fn bad(e: String) -> Err {
+-    (StatusCode::BAD_GATEWAY, e)
++    api_error(StatusCode::BAD_GATEWAY, "UPSTREAM_ERROR", e)
+ }
+ 
+ /// Hashed static assets are immutable; HTML and API stay revalidatable.
+@@ -145,16 +210,21 @@ fn static_cache_control(_path: &str, status: StatusCode, content_type: &str) ->
+     }
+ }
+ 
+-async fn static_cache_headers(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
++async fn static_cache_headers(
++    req: axum::extract::Request,
++    next: axum::middleware::Next,
++) -> Response {
+     let path = req.uri().path().to_string();
+     let mut res = next.run(req).await;
+     if !path.starts_with("/api") {
+-        let content_type = res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
++        let content_type = res
++            .headers()
++            .get(header::CONTENT_TYPE)
++            .and_then(|v| v.to_str().ok())
++            .unwrap_or("");
+         let policy = static_cache_control(&path, res.status(), content_type);
+-        res.headers_mut().insert(
+-            header::CACHE_CONTROL,
+-            HeaderValue::from_static(policy),
+-        );
++        res.headers_mut()
++            .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+     }
+     res
+ }
+@@ -180,8 +250,13 @@ async fn main() {
+         .layer(CompressionLayer::new())
+         .with_state(md);
+ 
+-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3100);
+-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
++    let port: u16 = std::env::var("PORT")
++        .ok()
++        .and_then(|p| p.parse().ok())
++        .unwrap_or(3100);
++    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
++        .await
++        .expect("bind");
+     println!("KasLyyDex (Rust/Leptos) listening on http://localhost:{port}");
+     axum::serve(listener, app).await.expect("serve");
+ }
+@@ -192,12 +267,31 @@ mod tests {
+ 
+     #[test]
+     fn search_rejects_invalid_filters_and_bounds_pagination() {
+-        for (name, value) in [("sort", "bad"), ("status", "bad"), ("tags", "bad"), ("page", "4294967295")] {
+-            assert_eq!(parse_search_query(HashMap::from([(name.into(), value.into())])).unwrap_err().0, StatusCode::BAD_REQUEST);
++        for (name, value) in [
++            ("sort", "bad"),
++            ("status", "bad"),
++            ("tags", "bad"),
++            ("page", "4294967295"),
++        ] {
++            assert_eq!(
++                parse_search_query(HashMap::from([(name.into(), value.into())]))
++                    .unwrap_err()
++                    .0,
++                StatusCode::BAD_REQUEST
++            );
+         }
+         let id = "391b0423-d847-456f-aff0-8b0cfc03066b";
+-        assert_eq!(parse_search_query(HashMap::from([("tags".into(), vec![id; 9].join(","))])).unwrap_err().0, StatusCode::BAD_REQUEST);
+-        let query = parse_search_query(HashMap::from([("tags".into(), id.into()), ("sort".into(), "rating".into())])).unwrap();
++        assert_eq!(
++            parse_search_query(HashMap::from([("tags".into(), [id; 9].join(","))]))
++                .unwrap_err()
++                .0,
++            StatusCode::BAD_REQUEST
++        );
++        let query = parse_search_query(HashMap::from([
++            ("tags".into(), id.into()),
++            ("sort".into(), "rating".into()),
++        ]))
++        .unwrap();
+         assert_eq!(query.tags, [id]);
+         assert_eq!(query.sort, "rating");
+         assert!(query.q.is_empty());
+@@ -206,9 +300,16 @@ mod tests {
+     #[test]
+     fn spa_routes_and_errors_must_revalidate() {
+         for path in ["/", "/index.html", "/search", "/manga/abc", "/read/abc"] {
+-            assert_eq!(static_cache_control(path, StatusCode::OK, "text/html"), "no-cache", "{path}");
++            assert_eq!(
++                static_cache_control(path, StatusCode::OK, "text/html"),
++                "no-cache",
++                "{path}"
++            );
+         }
+-        assert_eq!(static_cache_control("/ui-deadbeef.wasm", StatusCode::NOT_FOUND, "text/plain"), "no-cache");
++        assert_eq!(
++            static_cache_control("/ui-deadbeef.wasm", StatusCode::NOT_FOUND, "text/plain"),
++            "no-cache"
++        );
+     }
+ 
+     #[test]
+@@ -218,4 +319,24 @@ mod tests {
+             "public, max-age=31536000, immutable"
+         );
+     }
++
++    #[test]
++    fn errors_use_the_shared_nested_contract() {
++        let (status, Json(body)) = api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Invalid manga id",
++        );
++        assert_eq!(status, StatusCode::BAD_REQUEST);
++        assert_eq!(
++            serde_json::to_value(body).unwrap(),
++            serde_json::json!({
++                "error": {
++                    "code": "VALIDATION_ERROR",
++                    "message": "Invalid manga id",
++                    "details": {}
++                }
++            })
++        );
++    }
+ }

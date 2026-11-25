@@ -1,0 +1,96 @@
+# Changelog
+
+## Unreleased — Cloudflare Workers, D1 and worker-native auth
+
+- Replace the managed Postgres database with Cloudflare D1: Drizzle SQLite
+  schema, `web/migrations/0000_cloudflare_d1.sql` applied to `kaslyydex`, and a
+  `DB` binding in `web/cloudflare.config.ts`.
+- Replace the managed identity SDK with worker-native sessions: password or
+  Google ID-token sign-in, D1-backed users, signed HttpOnly SameSite=Lax cookies
+  and structured failure when `GOOGLE_CLIENT_ID` is absent.
+- Keep `/api/auth/*` response shapes and do not change the Northflank Axum
+  service or `RUST_CONTENT_API_ORIGIN`.
+
+## Unreleased — MangaDex-only web and hero search
+
+- Remove the alternate catalog from the web client: content ids are MangaDex
+  UUIDs only, source filters are `all`/`mangadex`, covers resolve through the
+  Axum image proxy, and source badges/labels show only `MangaDex`.
+- Add a GET `/search` form to the "Khám phá truyện" hero with `name="q"` and
+  accessible name "Tìm truyện"; it renders in both the featured and fallback
+  hero states.
+- Rework the affected web tests around MangaDex fixtures and drop the
+  alternate-catalog fallback/progression suites.
+
+## Unreleased — advanced search UX and final local gate
+
+- Extend `SearchParams`/`searchQuery` with `source`, `lang` and `year`; add
+  `partial: bool` to `SearchResponse` and move query parsing into `contracts` so
+  Axum and the web share the same allowlists and page clamp.
+- Axum `search_all` keeps same-title hits distinct, sorts deterministically
+  (`sort`, source, title, id) and slices to 24 per page. A locally-applied
+  `lang`/`year` filter or an upstream failure sets `partial`, surfaced as a
+  short warning in the UI.
+- Move genre groups into the `/search` ("Khám phá") advanced panel with a
+  four-group skeleton and write selected chips into `tags`. Remove the Next
+  `/the-loai` page and its navigation link.
+- Render a `MangaDex` cover badge (accessible `Nguồn: MangaDex`) on cards,
+  feed, ranking and detail covers; drop title suffixes.
+- Add a shape-matched `/bxh` loading shell (12 rows) and `rank-top rank-1/2/3`
+  frames for the top three rows, stable across tab changes and mobile widths.
+- Register `search-contracts`, `search-source`, `advanced-search`,
+  `source-badge` and `ranking-skeleton` in `test:aggregate`: 28 aggregate test
+  files (7 source + 5 new among them). CI installs Playwright Chromium before
+  aggregate because two of the added suites are browser tests; the Axum prebuild
+  hooks are unchanged.
+- Run the full deterministic local gate: aggregate 203/203, browser 23/23,
+  Rust workspace tests 90 passed/0 failed, build/clippy/scoped fmt/typecheck/
+  lint/whitespace/secrets/diff clean.
+
+No deployment, push, merge, provisioning or live provider verification was
+performed. Live MangaDex catalog and ToS checks remain manual gates.
+
+## Unreleased — multi-source reading UX and final local gate
+
+- Read MangaDex as the sole catalog; external-only/unreadable chapters keep
+  their original external link. Chapter IDs are MangaDex UUIDs and
+  progression/XP bind to the chapter source.
+- Show `MangaDex` source labels after titles on cards, detail, chapter rows and
+  the reader toolbar. Legacy DTOs without `source` still display `MangaDex`.
+- All cover and page bytes go through the same-origin Axum image proxy.
+- Replace native selects with an accessible custom dropdown (Arrow/Home/End/
+  Enter/Space/Escape/Tab, disabled options, hidden form input) and add
+  shape-matched skeletons with reduced-motion-guarded transitions; failed
+  reader images are released from the skeleton gate.
+- Default reader theme to `auto` (follows the site theme) with manual
+  `light`/`sepia`/`dark` overrides persisted per preference.
+- Gate the source suites (`source-contracts`, `source-ui`, `source-progression`,
+  `select`, `skeleton-motion`, `reader-theme`) through `test:source` and
+  `test:aggregate`; pretest hooks build the Axum binary before aggregate/browser
+  tests spawn it. CI uses the same ordering.
+- Baseline pre-existing whitespace findings in committed prior-plan SDD diff
+  artifacts; the gate stays strict for new findings.
+- Document source fallback, labels, theme, dropdown, skeleton/motion, and the
+  release gate in `README.md`, `docs/WEB-STATUS.md` and `infra/axum.md`.
+
+No deployment, provisioning, provider credential use, push or merge was
+performed. Live MangaDex catalog and ToS verification remains a manual
+release gate; no live verification is claimed here.
+
+## Unreleased — Phase 1–2 local release gates
+
+- Add secret-free GitHub Actions release gate: Rust scoped fmt/clippy/tests,
+  Axum build, frozen npm install, typecheck/lint, WASM rebuild before Next build,
+  aggregate Node/SQLite/API tests, Playwright browser suites and diff check.
+- Add Next/Axum security headers. CSP allows same-origin images and WASM without
+  third-party sources; health/readiness separated; readiness is bounded and
+  returns only missing env names.
+- Add structured JSON request/error logs with correlation ids and redaction,
+  plus bounded `kaslyydex.user_requests` / `kaslyydex.user_request.duration_ms`
+  metrics on account/auth/community/progression operations only.
+- Add CI secret-pattern scan and env validation including `READER_TICKET_SECRET`.
+- Document the manual Neon/Google/Vercel release gates, first-deploy-is-production
+  caveat, prior Vercel 402 fair-use block and Neon migration/rollback runbook.
+
+No deployment, provisioning, provider credential use, Vercel setting change,
+merge or push was performed for this entry. Live external gates remain unverified.

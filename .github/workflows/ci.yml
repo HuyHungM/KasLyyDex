@@ -1,0 +1,104 @@
+name: Phase release gates
+
+on:
+  push:
+    branches: [main, feature/**]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CI: "true"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  phase-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Credential scan runs before dependency installation; no secrets are used
+      # or requested by any job in this workflow.
+      - name: Secret-pattern scan
+        run: node web/scripts/secret-scan.mjs .
+
+      # core is included after Task 10 formatted crates/core/src/comick.rs;
+      # full-workspace fmt still carries older Leptos debt.
+      - name: Rust scoped formatting
+        run: cargo fmt --check -p domain -p contracts -p reader-core -p reader-wasm -p server -p core
+
+      - name: Rust clippy (workspace, warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust workspace tests
+        run: cargo test --workspace
+
+      - name: Build Axum content service
+        run: cargo build -p server
+
+      - name: Frozen npm install
+        run: npm ci
+        working-directory: web
+
+      # Task 5 deferred generated WASM: CI must rebuild from Rust source before
+      # the Next build. No generated reader glue or public WASM is committed.
+      - name: Install matching wasm-bindgen CLI
+        # Version must match Cargo.lock's wasm-bindgen crate.
+        run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
+
+      - name: Build reader WASM from Rust source
+        run: npm run build:wasm
+        working-directory: web
+
+      - name: Build Next app after WASM
+        run: npm run build:web
+        working-directory: web
+
+      # Typechecking needs the generated WASM glue and Next's generated route
+      # types, so it runs after the build rather than before it.
+      - name: TypeScript check
+        run: npm run typecheck
+        working-directory: web
+
+      - name: Next lint
+        run: npm run lint
+        working-directory: web
+
+      # Aggregate is Node-only; the separate browser suites below need Chromium.
+      - name: Install Playwright Chromium
+        run: npm run browser:install
+        working-directory: web
+
+      - name: Aggregate Node / PGlite / API tests
+        run: npm run test:aggregate
+        working-directory: web
+
+      - name: Browser suites
+        run: npm run test:browser
+        working-directory: web
+
+      # Inspects tracked checkout content, so it is not vacuous on a clean tree.
+      # Baseline covers committed SDD .diff artifacts from prior and multi-source
+      # plans (1130 entries); new findings fail.
+      - name: Whitespace / conflict-marker check (baselined)
+        run: npm run check:whitespace
+        working-directory: web

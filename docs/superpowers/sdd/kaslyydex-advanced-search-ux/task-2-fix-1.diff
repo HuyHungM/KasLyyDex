@@ -1,0 +1,140 @@
+d1d0997 fix: prefix Comick search ids and allow keyword-less browse
+ crates/core/src/comick.rs | 31 +++++++++++++++++++++++--------
+ 1 file changed, 23 insertions(+), 8 deletions(-)
+diff --git a/crates/core/src/comick.rs b/crates/core/src/comick.rs
+index 48c2433..b1a1326 100644
+--- a/crates/core/src/comick.rs
++++ b/crates/core/src/comick.rs
+@@ -1,17 +1,18 @@
+ // Verified 2026-11-21 from the official Comick catalog OpenAPI document at
+ // https://api.comick.dev/docs/json (rendered by https://api.comick.dev/docs/):
+ // - GET /v1.0/search/?q=...&page=1&limit=15 — bare array; page <= 50 with
+ //   limit <= 50, or page <= 5 with limit <= 300; defaults page=1, limit=15.
+-//   Verified search filter names: q (keyword), page, limit, from/to (inclusive
+-//   publication year), status (1 ongoing, 2 completed, 3 cancelled, 4 hiatus),
+-//   genres (numeric ids), md_covers[].b2key, bayesian_rating,
++//   Verified search filter names: q (keyword, optional for browse), page,
++//   limit, from/to (inclusive publication year), status (1 ongoing,
++//   2 completed, 3 cancelled, 4 hiatus), genres (request: slugs from /genre/;
++//   response: numeric ids), md_covers[].b2key, bayesian_rating,
+ //   user_follow_count, last_chapter. There is NO documented `lang` filter on
+ //   this route: language is applied by the aggregator, not invented here.
+ // - GET /v1.0/comic/{hid}/chapters?lang=...&page=1&limit=12 — returns
+ //   { chapters, total, limit, checkVol2Chap1 }; default page size 12, no max.
+ // - GET /chapter/{hid}/get_images — ordered image metadata array, may be [].
+ // - Origin budget: 200 requests/minute/client IP.
+ // - CDN image host listed in the official spec: meo.comick.pictures (HTTPS);
+ //   live delivery and ToS remain a manual release gate (no live fetch gate here).
+ // OAuth/Library endpoints are deliberately not used.
+ 
+@@ -153,32 +154,37 @@ fn request_opaque(id: &str) -> Option<&str> {
+ }
+ 
+ fn encode(value: &str) -> String {
+     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+ }
+ 
+ pub fn search_path(q: &str, lang: &str, year: Option<i32>, page: u32) -> Result<String, Err> {
+     // `lang` is validated for the shared contract but is not an upstream field.
+     request_opaque(lang).ok_or_else(upstream_err)?;
+     let q = q.trim();
+-    if q.is_empty() || q.chars().count() > 200 || !(1..=50).contains(&page) {
++    if q.chars().count() > 200 || !(1..=50).contains(&page) {
+         return Err(upstream_err());
+     }
+     if year.is_some_and(|year| year < 1900) {
+         return Err(upstream_err());
+     }
+     let years = year
+         .map(|year| format!("&from={year}&to={year}"))
+         .unwrap_or_default();
++    // q is optional upstream: omit it for browse/filter-only searches.
++    let keyword = if q.is_empty() {
++        String::new()
++    } else {
++        format!("q={}&", encode(q))
++    };
+     Ok(format!(
+-        "/v1.0/search/?q={}&page={page}&limit=15{years}",
+-        encode(q)
++        "/v1.0/search/?{keyword}page={page}&limit=15{years}"
+     ))
+ }
+ 
+ /// Required fields are never filled in; optional fields use DTO defaults.
+ pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
+     let hid = hit["hid"]
+         .as_str()
+         .filter(|hid| valid_opaque(hid))
+         .ok_or_else(upstream_err)?;
+     let title = hit["title"]
+@@ -194,21 +200,21 @@ pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
+         .and_then(|covers| covers.first())
+         .and_then(|cover| image_url(cover).ok());
+     let status = match hit["status"].as_i64() {
+         Some(1) => "ongoing",
+         Some(2) => "completed",
+         Some(3) => "cancelled",
+         Some(4) => "hiatus",
+         _ => hit["status"].as_str().unwrap_or_default(),
+     };
+     Ok(MangaSummaryDto {
+-        id: hid.into(),
++        id: format!("comick:{hid}").into(),
+         title: title.to_owned(),
+         cover_file,
+         status: status.to_owned(),
+         year: hit["year"]
+             .as_i64()
+             .and_then(|year| i32::try_from(year).ok()),
+         description: hit["desc"].as_str().unwrap_or_default().to_owned(),
+         tags: genres.clone(),
+         tag_ids: genres,
+         author: String::new(),
+@@ -397,36 +403,45 @@ mod tests {
+         assert!(!path.contains("lang="));
+         assert_eq!(
+             path.matches('&').count(),
+             4,
+             "unexpected query params: {path}"
+         );
+         assert!(search_path("slime", "vi", None, 51).is_err());
+         assert!(search_path("slime", "", None, 1).is_err());
+     }
+ 
++    #[test]
++    fn comick_search_path_allows_browse_without_query() {
++        let path = search_path("", "all", Some(2024), 2).expect("browse without q");
++        assert_eq!(path, "/v1.0/search/?page=2&limit=15&from=2024&to=2024");
++        let blank = search_path("   ", "all", None, 1).expect("blank q is omitted");
++        assert_eq!(blank, "/v1.0/search/?page=1&limit=15");
++    }
++
+     #[test]
+     fn comick_search_hit_sets_source_pair() {
+         let hit = json!({
+             "hid": "zZc_AAsE",
+             "title": "Slime Slayer",
+             "desc": "A slime story.",
+             "year": 2024,
+             "status": 1,
+             "genres": [30, 244],
+             "md_covers": [{ "b2key": "cover.jpg" }],
+             "bayesian_rating": "7.11",
+             "user_follow_count": 14253,
+             "last_chapter": 20.1
+         });
+         let dto = normalize_search_hit(&hit).expect("valid search hit");
+-        assert_eq!(dto.id.as_str(), "zZc_AAsE");
++        assert_eq!(dto.id.as_str(), "comick:zZc_AAsE");
++        assert_eq!(request_opaque(dto.id.as_str()), Some("zZc_AAsE"));
+         assert_eq!(dto.title, "Slime Slayer");
+         assert_eq!(dto.source, "comick");
+         assert_eq!(dto.source_label, "Comick");
+         assert_eq!(
+             dto.cover_file.as_deref(),
+             Some("https://meo.comick.pictures/cover.jpg")
+         );
+         assert_eq!(dto.year, Some(2024));
+         assert_eq!(dto.status, "ongoing");
+         assert_eq!(dto.tags, ["30", "244"]);

@@ -1,0 +1,575 @@
+diff --git a/.gitignore b/.gitignore
+index d9564e2..7f10b06 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,12 +1,12 @@
+ /target
+ /cache
+ /crates/ui/dist
+ node_modules
+ .next
+-legacy-next/node_modules
+-legacy-next/.next
++web/node_modules
++web/.next
+ .env
+ .env.*
+ !.env.example
+ .vercel
+ /dist
+diff --git a/Cargo.toml b/Cargo.toml
+index 9e1f2ec..436eb14 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,8 +1,9 @@
+ [workspace]
+ resolver = "2"
+ members = ["crates/core", "crates/server", "crates/ui"]
++exclude = ["crates/app"]
+ 
+ [profile.release]
+ opt-level = 3
+ lto = "thin"
+ codegen-units = 1
+diff --git a/README.md b/README.md
+index 4eb6cc4..14d37a5 100644
+--- a/README.md
++++ b/README.md
+@@ -1,20 +1,20 @@
+-# TruyệnViệt — web đọc manga (Rust)
++# KasLyyDex — web đọc manga (Rust)
+ 
+ Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org) (free, không cần key).
+ 
+-## Kiến trúc (2 giai đoạn)
++## Kiến trúc hiện tại
+ 
+ - **Giai đoạn 1 (hiện tại): web** — frontend **Leptos 0.8 CSR → WebAssembly**, backend **Axum** mỏng serve API + SPA.
+-- **Giai đoạn 2 (chờ confirm): native Windows + Android** — UI **Slint** (`crates/app`, đã dựng sẵn khung UI), dùng chung crate `core`.
++- **Phase 3/4 (deferred): Android + GPUI** — `crates/app` giữ lại prototype Slint, chưa thuộc workspace.
+ 
+ ```
+ crates/core    # dùng chung: MangaDex client (reqwest + DNS 1.1.1.1), cache RAM moka, cache ảnh đĩa
+ crates/server  # Axum: /api/* + proxy ảnh + serve static (giai đoạn 1)
+ crates/ui      # Leptos CSR + trunk (giai đoạn 1)
+-crates/app     # Slint (giai đoạn 2 — chưa vào workspace)
+-legacy-next    # bản Next.js 16 đầu tiên (tham khảo)
++crates/app     # Slint prototype (deferred — chưa vào workspace)
++web            # Next.js 16 baseline
+ ```
+ 
+ ## Chạy bản web
+ 
+ ```bash
+@@ -45,10 +45,8 @@ Biến môi trường: `PORT` (3100), `DIST_DIR` (`crates/ui/dist`), `CACHE_DIR`
+ - **Ảnh**: cache đĩa SHA-256 vĩnh viễn (`immutable`), proxy cùng origin — không CORS, không phụ thuộc DNS client (vài mạng sinkhole host MangaDex về 127.0.0.1; server resolve qua 1.1.1.1/8.8.8.8 bằng hickory-resolver)
+ - **WASM**: profile `wasm-release` (`opt-level="z"`, LTO, `panic=abort`) + wasm-opt; asset hash tên + immutable cache
+ - **Static**: HTML no-cache, asset immutable; nén brotli/gzip mọi response
+ - **Reader**: prefetch URL chapter kế tiếp khi đang đọc; ảnh lazy-load + `decoding=async`
+ 
+-## Giai đoạn 2 (Slint native + Android)
++## Phase 3–4 (deferred)
+ 
+-`crates/app/ui/app.slint` đã có UI đầy đủ (home/search/manga/reader, dark theme). Khi được confirm:
+-thêm `crates/app` vào workspace, viết `main.rs` nối Slint ↔ `core` (tokio thread + `upgrade_in_event_loop`),
+-build Windows (winit/femtovg) và Android (slint android backend + cargo-apk/gradle).
++Android and GPUI are deferred. `crates/app/ui/app.slint` remains a Slint prototype outside the workspace; this task does not connect or change it.
+diff --git a/crates/core/src/dns.rs b/crates/core/src/dns.rs
+index c259d3d..89ef1ef 100644
+--- a/crates/core/src/dns.rs
++++ b/crates/core/src/dns.rs
+@@ -25,11 +25,11 @@ impl PublicDns {
+     }
+ 
+     pub fn client() -> reqwest::Client {
+         reqwest::Client::builder()
+             .dns_resolver(Arc::new(Self::new()))
+-            .user_agent("TruyenvietReader/1.0 (educational demo)")
++            .user_agent("KasLyyDexReader/1.0 (educational demo)")
+             .pool_max_idle_per_host(32)
+             .build()
+             .expect("reqwest client")
+     }
+ }
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index fd90619..4c0c332 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -180,11 +180,11 @@ async fn main() {
+         .layer(CompressionLayer::new())
+         .with_state(md);
+ 
+     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3100);
+     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
+-    println!("TruyệnViệt (Rust/Leptos) listening on http://localhost:{port}");
++    println!("KasLyyDex (Rust/Leptos) listening on http://localhost:{port}");
+     axum::serve(listener, app).await.expect("serve");
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+diff --git a/crates/ui/index.html b/crates/ui/index.html
+index ce6921c..d21f01a 100644
+--- a/crates/ui/index.html
++++ b/crates/ui/index.html
+@@ -2,11 +2,11 @@
+ <html lang="vi">
+   <head>
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+     <meta name="description" content="Đọc manga bản dịch tiếng Việt và tiếng Anh miễn phí, không quảng cáo. Dữ liệu từ MangaDex." />
+-    <title>TruyệnViệt — Đọc manga online miễn phí</title>
++    <title>KasLyyDex — Đọc manga online miễn phí</title>
+     <link rel="preconnect" href="https://fonts.googleapis.com" />
+     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+     <script>
+       try {
+         if (localStorage.getItem('truyenviet:theme') === 'light') document.documentElement.dataset.theme = 'light';
+diff --git a/crates/ui/src/views.rs b/crates/ui/src/views.rs
+index 53a5aca..0d711e4 100644
+--- a/crates/ui/src/views.rs
++++ b/crates/ui/src/views.rs
+@@ -43,11 +43,11 @@ fn Shell() -> impl IntoView {
+                     <Route path=path!("/tu-truyen") view=LibraryPage />
+                 </Routes>
+               </div>
+               <Show when=move || !reading()>
+                   <footer class="site-footer">
+-                    <span class="footer-brand">"TruyệnViệt"</span>
++                    <span class="footer-brand">"KasLyyDex"</span>
+                     <p>"Dữ liệu và ảnh từ "<a href="https://mangadex.org" target="_blank" rel="noopener noreferrer">"MangaDex"</a>". Ủng hộ tác giả bằng cách mua truyện bản quyền."</p>
+                   </footer>
+               </Show>
+             </div>
+             <Show when=move || !reading()><nav class="bottom-tabs" aria-label="Điều hướng trên điện thoại"><NavLinks /></nav></Show>
+@@ -58,11 +58,11 @@ fn Shell() -> impl IntoView {
+ #[component]
+ fn Brand() -> impl IntoView {
+     view! {
+         <A href="/" attr:class="logo">
+             <span class="logo-mark"><Icon name=Signal::derive(|| "book") /></span>
+-            <span>"Truyện"<b>"Việt"</b></span>
++            <span>"KasLyy"<b>"Dex"</b></span>
+         </A>
+     }
+ }
+ 
+ #[component]
+diff --git a/docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-report.md b/docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-report.md
+new file mode 100644
+index 0000000..e610257
+--- /dev/null
++++ b/docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-report.md
+@@ -0,0 +1,83 @@
++# Task 1 report: baseline rename and workspace boundaries
++
++## Scope
++
++- Moved the legacy Next.js app from `legacy-next/` to `web/` without changing
++  its routes, components, data access, or reader behavior.
++- Renamed user-facing product metadata and MangaDex user-agent strings to
++  `KasLyyDex` / `KasLyyDexReader` in the root README, web metadata, the Rust
++  server log, Rust UI metadata, and shared content clients.
++- Kept Rust package names (`core`, `server`, `ui`) unchanged.
++- Kept `crates/app` and `crates/ui` in place; explicitly excluded `crates/app`
++  from the Cargo workspace while Android/GPUI work remains deferred.
++- Added the variable-name-only `web/.env.example` and infrastructure boundary
++  notes in `infra/README.md`.
++- Updated `.gitignore` for the `web/` workspace while preserving the existing
++  `.env*` protection and `.env.example` exception.
++
++## Changed files
++
++- `README.md`
++- `Cargo.toml`
++- `.gitignore`
++- `crates/core/src/dns.rs`
++- `crates/server/src/main.rs`
++- `crates/ui/index.html`
++- `crates/ui/src/views.rs`
++- `web/` (moved from `legacy-next/`, retaining `AGENTS.md`, `README.md`,
++  `app/api/{img/route.ts,pages/[chapterId]/route.ts}`, `app/{error.tsx,
++  favicon.ico,globals.css,layout.tsx,manga/[id]/page.tsx,not-found.tsx,
++  page.tsx,read/[chapterId]/page.tsx,search/page.tsx}`,
++  `components/{chapter-list.tsx,continue-reading.tsx,header.tsx,
++  manga-actions.tsx,manga-card.tsx,reader.tsx}`, `eslint.config.mjs`,
++  `lib/{history.ts,http.ts,mangadex.ts,types.ts}`, `next-env.d.ts`,
++  `next.config.ts`, `package{,-lock}.json`, `public/{file.svg,globe.svg,
++  next.svg,vercel.svg,window.svg}`, and `tsconfig.json`)
++- `web/.env.example`
++- `infra/README.md`
++- `docs/superpowers/sdd/kaslyydex-phase-1-2/task-1-report.md`
++
++## RED evidence
++
++Before implementation, the required repository check was run from the
++worktree. It failed as expected with:
++
++```text
++FAIL: web/package.json is missing
++FAIL: legacy-next/package.json still exists
++FAIL: legacy product title remains in README.md
++```
++
++## GREEN evidence
++
++After implementation, the repository check passed:
++
++```text
++PASS: product title, path, protected crate, and env ignore checks
++```
++
++The check confirmed `web/package.json` exists, `legacy-next/package.json` does
++not, no old product title remains in root/web metadata, `crates/app` and
++`crates/ui` remain present, and the environment-file rules are correct.
++
++## Verification
++
++- `npm install` from `web/`: passed; 360 packages audited, 0 vulnerabilities.
++- `npm run build` from `web/`: passed with Next.js 16.4.6.
++- Focused ESLint on the changed web source files: passed.
++- `cargo test --workspace`: passed; 20 tests passed, 0 failed.
++- `git diff --check`: passed.
++
++## Concerns / known baseline issues
++
++- Full `npm run lint` still reports four existing `react-hooks/set-state-in-effect`
++  errors in untouched files: `web/components/chapter-list.tsx`,
++  `continue-reading.tsx`, `manga-actions.tsx`, and `reader.tsx`. They are not
++  caused by this metadata/path-only task and were not changed.
++- `cargo +stable-x86_64-pc-windows-msvc fmt --check` reports pre-existing
++  formatting differences across the Rust workspace, including unrelated lines
++  in files touched only for product strings. Formatting was not broadened into
++  this task; the workspace tests remain green.
++- The legacy `TruyenViet` cache directory and `truyenviet:*` browser storage
++  keys were intentionally preserved to avoid changing reader/cache behavior.
++- No credentials, `.env` files, or external Vercel/Neon resources were added.
+diff --git a/infra/README.md b/infra/README.md
+new file mode 100644
+index 0000000..afd9dd8
+--- /dev/null
++++ b/infra/README.md
+@@ -0,0 +1,12 @@
++# KasLyyDex infrastructure boundary
++
++Phase 1–2 keeps the Next.js web workspace in `web/` and the Axum content
++service in `crates/server/`. The web deployment may call the content service
++through `RUST_CONTENT_API_ORIGIN`; deployment configuration and credentials
++remain outside Git.
++
++Environment variable names are listed in `web/.env.example`. Use separate
++Development, Preview, and Production values and database branches. This task
++does not provision or deploy Vercel, Neon, or any other external resource.
++
++Android (Phase 3) and GPUI (Phase 4) remain deferred.
+diff --git a/web/.env.example b/web/.env.example
+new file mode 100644
+index 0000000..d3e16fc
+--- /dev/null
++++ b/web/.env.example
+@@ -0,0 +1,6 @@
++DATABASE_URL=
++BETTER_AUTH_SECRET=
++GOOGLE_CLIENT_ID=
++GOOGLE_CLIENT_SECRET=
++RUST_CONTENT_API_ORIGIN=
++NEXT_PUBLIC_APP_URL=
+diff --git a/legacy-next/AGENTS.md b/web/AGENTS.md
+similarity index 100%
+rename from legacy-next/AGENTS.md
+rename to web/AGENTS.md
+diff --git a/legacy-next/README.md b/web/README.md
+similarity index 97%
+rename from legacy-next/README.md
+rename to web/README.md
+index b9f05c8..d12f82f 100644
+--- a/legacy-next/README.md
++++ b/web/README.md
+@@ -1,6 +1,6 @@
+-# TruyệnViệt — web đọc manga
++# KasLyyDex — web đọc manga
+ 
+ Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org) (free, không cần key).
+ 
+ ## Stack
+ 
+@@ -32,6 +32,6 @@ Mở http://localhost:3100
+ 
+ - `lib/mangadex.ts`: mọi lời gọi API đều `'use cache'` + `cacheLife`; types/helpers thuần tách ở `lib/types.ts` để client components import được.
+ - `lib/http.ts`: vài mạng DNS chặn (sinkhole) host MangaDex về 127.0.0.1 → server resolve qua 1.1.1.1/8.8.8.8, fallback DNS hệ thống.
+ - `/api/img`: proxy ảnh (allowlist `uploads.mangadex.org` + `*.mangadex.network`, chặn redirect) vì browser và Next image optimizer có thể không resolve được host MangaDex.
+ - `/api/pages/[chapterId]`: lấy URL ảnh at-home (URL hết hạn nhanh, không cache).
+-- Trang động bọc `<Suspense>` theo yêu cầu của Cache Components.
+\ No newline at end of file
++- Trang động bọc `<Suspense>` theo yêu cầu của Cache Components.
+diff --git a/legacy-next/app/api/img/route.ts b/web/app/api/img/route.ts
+similarity index 93%
+rename from legacy-next/app/api/img/route.ts
+rename to web/app/api/img/route.ts
+index 7ec4c77..8728597 100644
+--- a/legacy-next/app/api/img/route.ts
++++ b/web/app/api/img/route.ts
+@@ -16,11 +16,11 @@ export async function GET(request: Request) {
+   }
+   try {
+     const up = await undiciFetch(url.toString(), {
+       dispatcher: agent,
+       redirect: "error", // never follow redirects into arbitrary hosts (SSRF)
+-      headers: { "User-Agent": "TruyenvietReader/1.0 (educational demo)" },
++      headers: { "User-Agent": "KasLyyDexReader/1.0 (educational demo)" },
+     });
+     if (!up.ok || !up.body) return new Response("Upstream error", { status: 502 });
+     return new Response(up.body as unknown as BodyInit, {
+       headers: {
+         "Content-Type": up.headers.get("content-type") || "image/jpeg",
+@@ -28,6 +28,6 @@ export async function GET(request: Request) {
+       },
+     });
+   } catch {
+     return new Response("Upstream unreachable", { status: 502 });
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/legacy-next/app/api/pages/[chapterId]/route.ts b/web/app/api/pages/[chapterId]/route.ts
+similarity index 100%
+rename from legacy-next/app/api/pages/[chapterId]/route.ts
+rename to web/app/api/pages/[chapterId]/route.ts
+diff --git a/legacy-next/app/error.tsx b/web/app/error.tsx
+similarity index 100%
+rename from legacy-next/app/error.tsx
+rename to web/app/error.tsx
+diff --git a/legacy-next/app/favicon.ico b/web/app/favicon.ico
+similarity index 100%
+rename from legacy-next/app/favicon.ico
+rename to web/app/favicon.ico
+diff --git a/legacy-next/app/globals.css b/web/app/globals.css
+similarity index 100%
+rename from legacy-next/app/globals.css
+rename to web/app/globals.css
+diff --git a/legacy-next/app/layout.tsx b/web/app/layout.tsx
+similarity index 86%
+rename from legacy-next/app/layout.tsx
+rename to web/app/layout.tsx
+index db3b398..e93d2f7 100644
+--- a/legacy-next/app/layout.tsx
++++ b/web/app/layout.tsx
+@@ -15,12 +15,12 @@ const oswald = Oswald({
+   weight: ["500", "600", "700"],
+ });
+ 
+ export const metadata: Metadata = {
+   title: {
+-    default: "TruyệnViệt — Đọc manga online miễn phí",
+-    template: "%s | TruyệnViệt",
++    default: "KasLyyDex — Đọc manga online miễn phí",
++    template: "%s | KasLyyDex",
+   },
+   description:
+     "Đọc manga bản dịch tiếng Việt và tiếng Anh miễn phí, không quảng cáo. Dữ liệu từ MangaDex.",
+ };
+ 
+@@ -29,15 +29,15 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
+     <html lang="vi" className={`${beVietnam.variable} ${oswald.variable} h-full antialiased`}>
+       <body className="flex min-h-full flex-col font-sans">
+         <Header />
+         <div className="flex-1">{children}</div>
+         <footer className="border-t border-line py-6 text-center text-xs text-muted">
+-          TruyệnViệt — demo đọc truyện phi thương mại. Dữ liệu &amp; ảnh từ{" "}
++          KasLyyDex — demo đọc truyện phi thương mại. Dữ liệu &amp; ảnh từ{" "}
+           <a href="https://mangadex.org" target="_blank" rel="noopener noreferrer" className="underline hover:text-paper">
+             MangaDex
+           </a>
+           . Ủng hộ tác giả bằng cách mua truyện bản quyền.
+         </footer>
+       </body>
+     </html>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/legacy-next/app/manga/[id]/page.tsx b/web/app/manga/[id]/page.tsx
+similarity index 100%
+rename from legacy-next/app/manga/[id]/page.tsx
+rename to web/app/manga/[id]/page.tsx
+diff --git a/legacy-next/app/not-found.tsx b/web/app/not-found.tsx
+similarity index 100%
+rename from legacy-next/app/not-found.tsx
+rename to web/app/not-found.tsx
+diff --git a/legacy-next/app/page.tsx b/web/app/page.tsx
+similarity index 100%
+rename from legacy-next/app/page.tsx
+rename to web/app/page.tsx
+diff --git a/legacy-next/app/read/[chapterId]/page.tsx b/web/app/read/[chapterId]/page.tsx
+similarity index 100%
+rename from legacy-next/app/read/[chapterId]/page.tsx
+rename to web/app/read/[chapterId]/page.tsx
+diff --git a/legacy-next/app/search/page.tsx b/web/app/search/page.tsx
+similarity index 100%
+rename from legacy-next/app/search/page.tsx
+rename to web/app/search/page.tsx
+diff --git a/legacy-next/components/chapter-list.tsx b/web/components/chapter-list.tsx
+similarity index 100%
+rename from legacy-next/components/chapter-list.tsx
+rename to web/components/chapter-list.tsx
+diff --git a/legacy-next/components/continue-reading.tsx b/web/components/continue-reading.tsx
+similarity index 100%
+rename from legacy-next/components/continue-reading.tsx
+rename to web/components/continue-reading.tsx
+diff --git a/legacy-next/components/header.tsx b/web/components/header.tsx
+similarity index 97%
+rename from legacy-next/components/header.tsx
+rename to web/components/header.tsx
+index 01dc204..616e5d3 100644
+--- a/legacy-next/components/header.tsx
++++ b/web/components/header.tsx
+@@ -42,11 +42,11 @@ function SearchForm() {
+ export default function Header() {
+   return (
+     <header className="sticky top-0 z-40 border-b border-line bg-ink/90 backdrop-blur">
+       <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+         <Link href="/" className="font-display text-2xl font-semibold uppercase tracking-wide text-paper">
+-          Truyện<span className="text-vermillion">Việt</span>
++          KasLyy<span className="text-vermillion">Dex</span>
+         </Link>
+         <div className="order-3 w-full sm:order-2 sm:w-auto sm:flex-1">
+           <Suspense fallback={<div className="h-9 w-full max-w-md rounded-full bg-panel" />}>
+             <SearchForm />
+           </Suspense>
+@@ -65,6 +65,6 @@ export default function Header() {
+           </a>
+         </nav>
+       </div>
+     </header>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/legacy-next/components/manga-actions.tsx b/web/components/manga-actions.tsx
+similarity index 100%
+rename from legacy-next/components/manga-actions.tsx
+rename to web/components/manga-actions.tsx
+diff --git a/legacy-next/components/manga-card.tsx b/web/components/manga-card.tsx
+similarity index 100%
+rename from legacy-next/components/manga-card.tsx
+rename to web/components/manga-card.tsx
+diff --git a/legacy-next/components/reader.tsx b/web/components/reader.tsx
+similarity index 100%
+rename from legacy-next/components/reader.tsx
+rename to web/components/reader.tsx
+diff --git a/legacy-next/eslint.config.mjs b/web/eslint.config.mjs
+similarity index 100%
+rename from legacy-next/eslint.config.mjs
+rename to web/eslint.config.mjs
+diff --git a/legacy-next/lib/history.ts b/web/lib/history.ts
+similarity index 100%
+rename from legacy-next/lib/history.ts
+rename to web/lib/history.ts
+diff --git a/legacy-next/lib/http.ts b/web/lib/http.ts
+similarity index 100%
+rename from legacy-next/lib/http.ts
+rename to web/lib/http.ts
+diff --git a/legacy-next/lib/mangadex.ts b/web/lib/mangadex.ts
+similarity index 99%
+rename from legacy-next/lib/mangadex.ts
+rename to web/lib/mangadex.ts
+index 8ca6e07..ec8ff46 100644
+--- a/legacy-next/lib/mangadex.ts
++++ b/web/lib/mangadex.ts
+@@ -2,11 +2,11 @@ import { cacheLife } from "next/cache";
+ import { agent, undiciFetch } from "./http";
+ import type { Chapter, MangaSummary } from "./types";
+ 
+ const API = "https://api.mangadex.org";
+ // MangaDex requires an identifying User-Agent for API calls
+-const UA = "TruyenvietReader/1.0 (educational demo)";
++const UA = "KasLyyDexReader/1.0 (educational demo)";
+ 
+ type RawManga = {
+   id: string;
+   attributes: {
+     title?: Record<string, string>;
+@@ -176,6 +176,6 @@ export async function getChapterPages(chapterId: string): Promise<string[]> {
+     baseUrl: string;
+     chapter: { hash: string; data: string[]; dataSaver: string[] };
+   }>(`/at-home/server/${chapterId}`);
+   const files = j.chapter.data.length > 0 ? j.chapter.data : j.chapter.dataSaver;
+   return files.map((f) => `${j.baseUrl}/data/${j.chapter.hash}/${f}`);
+-}
+\ No newline at end of file
++}
+diff --git a/legacy-next/lib/types.ts b/web/lib/types.ts
+similarity index 100%
+rename from legacy-next/lib/types.ts
+rename to web/lib/types.ts
+diff --git a/legacy-next/next-env.d.ts b/web/next-env.d.ts
+similarity index 100%
+rename from legacy-next/next-env.d.ts
+rename to web/next-env.d.ts
+diff --git a/legacy-next/next.config.ts b/web/next.config.ts
+similarity index 100%
+rename from legacy-next/next.config.ts
+rename to web/next.config.ts
+diff --git a/legacy-next/package-lock.json b/web/package-lock.json
+similarity index 99%
+rename from legacy-next/package-lock.json
+rename to web/package-lock.json
+index 65bd63b..682d3b6 100644
+--- a/legacy-next/package-lock.json
++++ b/web/package-lock.json
+@@ -1,13 +1,13 @@
+ {
+-  "name": "truyenviet",
++  "name": "kaslyydex",
+   "version": "0.1.0",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+-      "name": "truyenviet",
++      "name": "kaslyydex",
+       "version": "0.1.0",
+       "dependencies": {
+         "next": "16.4.6",
+         "react": "19.3.0",
+         "react-dom": "19.3.0",
+diff --git a/legacy-next/package.json b/web/package.json
+similarity index 95%
+rename from legacy-next/package.json
+rename to web/package.json
+index 2706d30..97c3235 100644
+--- a/legacy-next/package.json
++++ b/web/package.json
+@@ -1,7 +1,7 @@
+ {
+-  "name": "truyenviet",
++  "name": "kaslyydex",
+   "version": "0.1.0",
+   "private": true,
+   "scripts": {
+     "dev": "next dev",
+     "build": "next build",
+diff --git a/legacy-next/public/file.svg b/web/public/file.svg
+similarity index 100%
+rename from legacy-next/public/file.svg
+rename to web/public/file.svg
+diff --git a/legacy-next/public/globe.svg b/web/public/globe.svg
+similarity index 100%
+rename from legacy-next/public/globe.svg
+rename to web/public/globe.svg
+diff --git a/legacy-next/public/next.svg b/web/public/next.svg
+similarity index 100%
+rename from legacy-next/public/next.svg
+rename to web/public/next.svg
+diff --git a/legacy-next/public/vercel.svg b/web/public/vercel.svg
+similarity index 100%
+rename from legacy-next/public/vercel.svg
+rename to web/public/vercel.svg
+diff --git a/legacy-next/public/window.svg b/web/public/window.svg
+similarity index 100%
+rename from legacy-next/public/window.svg
+rename to web/public/window.svg
+diff --git a/legacy-next/tsconfig.json b/web/tsconfig.json
+similarity index 100%
+rename from legacy-next/tsconfig.json
+rename to web/tsconfig.json

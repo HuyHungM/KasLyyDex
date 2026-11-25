@@ -1,0 +1,2728 @@
+33d4fbb fix: reach new chapters beyond the catalog cap
+ crates/contracts/src/lib.rs                        |   35 +
+ crates/core/src/mangadex.rs                        |  145 ++-
+ crates/server/src/main.rs                          |  127 +++
+ .../sdd/kaslyydex-phase-1-2/task-7-report.md       |   61 ++
+ web/drizzle/0004_notification_feed_cursor.sql      |    4 +
+ web/drizzle/meta/0004_snapshot.json                | 1097 ++++++++++++++++++++
+ web/drizzle/meta/_journal.json                     |    7 +
+ web/lib/contracts.ts                               |   32 +
+ web/lib/db/schema.ts                               |    4 +
+ web/lib/moderation.ts                              |  154 ++-
+ web/package.json                                   |    3 +-
+ web/scripts/community.test.mjs                     |   61 +-
+ web/scripts/database.test.mjs                      |    1 +
+ web/scripts/notification-feed.test.mjs             |  296 ++++++
+ 14 files changed, 1962 insertions(+), 65 deletions(-)
+diff --git a/crates/contracts/src/lib.rs b/crates/contracts/src/lib.rs
+index 8c2027e..a13d414 100644
+--- a/crates/contracts/src/lib.rs
++++ b/crates/contracts/src/lib.rs
+@@ -75,20 +75,32 @@ pub struct ChapterDto {
+ pub struct PagesResponse {
+     pub pages: Vec<String>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct ChaptersResponse {
+     pub vi: Vec<ChapterDto>,
+     pub en: Vec<ChapterDto>,
+ }
+ 
++/// Bounded, continuation-based feed used only by chapter notifications. Unlike
++/// the public chapter list, every published chapter is addressable by offset.
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++pub struct ChapterFeedPage {
++    pub items: Vec<ChapterDto>,
++    pub total: u64,
++    pub offset: u32,
++    pub limit: u32,
++    pub next_offset: Option<u32>,
++    pub partial: bool,
++}
++
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct SearchResponse {
+     pub results: Vec<MangaSummaryDto>,
+     pub total: u64,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct LatestChapterDto {
+     pub id: ChapterId,
+     #[serde(default)]
+@@ -223,20 +235,43 @@ mod tests {
+         ] {
+             assert!(chapters.get(field).is_some(), "missing `{field}`");
+         }
+         let pages: Value = serde_json::to_value(PagesResponse {
+             pages: vec!["/api/content/img?u=x".into()],
+         })
+         .unwrap();
+         assert_eq!(pages, json!({ "pages": ["/api/content/img?u=x"] }));
+     }
+ 
++    #[test]
++    fn notification_feed_page_keeps_continuation_and_partial_flags() {
++        let page = ChapterFeedPage {
++            items: vec![],
++            total: 12_345,
++            offset: 9_900,
++            limit: 500,
++            next_offset: Some(10_400),
++            partial: true,
++        };
++        assert_eq!(
++            serde_json::to_value(page).unwrap(),
++            json!({
++                "items": [],
++                "total": 12345,
++                "offset": 9900,
++                "limit": 500,
++                "next_offset": 10400,
++                "partial": true
++            })
++        );
++    }
++
+     #[test]
+     fn structured_errors_have_stable_nested_envelope() {
+         let error =
+             ApiError::new("VALIDATION_ERROR", "Invalid input").with_detail("field", "title");
+         assert_eq!(
+             serde_json::to_value(ApiErrorEnvelope { error }).unwrap(),
+             json!({
+                 "error": {
+                     "code": "VALIDATION_ERROR",
+                     "message": "Invalid input",
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index a73da9a..2b70e6b 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -1,22 +1,25 @@
+ use contracts::{
+-    ChapterDto, ChaptersResponse, LatestChapterDto, LatestMangaDto, MangaSummaryDto, PagesResponse,
+-    SearchResponse, TagDto,
++    ChapterDto, ChapterFeedPage, ChaptersResponse, LatestChapterDto, LatestMangaDto,
++    MangaSummaryDto, PagesResponse, SearchResponse, TagDto,
+ };
+ use moka::future::Cache;
+ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+ use serde_json::Value;
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+ const API: &str = "https://api.mangadex.org";
+ const LIST_PARAMS: &str = "&includes[]=cover_art&includes[]=author&contentRating[]=safe&contentRating[]=suggestive&hasAvailableChapters=true";
++/// MangaDex rejects offset + limit above 10,000 for collection endpoints.
++const UPSTREAM_OFFSET_LIMIT: u32 = 10_000;
++const NOTIFICATION_FEED_MAX: u32 = 500;
+ 
+ #[derive(Clone)]
+ pub struct Md {
+     pub http: reqwest::Client,
+     api: String,
+     popular: Cache<(), Arc<Vec<MangaSummaryDto>>>,
+     latest: Cache<(), Arc<Vec<LatestMangaDto>>>,
+     search: Cache<String, Arc<SearchResponse>>,
+     manga: Cache<String, Arc<MangaSummaryDto>>,
+     chapters: Cache<String, Arc<ChaptersResponse>>,
+@@ -256,20 +259,79 @@ impl Md {
+         let md = self.clone();
+         self.chapters
+             .try_get_with(id.clone(), async move {
+                 let (vi, en) = futures::join!(md.feed(&id, "vi"), md.feed(&id, "en"));
+                 Ok(Arc::new(ChaptersResponse { vi: vi?, en: en? }))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
++    /// Notification-only feed. Publish-time ordering plus an explicit offset
++    /// continuation reaches chapters past the public list's 2000-item cap.
++    /// `since` is an exclusive ISO publishAt lower bound; `None` asks for the
++    /// newest available publications (first-observation baseline).
++    pub async fn notification_feed(
++        &self,
++        id: &str,
++        lang: &str,
++        since: Option<&str>,
++        offset: u32,
++        limit: u32,
++    ) -> Result<ChapterFeedPage, Err> {
++        if !matches!(lang, "vi" | "en")
++            || limit == 0
++            || limit > NOTIFICATION_FEED_MAX
++            || offset.saturating_add(limit) > UPSTREAM_OFFSET_LIMIT
++            || since.is_some_and(|value| {
++                value.len() > 30
++                    || !value
++                        .chars()
++                        .all(|c| c.is_ascii_digit() || "-:.TZ".contains(c))
++            })
++        {
++            return Err("Tham số feed thông báo không hợp lệ.".into());
++        }
++        let j = self
++            .get(&notification_feed_path(id, lang, since, offset, limit))
++            .await?;
++        let total = j["total"].as_u64().unwrap_or(0);
++        let raw = j["data"].as_array().cloned().unwrap_or_default();
++        let mut items: Vec<ChapterDto> = raw
++            .iter()
++            .filter_map(|chapter| chapter_dto_publish(chapter, lang))
++            .collect();
++        // Upstream does not guarantee id order inside one publish timestamp.
++        items.sort_by(|a, b| {
++            a.publish_at
++                .cmp(&b.publish_at)
++                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
++        });
++        let next_offset = if offset.saturating_add(limit) < UPSTREAM_OFFSET_LIMIT
++            && (offset as u64) + (items.len() as u64) < total
++        {
++            Some(offset + limit)
++        } else {
++            None
++        };
++        let partial = total > UPSTREAM_OFFSET_LIMIT as u64
++            && (offset as u64) + (limit as u64) >= UPSTREAM_OFFSET_LIMIT as u64;
++        Ok(ChapterFeedPage {
++            items,
++            total,
++            offset,
++            limit,
++            next_offset,
++            partial,
++        })
++    }
++
+     async fn feed(&self, id: &str, lang: &str) -> Result<Vec<ChapterDto>, Err> {
+         let mut raw: Vec<Value> = Vec::new();
+         let mut offset = 0u32;
+         let mut total = u64::MAX;
+         // feeds paginate at 500; cap at 2000 chapters per manga
+         while (offset as u64) < total && offset < 2000 {
+             let j = self
+                 .get(&format!(
+                     "/manga/{id}/feed?limit=500&offset={offset}&translatedLanguage[]={lang}&order[chapter]=asc&includes[]=scanlation_group"
+                 ))
+@@ -360,21 +422,47 @@ fn tag_dto(tag: &Value) -> Option<TagDto> {
+     Some(TagDto {
+         id: id.to_owned(),
+         name: pick(&tag["attributes"]["name"]),
+         group: tag["attributes"]["group"]
+             .as_str()
+             .unwrap_or_default()
+             .to_owned(),
+     })
+ }
+ 
++fn notification_feed_path(
++    id: &str,
++    lang: &str,
++    since: Option<&str>,
++    offset: u32,
++    limit: u32,
++) -> String {
++    let order = if since.is_some() { "asc" } else { "desc" };
++    let mut path = format!(
++        "/chapter?limit={limit}&offset={offset}&manga={id}&translatedLanguage[]={lang}&order[publishAt]={order}"
++    );
++    if let Some(since) = since {
++        let encoded = utf8_percent_encode(since, NON_ALPHANUMERIC);
++        path.push_str(&format!("&publishAtSince={encoded}"));
++    }
++    path
++}
++
+ fn chapter_dto(chapter: &Value, lang: &str) -> Option<ChapterDto> {
++    chapter_dto_impl(chapter, lang, false)
++}
++
++fn chapter_dto_publish(chapter: &Value, lang: &str) -> Option<ChapterDto> {
++    chapter_dto_impl(chapter, lang, true)
++}
++
++fn chapter_dto_impl(chapter: &Value, lang: &str, publish_first: bool) -> Option<ChapterDto> {
+     let id = chapter["id"].as_str().filter(|id| !id.trim().is_empty())?;
+     let attributes = &chapter["attributes"];
+     let group = chapter["relationships"]
+         .as_array()
+         .map(|relationships| {
+             relationships
+                 .iter()
+                 .filter(|relationship| relationship["type"] == "scanlation_group")
+                 .filter_map(|relationship| relationship["attributes"]["name"].as_str())
+                 .collect::<Vec<_>>()
+@@ -385,25 +473,31 @@ fn chapter_dto(chapter: &Value, lang: &str) -> Option<ChapterDto> {
+         id: id.into(),
+         chapter: attributes["chapter"].as_str().map(str::to_owned),
+         volume: attributes["volume"].as_str().map(str::to_owned),
+         title: attributes["title"].as_str().unwrap_or_default().to_owned(),
+         lang: attributes["translatedLanguage"]
+             .as_str()
+             .unwrap_or(lang)
+             .to_owned(),
+         pages: attributes["pages"].as_u64().unwrap_or(0),
+         external_url: attributes["externalUrl"].as_str().map(str::to_owned),
+-        publish_at: attributes["readableAt"]
+-            .as_str()
+-            .or(attributes["publishAt"].as_str())
+-            .unwrap_or_default()
+-            .to_owned(),
++        publish_at: if publish_first {
++            attributes["publishAt"]
++                .as_str()
++                .or(attributes["readableAt"].as_str())
++        } else {
++            attributes["readableAt"]
++                .as_str()
++                .or(attributes["publishAt"].as_str())
++        }
++        .unwrap_or_default()
++        .to_owned(),
+         group,
+     })
+ }
+ 
+ fn summary(m: &Value) -> Option<MangaSummaryDto> {
+     let id = m["id"].as_str().filter(|id| !id.trim().is_empty())?;
+     let a = &m["attributes"];
+     let rels = m["relationships"].as_array().cloned().unwrap_or_default();
+     let cover = rels
+         .iter()
+@@ -753,20 +847,57 @@ mod tests {
+             }
+         });
+         let encoded = serde_json::to_value(summary(&manga).unwrap()).unwrap();
+         assert_eq!(encoded["tag_ids"], json!(["tag-a"]));
+         assert_eq!(
+             encoded["tags"],
+             json!(["Action", "Empty", "Blank", "Non-string"])
+         );
+     }
+ 
++    #[test]
++    fn notification_feed_path_uses_publish_order_and_encoded_continuation() {
++        let baseline = notification_feed_path("m1", "vi", None, 0, 100);
++        assert_eq!(
++            baseline,
++            "/chapter?limit=100&offset=0&manga=m1&translatedLanguage[]=vi&order[publishAt]=desc"
++        );
++        let resumed = notification_feed_path("m1", "en", Some("2026-07-01T00:00:00Z"), 300, 100);
++        assert_eq!(
++            resumed,
++            "/chapter?limit=100&offset=300&manga=m1&translatedLanguage[]=en&order[publishAt]=asc&publishAtSince=2026%2D07%2D01T00%3A00%3A00Z"
++        );
++    }
++
++    #[test]
++    fn notification_feed_dto_uses_publish_at_not_readable_at() {
++        let chapter = json!({
++            "id": "c1",
++            "attributes": {
++                "publishAt": "2026-07-01T00:00:00Z",
++                "readableAt": "2026-07-02T00:00:00Z",
++                "translatedLanguage": "vi",
++                "pages": 1
++            },
++            "relationships": []
++        });
++        assert_eq!(
++            chapter_dto_publish(&chapter, "vi").unwrap().publish_at,
++            "2026-07-01T00:00:00Z"
++        );
++        assert_eq!(
++            chapter_dto(&chapter, "vi").unwrap().publish_at,
++            "2026-07-02T00:00:00Z",
++            "the public list keeps its readableAt contract"
++        );
++    }
++
+     #[test]
+     fn latest_groups_only_readable_chapters_with_language() {
+         let chapter = |id, pages, external, manga| {
+             json!({
+                 "id": id, "attributes": {"pages": pages, "externalUrl": external,
+                 "translatedLanguage": "vi"}, "relationships": [{"type": "manga", "id": manga}]
+             })
+         };
+         let feed = json!({"data": [chapter("c0", 1, Some("https://example.com"), "m0"),
+             chapter("c1", 2, None, "m1"), chapter("c2", 2, None, "m1"),
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index 6b50e92..a99aecb 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -25,20 +25,29 @@ fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Err
+ 
+ fn json_cached<T: Serialize>(v: T, secs: u32) -> Response {
+     let mut res = Json(v).into_response();
+     res.headers_mut().insert(
+         header::CACHE_CONTROL,
+         HeaderValue::from_str(&format!("public, max-age={secs}")).unwrap(),
+     );
+     res
+ }
+ 
++fn json_no_store<T: Serialize>(v: T) -> Response {
++    let mut res = Json(v).into_response();
++    res.headers_mut().insert(
++        header::CACHE_CONTROL,
++        HeaderValue::from_static("private, no-store"),
++    );
++    res
++}
++
+ async fn popular(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.popular().await.map_err(bad)?, 60))
+ }
+ 
+ async fn latest(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.latest().await.map_err(bad)?, 60))
+ }
+ 
+ async fn search(
+     State(md): State<Md>,
+@@ -100,20 +109,74 @@ fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
+     tags.dedup();
+     Ok(SearchQuery {
+         q: query.to_owned(),
+         page,
+         tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
+         status: status.map(str::to_owned),
+         sort: sort.to_owned(),
+     })
+ }
+ 
++#[derive(Debug)]
++struct NotificationFeedQuery {
++    lang: String,
++    since: Option<String>,
++    offset: u32,
++    limit: u32,
++}
++
++fn parse_notification_feed_query(q: HashMap<String, String>) -> Result<NotificationFeedQuery, Err> {
++    let invalid = || {
++        api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Tham số feed thông báo không hợp lệ.",
++        )
++    };
++    let lang = q.get("lang").map(String::as_str).unwrap_or("vi");
++    if !matches!(lang, "vi" | "en") {
++        return Err(invalid());
++    }
++    let limit = q
++        .get("limit")
++        .map(|raw| raw.parse::<u32>().ok())
++        .unwrap_or(Some(500))
++        .filter(|value| *value >= 1 && *value <= 500)
++        .ok_or_else(invalid)?;
++    let offset = q
++        .get("offset")
++        .map(|raw| raw.parse::<u32>().ok())
++        .unwrap_or(Some(0))
++        .filter(|value| value.saturating_add(limit) <= 10_000)
++        .ok_or_else(invalid)?;
++    let since = match q.get("since").map(|value| value.trim()) {
++        None | Some("") => None,
++        Some(raw) => {
++            let value = raw.to_owned();
++            if value.len() > 30
++                || !value
++                    .chars()
++                    .all(|c| c.is_ascii_digit() || "-:.TZ".contains(c))
++            {
++                return Err(invalid());
++            }
++            Some(value)
++        }
++    };
++    Ok(NotificationFeedQuery {
++        lang: lang.to_owned(),
++        since,
++        offset,
++        limit,
++    })
++}
++
+ async fn tags(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.tags().await.map_err(bad)?, 86_400))
+ }
+ 
+ async fn rank(
+     State(md): State<Md>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+     let kind = q.get("kind").map(String::as_str).unwrap_or("follows");
+     if !matches!(kind, "follows" | "rating") {
+@@ -141,20 +204,46 @@ async fn chapters(State(md): State<Md>, Path(id): Path<String>) -> Result<Respon
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+     Ok(json_cached(md.chapters(&id).await.map_err(bad)?, 60))
+ }
+ 
++async fn notification_feed(
++    State(md): State<Md>,
++    Path(id): Path<String>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Result<Response, Err> {
++    if !is_uuid(&id) {
++        return Err(api_error(
++            StatusCode::BAD_REQUEST,
++            "VALIDATION_ERROR",
++            "Mã truyện không hợp lệ.",
++        ));
++    }
++    let query = parse_notification_feed_query(q)?;
++    let page = md
++        .notification_feed(
++            &id,
++            &query.lang,
++            query.since.as_deref(),
++            query.offset,
++            query.limit,
++        )
++        .await
++        .map_err(bad)?;
++    Ok(json_no_store(page))
++}
++
+ async fn pages(State(md): State<Md>, Path(id): Path<String>) -> Result<Response, Err> {
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã chương không hợp lệ.",
+         ));
+     }
+     Ok(json_cached(md.pages(&id).await.map_err(bad)?, 120))
+ }
+@@ -226,20 +315,24 @@ async fn static_cache_headers(
+ /// below for existing native/UI clients; both share these handlers and state.
+ fn content_routes() -> Router<Md> {
+     Router::new()
+         .route("/api/content/popular", get(popular))
+         .route("/api/content/latest", get(latest))
+         .route("/api/content/search", get(search))
+         .route("/api/content/tags", get(tags))
+         .route("/api/content/rank", get(rank))
+         .route("/api/content/manga/{id}", get(manga))
+         .route("/api/content/manga/{id}/chapters", get(chapters))
++        .route(
++            "/api/content/notifications/feed/{id}",
++            get(notification_feed),
++        )
+         .route("/api/content/chapter/{id}/pages", get(pages))
+         .route("/api/content/img", get(img))
+ }
+ 
+ #[tokio::main]
+ async fn main() {
+     let md = Md::new(manga_core::dns::PublicDns::client());
+     let dist = std::env::var("DIST_DIR").unwrap_or_else(|_| "crates/ui/dist".into());
+     let spa = ServeDir::new(&dist).fallback(ServeFile::new(format!("{dist}/index.html")));
+ 
+@@ -299,20 +392,54 @@ mod tests {
+         let query = parse_search_query(HashMap::from([
+             ("tags".into(), id.into()),
+             ("sort".into(), "rating".into()),
+         ]))
+         .unwrap();
+         assert_eq!(query.tags, [id]);
+         assert_eq!(query.sort, "rating");
+         assert!(query.q.is_empty());
+     }
+ 
++    #[test]
++    fn notification_feed_query_bounds_language_limit_offset_and_since() {
++        let parsed = parse_notification_feed_query(HashMap::from([
++            ("lang".into(), "vi".into()),
++            ("limit".into(), "100".into()),
++            ("offset".into(), "300".into()),
++            ("since".into(), "2026-07-01T00:00:00Z".into()),
++        ]))
++        .unwrap();
++        assert_eq!(parsed.lang, "vi");
++        assert_eq!(parsed.limit, 100);
++        assert_eq!(parsed.offset, 300);
++        assert_eq!(parsed.since.as_deref(), Some("2026-07-01T00:00:00Z"));
++
++        for (name, value) in [
++            ("lang", "fr"),
++            ("limit", "0"),
++            ("limit", "501"),
++            ("offset", "9901"),
++            ("since", "2026-07-01T00:00:00Z; DROP TABLE x"),
++        ] {
++            assert_eq!(
++                parse_notification_feed_query(HashMap::from([
++                    ("limit".into(), "100".into()),
++                    (name.into(), value.into()),
++                ]))
++                .unwrap_err()
++                .0,
++                StatusCode::BAD_REQUEST,
++                "{name}={value}"
++            );
++        }
++    }
++
+     #[tokio::test]
+     async fn content_handlers_reject_invalid_ids_before_any_upstream_call() {
+         let md = Md::new(manga_core::dns::PublicDns::client());
+         for (result, message) in [
+             (
+                 manga(State(md.clone()), Path("not-a-uuid".into())).await,
+                 "manga",
+             ),
+             (
+                 chapters(State(md.clone()), Path("google|opaque".into())).await,
+diff --git a/web/drizzle/0004_notification_feed_cursor.sql b/web/drizzle/0004_notification_feed_cursor.sql
+new file mode 100644
+index 0000000..2797c2a
+--- /dev/null
++++ b/web/drizzle/0004_notification_feed_cursor.sql
+@@ -0,0 +1,4 @@
++ALTER TABLE "notification_cursors" ADD COLUMN "scan_publish" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
++ALTER TABLE "notification_cursors" ADD COLUMN "scan_offset" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
++-- Existing cursors already consumed everything up to last_publish; continue from there.
++UPDATE "notification_cursors" SET "scan_publish" = "last_publish", "scan_offset" = 0;
+diff --git a/web/drizzle/meta/0004_snapshot.json b/web/drizzle/meta/0004_snapshot.json
+new file mode 100644
+index 0000000..c742ce6
+--- /dev/null
++++ b/web/drizzle/meta/0004_snapshot.json
+@@ -0,0 +1,1097 @@
++{
++  "id": "c6303dec-bbd8-4e1b-ba84-ca02bbf4f5b9",
++  "prevId": "a7466ec2-b728-492c-8652-89dc84a83c37",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.action_events": {
++      "name": "action_events",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "action": {
++          "name": "action",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "occurred_at": {
++          "name": "occurred_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {
++        "action_events_window_idx": {
++          "name": "action_events_window_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "action",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "occurred_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "action_events_user_id_profiles_user_id_fk": {
++          "name": "action_events_user_id_profiles_user_id_fk",
++          "tableFrom": "action_events",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.chapter_progress": {
++      "name": "chapter_progress",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "chapter_id": {
++          "name": "chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "chapter": {
++          "name": "chapter",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "page": {
++          "name": "page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "max_page": {
++          "name": "max_page",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "total": {
++          "name": "total",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_read_at": {
++          "name": "last_read_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "chapter_progress_user_recent_idx": {
++          "name": "chapter_progress_user_recent_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "last_read_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "chapter_progress_user_id_profiles_user_id_fk": {
++          "name": "chapter_progress_user_id_profiles_user_id_fk",
++          "tableFrom": "chapter_progress",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "chapter_progress_user_id_manga_id_chapter_id_language_pk": {
++          "name": "chapter_progress_user_id_manga_id_chapter_id_language_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "chapter_id",
++            "language"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.comment_reports": {
++      "name": "comment_reports",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "comment_id": {
++          "name": "comment_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "reason": {
++          "name": "reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'open'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "resolved_at": {
++          "name": "resolved_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "resolved_by": {
++          "name": "resolved_by",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {
++        "comment_reports_open_key": {
++          "name": "comment_reports_open_key",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "comment_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"comment_reports\".\"status\" = 'open'",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "comment_reports_queue_idx": {
++          "name": "comment_reports_queue_idx",
++          "columns": [
++            {
++              "expression": "status",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "comment_reports_user_id_profiles_user_id_fk": {
++          "name": "comment_reports_user_id_profiles_user_id_fk",
++          "tableFrom": "comment_reports",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "comment_reports_comment_id_comments_id_fk": {
++          "name": "comment_reports_comment_id_comments_id_fk",
++          "tableFrom": "comment_reports",
++          "tableTo": "comments",
++          "columnsFrom": [
++            "comment_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comment_reports_status_check": {
++          "name": "comment_reports_status_check",
++          "value": "\"comment_reports\".\"status\" in ('open', 'resolved', 'dismissed')"
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.comment_threads": {
++      "name": "comment_threads",
++      "schema": "",
++      "columns": {
++        "target_type": {
++          "name": "target_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_id": {
++          "name": "target_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "locked": {
++          "name": "locked",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "locked_by": {
++          "name": "locked_by",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "comment_threads_target_type_target_id_pk": {
++          "name": "comment_threads_target_type_target_id_pk",
++          "columns": [
++            "target_type",
++            "target_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comment_threads_target_type_check": {
++          "name": "comment_threads_target_type_check",
++          "value": "\"comment_threads\".\"target_type\" in ('manga', 'chapter')"
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.comments": {
++      "name": "comments",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_type": {
++          "name": "target_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "target_id": {
++          "name": "target_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "parent_id": {
++          "name": "parent_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "body": {
++          "name": "body",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "spoiler": {
++          "name": "spoiler",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'visible'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "comments_thread_idx": {
++          "name": "comments_thread_idx",
++          "columns": [
++            {
++              "expression": "target_type",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "target_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "comments_parent_idx": {
++          "name": "comments_parent_idx",
++          "columns": [
++            {
++              "expression": "parent_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "comments_user_id_profiles_user_id_fk": {
++          "name": "comments_user_id_profiles_user_id_fk",
++          "tableFrom": "comments",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {
++        "comments_status_check": {
++          "name": "comments_status_check",
++          "value": "\"comments\".\"status\" in ('visible', 'hidden', 'removed')"
++        },
++        "comments_target_type_check": {
++          "name": "comments_target_type_check",
++          "value": "\"comments\".\"target_type\" in ('manga', 'chapter')"
++        },
++        "comments_no_self_parent": {
++          "name": "comments_no_self_parent",
++          "value": "\"comments\".\"parent_id\" is null or \"comments\".\"parent_id\" <> \"comments\".\"id\""
++        }
++      },
++      "isRLSEnabled": false
++    },
++    "public.library_entries": {
++      "name": "library_entries",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "cover_file": {
++          "name": "cover_file",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "lang": {
++          "name": "lang",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vi'"
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'reading'"
++        },
++        "followed_at": {
++          "name": "followed_at",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_chapter_id": {
++          "name": "last_chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "last_read_publish": {
++          "name": "last_read_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 1
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "library_entries_user_id_profiles_user_id_fk": {
++          "name": "library_entries_user_id_profiles_user_id_fk",
++          "tableFrom": "library_entries",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "library_entries_user_id_manga_id_pk": {
++          "name": "library_entries_user_id_manga_id_pk",
++          "columns": [
++            "user_id",
++            "manga_id"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.notification_cursors": {
++      "name": "notification_cursors",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "manga_id": {
++          "name": "manga_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "language": {
++          "name": "language",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_publish": {
++          "name": "last_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "last_chapter_id": {
++          "name": "last_chapter_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "''"
++        },
++        "scan_publish": {
++          "name": "scan_publish",
++          "type": "bigint",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "scan_offset": {
++          "name": "scan_offset",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "notification_cursors_user_id_profiles_user_id_fk": {
++          "name": "notification_cursors_user_id_profiles_user_id_fk",
++          "tableFrom": "notification_cursors",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "notification_cursors_user_id_manga_id_language_pk": {
++          "name": "notification_cursors_user_id_manga_id_language_pk",
++          "columns": [
++            "user_id",
++            "manga_id",
++            "language"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.notifications": {
++      "name": "notifications",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "event_key": {
++          "name": "event_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "body": {
++          "name": "body",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "href": {
++          "name": "href",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "read_at": {
++          "name": "read_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "notifications_event_key": {
++          "name": "notifications_event_key",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "event_key",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        },
++        "notifications_inbox_idx": {
++          "name": "notifications_inbox_idx",
++          "columns": [
++            {
++              "expression": "user_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "created_at",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": false,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "notifications_user_id_profiles_user_id_fk": {
++          "name": "notifications_user_id_profiles_user_id_fk",
++          "tableFrom": "notifications",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.profiles": {
++      "name": "profiles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "username": {
++          "name": "username",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "display_name": {
++          "name": "display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "avatar_url": {
++          "name": "avatar_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "total_xp": {
++          "name": "total_xp",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "profiles_username_key": {
++          "name": "profiles_username_key",
++          "columns": [
++            {
++              "expression": "username",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.reader_preferences": {
++      "name": "reader_preferences",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "mode": {
++          "name": "mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'vertical'"
++        },
++        "fit": {
++          "name": "fit",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": true
++        },
++        "bg": {
++          "name": "bg",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'light'"
++        },
++        "speed": {
++          "name": "speed",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 3
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "reader_preferences_user_id_profiles_user_id_fk": {
++          "name": "reader_preferences_user_id_profiles_user_id_fk",
++          "tableFrom": "reader_preferences",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.user_roles": {
++      "name": "user_roles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "role": {
++          "name": "role",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "user_roles_user_id_profiles_user_id_fk": {
++          "name": "user_roles_user_id_profiles_user_id_fk",
++          "tableFrom": "user_roles",
++          "tableTo": "profiles",
++          "columnsFrom": [
++            "user_id"
++          ],
++          "columnsTo": [
++            "user_id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "user_roles_user_id_role_pk": {
++          "name": "user_roles_user_id_role_pk",
++          "columns": [
++            "user_id",
++            "role"
++          ]
++        }
++      },
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {},
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/web/drizzle/meta/_journal.json b/web/drizzle/meta/_journal.json
+index f5be5f6..b3fa566 100644
+--- a/web/drizzle/meta/_journal.json
++++ b/web/drizzle/meta/_journal.json
+@@ -22,13 +22,20 @@
+       "when": 1795240987328,
+       "tag": "0002_comments_moderation",
+       "breakpoints": true
+     },
+     {
+       "idx": 3,
+       "version": "7",
+       "when": 1795243579533,
+       "tag": "0003_community_cursor_scrub",
+       "breakpoints": true
++    },
++    {
++      "idx": 4,
++      "version": "7",
++      "when": 1795245238465,
++      "tag": "0004_notification_feed_cursor",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index d84b930..ec0a2ba 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -116,20 +116,38 @@ export type ChapterDto = {
+   title: string;
+   lang: string;
+   pages: number;
+   external_url: string | null;
+   publish_at: string;
+   group: string;
+ };
+ 
+ export type PagesResponse = { pages: string[] };
+ 
++/// Bounded continuation page for chapter notifications. `partial` is true when
++/// MangaDex's 10,000 offset limit prevents reaching older candidates.
++export type ChapterFeedPageDto = {
++  items: ChapterDto[];
++  total: number;
++  offset: number;
++  limit: number;
++  next_offset: number | null;
++  partial: boolean;
++};
++
++export type NotificationFeedParams = {
++  lang: "vi" | "en";
++  since?: string | null;
++  offset?: number;
++  limit?: number;
++};
++
+ // Task 7 browser-safe community DTOs. Bodies are plain text; hidden/removed
+ // bodies are null outside the authenticated moderator queue.
+ export type CommentStatus = "visible" | "hidden" | "removed";
+ 
+ export type CommentDto = {
+   id: string;
+   targetType: "manga" | "chapter";
+   targetId: string;
+   parentId: string | null;
+   userId: string;
+@@ -178,20 +196,21 @@ export type ThreadDto = {
+ };
+ 
+ export type ContentEndpoint =
+   | "latest"
+   | "popular"
+   | "tags"
+   | "rank"
+   | "search"
+   | "manga"
+   | "chapter"
++  | "notifications"
+   | "img";
+ 
+ export function contentPath(endpoint: ContentEndpoint, ...segments: string[]): string {
+   const tail = segments.map(encodeURIComponent).join("/");
+   return `/api/content/${endpoint}${tail ? `/${tail}` : ""}`;
+ }
+ 
+ export class ContentClientError extends Error {
+   readonly status: number;
+   readonly body: ApiErrorEnvelope | null;
+@@ -249,20 +268,21 @@ export function searchQuery(params: SearchParams): string {
+ }
+ 
+ export type ContentClient = {
+   latest(signal?: AbortSignal): Promise<LatestMangaDto[]>;
+   popular(signal?: AbortSignal): Promise<MangaSummaryDto[]>;
+   tags(signal?: AbortSignal): Promise<TagDto[]>;
+   rank(kind: "follows" | "rating", signal?: AbortSignal): Promise<MangaSummaryDto[]>;
+   search(params: SearchParams, signal?: AbortSignal): Promise<SearchResponse>;
+   manga(id: string, signal?: AbortSignal): Promise<MangaSummaryDto>;
+   chapters(id: string, signal?: AbortSignal): Promise<ChaptersResponse>;
++  notificationFeed(id: string, params: NotificationFeedParams, signal?: AbortSignal): Promise<ChapterFeedPageDto>;
+   pages(chapterId: string, signal?: AbortSignal): Promise<PagesResponse>;
+ };
+ 
+ export function createContentClient(origin = "/api/content"): ContentClient {
+   const root = origin.endsWith("/api/content")
+     ? origin.slice(0, -"/api/content".length)
+     : origin.replace(/\/$/, "");
+ 
+   async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+     const res = await fetch(`${root}${path}`, { signal, cache: "no-store" });
+@@ -281,16 +301,28 @@ export function createContentClient(origin = "/api/content"): ContentClient {
+     ),
+     search: (params, signal) => get<SearchResponse>(
+       `${contentPath("search")}${searchQuery(params)}`,
+       signal,
+     ),
+     manga: (id, signal) => get<MangaSummaryDto>(contentPath("manga", id), signal),
+     chapters: (id, signal) => get<ChaptersResponse>(
+       contentPath("manga", id, "chapters"),
+       signal,
+     ),
++    notificationFeed: (id, params, signal) => {
++      const query = new URLSearchParams();
++      query.set("lang", params.lang);
++      if (params.since) query.set("since", params.since);
++      if (params.offset !== undefined) query.set("offset", String(params.offset));
++      if (params.limit !== undefined) query.set("limit", String(params.limit));
++      const encoded = query.toString();
++      return get<ChapterFeedPageDto>(
++        `${contentPath("notifications", "feed", id)}${encoded ? `?${encoded}` : ""}`,
++        signal,
++      );
++    },
+     pages: async (chapterId, signal) => {
+       const result = await get<PagesResponse>(contentPath("chapter", chapterId, "pages"), signal);
+       return { pages: normalizePageUrls(result.pages ?? []) };
+     },
+   };
+ }
+diff --git a/web/lib/db/schema.ts b/web/lib/db/schema.ts
+index 4d22ea8..634bd33 100644
+--- a/web/lib/db/schema.ts
++++ b/web/lib/db/schema.ts
+@@ -134,20 +134,24 @@ export const notifications = pgTable("notifications", {
+ ]);
+ 
+ export const notificationCursors = pgTable("notification_cursors", {
+   userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+   mangaId: text("manga_id").notNull(),
+   language: text("language").notNull(),
+   lastPublish: bigint("last_publish", { mode: "number" }).notNull(),
+   // Composite cursor component: legacy rows keep '' and are re-evaluated for
+   // chapters sharing the stored publish time; event keys dedupe the repeat.
+   lastChapterId: text("last_chapter_id").notNull().default(""),
++  // Continuation state for the bounded notification feed. `scan_publish` is the
++  // exclusive since bound, `scan_offset` walks its page within one timestamp.
++  scanPublish: bigint("scan_publish", { mode: "number" }).notNull().default(0),
++  scanOffset: integer("scan_offset").notNull().default(0),
+   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+ }, (table) => [primaryKey({ columns: [table.userId, table.mangaId, table.language] })]);
+ 
+ // Durable, sliding-window counters. pg_advisory_xact_lock in the service keeps
+ // concurrent requests for one user/action from racing past the limit.
+ export const actionEvents = pgTable("action_events", {
+   id: text("id").primaryKey(),
+   userId: text("user_id").notNull().references(() => profiles.userId, { onDelete: "cascade" }),
+   action: text("action").notNull(),
+   occurredAt: bigint("occurred_at", { mode: "number" }).notNull(),
+diff --git a/web/lib/moderation.ts b/web/lib/moderation.ts
+index 7b56bf6..2888da5 100644
+--- a/web/lib/moderation.ts
++++ b/web/lib/moderation.ts
+@@ -18,20 +18,22 @@ type CommentTargetType = "manga" | "chapter";
+ // Transactions from `db.transaction()` have no `$client`; every service call
+ // runs unchanged on the pooled database or inside that transaction.
+ type Db = Omit<AppDatabase, "$client">;
+ 
+ const COMMENT_LIMIT = 5;
+ const COMMENT_WINDOW_MS = 60_000;
+ const REPORT_LIMIT = 10;
+ const REPORT_WINDOW_MS = 3_600_000;
+ const LIBRARY_SCAN_LIMIT = 20;
+ const CHAPTERS_PER_MANGA = 3;
++const NOTIFICATION_FEED_LIMIT = 100;
++const UPSTREAM_OFFSET_LIMIT = 10_000;
+ const MAX_CHAPTER_AGE_MS = 5 * 60_000;
+ // Neutral by construction: no reply body can survive moderation via the inbox.
+ const REPLY_NOTIFICATION_BODY = "Có phản hồi mới trong bình luận. Mở bình luận để xem nội dung.";
+ 
+ function date(ms: number): Date {
+   return new Date(Number.isFinite(ms) ? ms : Date.now());
+ }
+ 
+ function ms(value: Date | null): number | null {
+   return value ? value.getTime() : null;
+@@ -550,94 +552,166 @@ export async function readNotifications(
+     .returning({ id: tables.notifications.id });
+   return result.length;
+ }
+ 
+ function parsePublish(value: string): number | null {
+   if (typeof value !== "string") return null;
+   const parsed = Date.parse(value);
+   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+ }
+ 
++type FeedCandidate = { id: string; published: number };
++
++// Raw string comparison, not localeCompare: the continuation is persisted and
++// must not depend on ICU/locale behaviour between workers.
++function compareCandidates(a: FeedCandidate, b: FeedCandidate): number {
++  if (a.published !== b.published) return a.published - b.published;
++  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
++}
++
++function capOffset(offset: number): number {
++  return Math.min(Math.max(0, offset), UPSTREAM_OFFSET_LIMIT - NOTIFICATION_FEED_LIMIT);
++}
++
+ /// On-demand only: no background worker is started or implied. The first
+-/// observed publish time for a followed manga is a baseline, never a batch of
+-/// historic "new chapter" notifications.
++/// observation baselines the newest published chapter; later refreshes drain
++/// older unseen candidates through a bounded MangaDex continuation.
+ export async function refreshFollowedChapters(
+   db: Db,
+   userId: string,
+   content: ContentClient,
+   now: number,
+-): Promise<{ checked: number; created: number; skipped: boolean }> {
++): Promise<{ checked: number; created: number; skipped: boolean; partial: boolean }> {
+   return db.transaction(async (tx) => {
+     const acquired = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${'chapter-refresh:' + userId})) as acquired`);
+     const result = acquired as unknown as { rows?: Array<{ acquired: boolean }> };
+     const rows = result.rows ?? [];
+-    if (rows[0]?.acquired === false) return { checked: 0, created: 0, skipped: true };
++    if (rows[0]?.acquired === false) {
++      return { checked: 0, created: 0, skipped: true, partial: false };
++    }
+ 
+     const followed = await tx.select({
+       mangaId: tables.libraryEntries.mangaId,
+       title: tables.libraryEntries.title,
+     }).from(tables.libraryEntries)
+       .where(and(eq(tables.libraryEntries.userId, userId), ne(tables.libraryEntries.status, "dropped")))
+       .orderBy(desc(tables.libraryEntries.followedAt))
+       .limit(LIBRARY_SCAN_LIMIT);
+ 
+     let created = 0;
++    let partial = false;
+     for (const entry of followed) {
+-      let chapters;
+-      try {
+-        chapters = await content.chapters(entry.mangaId);
+-      } catch {
+-        continue;
+-      }
+       for (const language of ["vi", "en"] as const) {
+-        const candidates = (chapters[language] ?? [])
+-          .map((item) => ({ item, published: parsePublish(item.publish_at) }))
+-          .filter((value): value is { item: typeof value.item; published: number } =>
+-            value.published !== null && value.published <= now + MAX_CHAPTER_AGE_MS)
+-          // Total order: publish time first, then opaque chapter id. Equal
+-          // timestamps can never hide a later id behind a coarse watermark.
+-          .sort((a, b) => a.published - b.published || a.item.id.localeCompare(b.item.id));
+-        if (candidates.length === 0) continue;
+-        const newest = candidates.at(-1)!;
+         const cursorWhere = and(
+           eq(tables.notificationCursors.userId, userId),
+           eq(tables.notificationCursors.mangaId, entry.mangaId),
+           eq(tables.notificationCursors.language, language),
+         );
+-        const existing = await tx.select().from(tables.notificationCursors).where(cursorWhere).limit(1);
+-        if (!existing[0]) {
++        const existing = (await tx.select().from(tables.notificationCursors).where(cursorWhere).limit(1))[0];
++
++        if (!existing) {
++          let page;
++          try {
++            // Descending publication order reaches the latest chapter even in a
++            // catalog far past the old 2000-item list cap.
++            page = await content.notificationFeed(entry.mangaId, {
++              lang: language, offset: 0, limit: NOTIFICATION_FEED_LIMIT,
++            });
++          } catch {
++            continue;
++          }
++          if (page.partial) partial = true;
++          const fresh = page.items
++            .map((item) => ({ id: item.id, published: parsePublish(item.publish_at) }))
++            .filter((value): value is FeedCandidate => value.published !== null
++              && value.published <= now + MAX_CHAPTER_AGE_MS)
++            .sort(compareCandidates)
++            .at(-1);
++          if (!fresh) continue;
+           await tx.insert(tables.notificationCursors).values({
+             userId, mangaId: entry.mangaId, language,
+-            lastPublish: newest.published, lastChapterId: newest.item.id, updatedAt: date(now),
++            lastPublish: fresh.published, lastChapterId: fresh.id,
++            scanPublish: fresh.published, scanOffset: 0, updatedAt: date(now),
+           });
+           continue;
+         }
+-        const cursorPublish = existing[0].lastPublish;
+-        // Legacy rows have '' (migration default): same-timestamp chapters are
+-        // re-evaluated once, but event-key uniqueness prevents duplicates.
+-        const cursorId = existing[0].lastChapterId ?? "";
+-        const pending = candidates
+-          .filter((value) => value.published > cursorPublish
+-            || (value.published === cursorPublish && value.item.id > cursorId))
+-          .slice(0, CHAPTERS_PER_MANGA);
+-        if (pending.length === 0) continue;
+-        for (const { item } of pending) {
++
++        const offset = capOffset(existing.scanOffset);
++        const since = new Date(existing.scanPublish).toISOString();
++        let page;
++        try {
++          page = await content.notificationFeed(entry.mangaId, {
++            lang: language, since, offset, limit: NOTIFICATION_FEED_LIMIT,
++          });
++        } catch {
++          // An upstream failure never moves the persisted continuation.
++          continue;
++        }
++        if (page.partial || (page.total > UPSTREAM_OFFSET_LIMIT
++          && offset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT)) partial = true;
++
++        const decorated = page.items.map((item) => {
++          const published = parsePublish(item.publish_at);
++          const valid = published !== null && published <= now + MAX_CHAPTER_AGE_MS;
++          return valid
++            ? { id: item.id, published: published!, valid: true as const }
++            : { id: item.id, published: published ?? 0, valid: false as const };
++        });
++        const cursor: FeedCandidate = { id: existing.lastChapterId ?? "", published: existing.lastPublish };
++        const candidates = decorated
++          .filter((value): value is FeedCandidate & { valid: true } =>
++            value.valid && compareCandidates(value, cursor) > 0)
++          .sort(compareCandidates);
++        if (candidates.length === 0) {
++          // Only skip rows that cannot become notifications (invalid/duplicate).
++          if (page.items.length > 0) {
++            await tx.update(tables.notificationCursors).set({
++              scanOffset: capOffset(offset + page.items.length), updatedAt: date(now),
++            }).where(cursorWhere);
++          }
++          continue;
++        }
++
++        const pending = candidates.slice(0, CHAPTERS_PER_MANGA);
++        for (const candidate of pending) {
+           const emitted = await emitNotification(tx, {
+             userId,
+             type: "new_chapter",
+-            eventKey: `chapter:${userId}:${entry.mangaId}:${item.id}:${language}`,
++            eventKey: `chapter:${userId}:${entry.mangaId}:${candidate.id}:${language}`,
+             title: "Chương mới",
+-            body: `${entry.title} — ${item.chapter ?? "chương mới"} (${language})`,
+-            href: `/read/${item.id}?manga=${encodeURIComponent(entry.mangaId)}&lang=${language}`,
++            body: `${entry.title} — ${candidate.id} (${language})`,
++            href: `/read/${candidate.id}?manga=${encodeURIComponent(entry.mangaId)}&lang=${language}`,
+           });
+           if (emitted) created += 1;
+         }
+-        // Advance only through the candidates actually processed this round.
++
+         const last = pending.at(-1)!;
+-        await tx.update(tables.notificationCursors).set({
+-          lastPublish: last.published, lastChapterId: last.item.id, updatedAt: date(now),
+-        }).where(cursorWhere);
++        const consumed = decorated.filter((value) => !value.valid || compareCandidates(value, last) <= 0).length;
++        const nextOffset = capOffset(offset + Math.max(1, consumed));
++        const remainingTies = candidates
++          .slice(candidates.indexOf(last) + 1)
++          .some((value) => value.published === last.published);
++        const lastPageItem = page.items.at(-1);
++        const endsAtLastPublish = page.items.length === page.limit
++          && parsePublish(lastPageItem?.publish_at ?? "") === last.published;
++        if (!remainingTies && !endsAtLastPublish) {
++          // No same-time rows remain in reach: start a fresh since bound.
++          await tx.update(tables.notificationCursors).set({
++            lastPublish: last.published, lastChapterId: last.id,
++            scanPublish: last.published, scanOffset: 0, updatedAt: date(now),
++          }).where(cursorWhere);
++        } else {
++          // Keep the old since bound and skip only what this page consumed, so
++          // same-timestamp rows split across pages are not jumped over.
++          if (nextOffset + NOTIFICATION_FEED_LIMIT >= UPSTREAM_OFFSET_LIMIT && page.total > UPSTREAM_OFFSET_LIMIT) {
++            partial = true;
++          }
++          await tx.update(tables.notificationCursors).set({
++            lastPublish: last.published, lastChapterId: last.id,
++            scanOffset: nextOffset, updatedAt: date(now),
++          }).where(cursorWhere);
++        }
+       }
+     }
+-    return { checked: followed.length, created, skipped: false };
++    return { checked: followed.length, created, skipped: false, partial };
+   });
+ }
+diff --git a/web/package.json b/web/package.json
+index 2154f50..881dc02 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -10,21 +10,22 @@
+     "start": "next start",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+     "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs",
+     "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
+     "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs",
+     "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs",
+-    "test:task7": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs",
++    "test:notification-feed": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/notification-feed.test.mjs",
++    "test:task7": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs scripts/community.test.mjs scripts/notification-feed.test.mjs",
+     "test:task7:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs"
+   },
+   "dependencies": {
+     "@neon/auth": "^0.8.2",
+     "drizzle-orm": "^0.45.4",
+     "jose": "^6.2.18",
+     "next": "16.4.6",
+     "pg": "^8.23.1",
+     "react": "19.3.0",
+     "react-dom": "19.3.0",
+diff --git a/web/scripts/community.test.mjs b/web/scripts/community.test.mjs
+index 38972d3..6795e5f 100644
+--- a/web/scripts/community.test.mjs
++++ b/web/scripts/community.test.mjs
+@@ -16,20 +16,21 @@ const { identityFromSession } = await import("../lib/auth/identity.ts");
+ const { AuthConfigurationError } = await import("../lib/auth/server.ts");
+ const schema = await import("../lib/db/schema.ts");
+ 
+ const DAY = 86_400_000;
+ let now = Date.parse("2026-07-01T12:00:00.000Z");
+ const MIGRATIONS = [
+   "0000_application.sql",
+   "0001_account_data.sql",
+   "0002_comments_moderation.sql",
+   "0003_community_cursor_scrub.sql",
++  "0004_notification_feed_cursor.sql",
+ ];
+ const LEGACY_MIGRATIONS = MIGRATIONS.slice(0, 3);
+ 
+ async function migratedDb(files = MIGRATIONS) {
+   const pg = new PGlite();
+   const db = drizzle(pg, { schema });
+   for (const file of files) {
+     try {
+       await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
+     } catch (error) {
+@@ -61,27 +62,47 @@ function request(path, init = {}, origin = "http://localhost") {
+ }
+ 
+ function jsonRequest(path, method, body, origin = "http://localhost") {
+   return request(path, {
+     method,
+     headers: { "content-type": "application/json" },
+     body: JSON.stringify(body),
+   }, origin);
+ }
+ 
++function feedPage(items, params = {}) {
++  return {
++    items,
++    total: items.length,
++    offset: params.offset ?? 0,
++    limit: params.limit ?? 100,
++    next_offset: null,
++    partial: false,
++  };
++}
++
++function notificationContent(itemsOrGetter) {
++  return async () => ({
++    notificationFeed: async (_id, params) => {
++      const items = typeof itemsOrGetter === "function" ? itemsOrGetter() : itemsOrGetter;
++      return feedPage(params.lang === "vi" ? items : [], params);
++    },
++  });
++}
++
+ function api(db, user = null, overrides = {}) {
+   return createCommunityApi({
+     db: () => db,
+     identity: async () => user,
+     now: () => now,
+     allowlist: overrides.allowlist ?? [],
+-    content: overrides.content ?? (async () => ({ chapters: async () => ({ vi: [], en: [] }) })),
++    content: overrides.content ?? notificationContent([]),
+   });
+ }
+ 
+ async function seed(db, ids) {
+   for (const id of ids) {
+     await db.insert(schema.profiles).values({ userId: id, displayName: `Name ${id}` }).onConflictDoNothing();
+   }
+ }
+ 
+ async function postComment(handle, body, id = "c1") {
+@@ -564,81 +585,87 @@ test("new-chapter refresh baselines first follow, dedupes and bounds content cal
+     const handle = api(db, reader);
+     await seed(db, [reader.id]);
+     await db.insert(schema.libraryEntries).values({
+       userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
+       followedAt: now - DAY, lastReadPublish: 0, revision: 1,
+     });
+     const old = chapter("ch-old", "1", now - 10 * DAY);
+     const fresh = chapter("ch-new", "2", now - 60_000);
+     let calls = 0;
+     const content = {
+-      chapters: async () => {
++      notificationFeed: async (_id, params) => {
+         calls += 1;
+-        return { vi: [old, fresh], en: [] };
++        return feedPage(params.lang === "vi" ? [old, fresh] : [], params);
+       },
+     };
+     const first = await api(db, reader, { content: async () => content }).notificationsRefreshPost(
+       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+     const firstBody = await first.json();
+     assert.equal(first.status, 200, JSON.stringify(firstBody));
+     assert.equal(firstBody.created, 0, "first refresh only stores a baseline");
+     const cursors = await db.select().from(schema.notificationCursors);
+     assert.equal(cursors.length, 1);
+     assert.equal(cursors[0].lastPublish, now - 60_000, "baseline uses the newest observed chapter, not the old archive");
+ 
+     const later = now + 60_000;
+     const secondHandle = createCommunityApi({
+       db: () => db, identity: async () => reader, now: () => later, allowlist: [],
+-      content: async () => ({ chapters: async () => ({ vi: [old, fresh], en: [] }) }),
++      content: async () => ({ notificationFeed: async (_id, params) => feedPage(params.lang === "vi" ? [old, fresh] : [], params) }),
++    });
++    // Move the composite continuation back to simulate a follow before that chapter existed.
++    await db.update(schema.notificationCursors).set({
++      lastPublish: now - 2 * DAY, scanPublish: now - 2 * DAY, scanOffset: 0,
+     });
+-    // The new chapter is older than the baseline clock, so move the cursor back
+-    // to simulate a follow before that chapter existed.
+-    await db.update(schema.notificationCursors).set({ lastPublish: now - 2 * DAY });
+     const second = await secondHandle.notificationsRefreshPost(
+       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+     assert.equal(second.status, 200);
+     assert.equal((await second.json()).created, 1);
+     const third = await handle.notificationsRefreshPost(
+       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+     assert.equal((await third.json()).created, 0, "repeated refresh never duplicates a chapter");
+     assert.ok(calls >= 1);
+ 
+     const many = Array.from({ length: 40 }, (_, index) => ({
+       userId: reader.id, mangaId: `m${index}`, title: "Many", lang: "vi", status: "reading",
+       followedAt: now - index, lastReadPublish: 0, revision: 1,
+     }));
+     for (const item of many) {
+       await db.insert(schema.libraryEntries).values(item).onConflictDoNothing();
+     }
+     let boundedCalls = 0;
+     const bounded = api(db, reader, { content: async () => ({
+-      chapters: async () => { boundedCalls += 1; return { vi: [], en: [] }; },
++      notificationFeed: async (_id, params) => {
++        boundedCalls += 1;
++        return feedPage([], params);
++      },
+     }) });
+-    await bounded.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+-    assert.ok(boundedCalls <= 20, `refresh must stay bounded, saw ${boundedCalls} content calls`);
++    const boundedBody = await (await bounded.notificationsRefreshPost(
++      jsonRequest("/api/v1/notifications/refresh", "POST", {}), {})).json();
++    assert.equal(boundedBody.checked, 20, "library scan stays bounded at 20 manga");
++    assert.ok(boundedCalls <= 40, `refresh must stay bounded at 20 manga x 2 languages, saw ${boundedCalls}`);
+   } finally {
+     await pg.close();
+   }
+ });
+ 
+ test("chapter cursor advances through same-timestamp backlog without loss", async () => {
+   const { pg, db } = await migratedDb();
+   try {
+     const reader = identity("opaque|reader");
+     await seed(db, [reader.id]);
+     await db.insert(schema.libraryEntries).values({
+       userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
+       followedAt: now - DAY, lastReadPublish: 0, revision: 1,
+     });
+     const baselinePublish = now - 10 * DAY;
+     let feed = [chapter("ch-base", "1", baselinePublish)];
+-    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
++    const content = notificationContent(() => feed);
+     const refresh = () => api(db, reader, { content }).notificationsRefreshPost(
+       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+ 
+     const first = await refresh();
+     assert.equal((await first.json()).created, 0, "first observation is a baseline only");
+     let cursorRows = await db.select().from(schema.notificationCursors);
+     assert.equal(cursorRows[0].lastChapterId, "ch-base");
+ 
+     feed = Array.from({ length: 7 }, (_, index) => chapter(`ch-${index + 1}`, String(index + 2), now - 60_000));
+     const counts = [];
+@@ -667,26 +694,26 @@ test("composite cursor compares chapter id when publish timestamps match", async
+     await seed(db, [reader.id]);
+     const published = now - 60_000;
+     await db.insert(schema.libraryEntries).values({
+       userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
+       followedAt: now - DAY, lastReadPublish: 0, revision: 1,
+     });
+     await db.insert(schema.notificationCursors).values({
+       userId: reader.id, mangaId: "m1", language: "vi", lastPublish: published, lastChapterId: "ch-2",
+     });
+     const feed = [1, 2, 3, 4, 5].map((number) => chapter(`ch-${number}`, String(number + 1), published));
+-    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
++    const content = notificationContent(feed);
+     const handle = api(db, reader, { content });
+     const response = await handle.notificationsRefreshPost(
+       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+     const body = await response.json();
+-    assert.deepEqual(body, { checked: 1, created: 3, skipped: false });
++    assert.deepEqual(body, { checked: 1, created: 3, skipped: false, partial: false });
+     const rows = await db.select().from(schema.notifications);
+     assert.deepEqual(rows.map((item) => item.eventKey).sort(), [
+       `chapter:${reader.id}:m1:ch-3:vi`,
+       `chapter:${reader.id}:m1:ch-4:vi`,
+       `chapter:${reader.id}:m1:ch-5:vi`,
+     ]);
+     const cursor = (await db.select().from(schema.notificationCursors))[0];
+     assert.equal(cursor.lastChapterId, "ch-5");
+   } finally {
+     await pg.close();
+@@ -699,36 +726,36 @@ test("overlapping refreshes dedupe and failed or empty feeds do not advance curs
+     const reader = identity("opaque|reader");
+     await seed(db, [reader.id]);
+     await db.insert(schema.libraryEntries).values({
+       userId: reader.id, mangaId: "m1", title: "One", lang: "vi", status: "reading",
+       followedAt: now - DAY, lastPublish: 0, revision: 1,
+     });
+     const baseline = now - 5 * DAY;
+     await db.insert(schema.notificationCursors).values({
+       userId: reader.id, mangaId: "m1", language: "vi", lastPublish: baseline, lastChapterId: "ch-0",
+     });
+-    const withoutFeed = api(db, reader, { content: async () => ({ chapters: async () => ({ vi: [], en: [] }) }) });
++    const withoutFeed = api(db, reader, { content: notificationContent([]) });
+     const before = (await db.select().from(schema.notificationCursors))[0];
+     await withoutFeed.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+     const afterEmpty = (await db.select().from(schema.notificationCursors))[0];
+     assert.deepEqual(
+       { publish: afterEmpty.lastPublish, chapter: afterEmpty.lastChapterId },
+       { publish: before.lastPublish, chapter: before.lastChapterId },
+     );
+ 
+-    const failing = api(db, reader, { content: async () => ({ chapters: async () => { throw new Error("upstream down"); } }) });
++    const failing = api(db, reader, { content: async () => ({ notificationFeed: async () => { throw new Error("upstream down"); } }) });
+     await failing.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}), {});
+     const afterFailure = (await db.select().from(schema.notificationCursors))[0];
+     assert.equal(afterFailure.lastPublish, before.lastPublish);
+ 
+     const feed = [1, 2, 3, 4].map((number) => chapter(`ch-${number}`, String(number), now - 60_000));
+-    const content = async () => ({ chapters: async () => ({ vi: feed, en: [] }) });
++    const content = notificationContent(feed);
+     const parallel = await Promise.all([0, 1].map(() => api(db, reader, { content }).notificationsRefreshPost(
+       jsonRequest("/api/v1/notifications/refresh", "POST", {}), {})));
+     assert.ok(parallel.every((response) => response.status === 200));
+     const notifications = await db.select().from(schema.notifications);
+     assert.equal(notifications.length, 4, "two overlapping refreshes never duplicate a chapter");
+     assert.equal(new Set(notifications.map((item) => item.eventKey)).size, 4);
+   } finally {
+     await pg.close();
+   }
+ });
+@@ -856,21 +883,21 @@ test("only hidden comments can be restored; removed comments stay gone", async (
+ });
+ 
+ test("public comment reads tolerate missing auth configuration but still need the database", async () => {
+   const { pg, db } = await migratedDb();
+   try {
+     const injected = createCommunityApi({
+       db: () => db,
+       identity: async () => { throw new AuthConfigurationError("AUTH_NOT_CONFIGURED", "not configured", ["NEON_AUTH_BASE_URL"]); },
+       now: () => now,
+       allowlist: [],
+-      content: async () => ({ chapters: async () => ({ vi: [], en: [] }) }),
++      content: notificationContent([]),
+     });
+     const response = await injected.commentsGet(request("/api/v1/comments?targetType=manga&targetId=m1"));
+     assert.equal(response.status, 200, "guest reads are not blocked by an unconfigured auth service");
+     assert.equal((await response.json()).items.length, 0);
+ 
+     const route = await fetch(`${unconfiguredNext.baseUrl}/api/v1/comments?targetType=manga&targetId=m1`);
+     assert.equal(route.status, 503);
+     const body = await route.json();
+     assert.equal(body.error.code, "DATABASE_NOT_CONFIGURED", "the route reaches the DB boundary, not an auth failure");
+     assert.equal(route.headers.get("cache-control"), "private, no-store");
+diff --git a/web/scripts/database.test.mjs b/web/scripts/database.test.mjs
+index c2c74b5..ce39230 100644
+--- a/web/scripts/database.test.mjs
++++ b/web/scripts/database.test.mjs
+@@ -6,20 +6,21 @@ import { PGlite } from "@electric-sql/pglite";
+ import { getTableName } from "drizzle-orm";
+ 
+ const { readDatabaseConfig } = await import("../lib/db/client.ts");
+ const { profiles } = await import("../lib/db/schema.ts");
+ 
+ const migrationUrls = [
+   new URL("../drizzle/0000_application.sql", import.meta.url),
+   new URL("../drizzle/0001_account_data.sql", import.meta.url),
+   new URL("../drizzle/0002_comments_moderation.sql", import.meta.url),
+   new URL("../drizzle/0003_community_cursor_scrub.sql", import.meta.url),
++  new URL("../drizzle/0004_notification_feed_cursor.sql", import.meta.url),
+ ];
+ 
+ async function freshDatabase() {
+   const db = new PGlite();
+   let sql = "";
+   for (const url of migrationUrls) {
+     const next = await readFile(fileURLToPath(url), "utf8");
+     sql += `${next}\n`;
+     await db.exec(next);
+   }
+diff --git a/web/scripts/notification-feed.test.mjs b/web/scripts/notification-feed.test.mjs
+new file mode 100644
+index 0000000..17da684
+--- /dev/null
++++ b/web/scripts/notification-feed.test.mjs
+@@ -0,0 +1,296 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import { spawn } from "node:child_process";
++import { existsSync } from "node:fs";
++import { connect } from "node:net";
++import { join } from "node:path";
++import { fileURLToPath } from "node:url";
++import { after, before, test } from "node:test";
++import { PGlite } from "@electric-sql/pglite";
++import { drizzle } from "drizzle-orm/pglite";
++import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
++
++// End-to-end for Task 7 chapter notifications: real Axum content handler, real
++// Next typed client through the proxy, real SQL migrations/cursor in PGlite.
++// The MangaDex origin is a deterministic loopback fixture with >2000 chapters.
++const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
++const BASE = Date.parse("2026-07-01T00:00:00.000Z");
++const HOUR = 3_600_000;
++const DAY = 24 * HOUR;
++const PAGE = 100;
++
++const { createContentClient } = await import("../lib/contracts.ts");
++const { createCommunityApi } = await import("../lib/community/handlers.ts");
++const schema = await import("../lib/db/schema.ts");
++
++let upstream;
++let axum;
++let next;
++let client;
++let requests = [];
++let chapters = [];
++
++function waitForTcp(port, deadlineMs = 20_000) {
++  return new Promise((resolve, reject) => {
++    const deadline = Date.now() + deadlineMs;
++    const attempt = () => {
++      const socket = connect({ host: "127.0.0.1", port });
++      socket.once("connect", () => { socket.destroy(); resolve(); });
++      socket.once("error", (error) => {
++        socket.destroy();
++        if (Date.now() > deadline) reject(error);
++        else setTimeout(attempt, 100);
++      });
++    };
++    attempt();
++  });
++}
++
++function json(res, body, status = 200) {
++  res.writeHead(status, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++function makeChapter(index, published) {
++  const when = new Date(published).toISOString();
++  return {
++    id: `chapter-${String(index).padStart(5, "0")}`,
++    attributes: {
++      chapter: String(index),
++      title: `Chapter ${index}`,
++      pages: 1,
++      // Deliberately different from publishAt: notifications must order by publishAt.
++      readableAt: new Date(published + HOUR).toISOString(),
++      publishAt: when,
++      translatedLanguage: "vi",
++      externalUrl: null,
++    },
++    relationships: [{ type: "manga", id: MANGA_ID }],
++  };
++}
++
++async function migratedDb() {
++  const pg = new PGlite();
++  const db = drizzle(pg, { schema });
++  for (const file of [
++    "0000_application.sql", "0001_account_data.sql",
++    "0002_comments_moderation.sql", "0003_community_cursor_scrub.sql",
++    "0004_notification_feed_cursor.sql",
++  ]) {
++    try {
++      await pg.exec(await readFile(fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url)), "utf8"));
++    } catch (error) {
++      if (error.code !== "ENOENT") throw error;
++    }
++  }
++  return { pg, db };
++}
++
++function request(path, init = {}) {
++  return new Request(`http://localhost${path}`, {
++    ...init,
++    headers: { origin: "http://localhost", ...(init.headers ?? {}) },
++  });
++}
++
++function jsonRequest(path, method, body) {
++  return request(path, {
++    method,
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify(body),
++  });
++}
++
++function handle(db, now = BASE + 200 * DAY) {
++  return createCommunityApi({
++    db: () => db,
++    identity: async () => ({ id: "opaque|reader", email: "reader@example.com", emailVerified: true, name: "Reader", image: null, sessionId: "s" }),
++    now: () => now,
++    allowlist: [],
++    content: async () => client,
++  });
++}
++
++before(async () => {
++  chapters = Array.from({ length: 2500 }, (_, index) => makeChapter(index + 1, BASE + index * HOUR));
++  upstream = await startHttpServer((req, res) => {
++    const url = new URL(req.url ?? "", "http://fixture.local");
++    requests.push(url.pathname + url.search);
++    if (url.pathname === `/manga/${MANGA_ID}/feed`) {
++      const limit = Number(url.searchParams.get("limit") ?? 500);
++      const offset = Number(url.searchParams.get("offset") ?? 0);
++      return json(res, { total: chapters.length, data: chapters.slice(offset, offset + Math.min(limit, 500)) });
++    }
++    if (url.pathname === "/chapter") {
++      const lang = url.searchParams.get("translatedLanguage[]");
++      const manga = url.searchParams.get("manga");
++      const limit = Number(url.searchParams.get("limit") ?? PAGE);
++      const offset = Number(url.searchParams.get("offset") ?? 0);
++      const since = url.searchParams.get("publishAtSince");
++      const order = url.searchParams.get("order[publishAt]");
++      if (manga !== MANGA_ID || lang !== "vi" || !["asc", "desc"].includes(order ?? "")) {
++        return json(res, { total: 0, data: [] }, 400);
++      }
++      let items = chapters;
++      if (since) items = items.filter((item) => Date.parse(item.attributes.publishAt) > Date.parse(since));
++      items = [...items].sort((a, b) => {
++        const published = Date.parse(a.attributes.publishAt) - Date.parse(b.attributes.publishAt);
++        return order === "desc" ? -published : published;
++      });
++      return json(res, { total: items.length, data: items.slice(offset, offset + limit) });
++    }
++    return json(res, { total: 0, data: [] });
++  });
++
++  const axumPort = await freePort();
++  const binary = join(repoDir, "target", "debug", process.platform === "win32" ? "server.exe" : "server");
++  assert.ok(existsSync(binary), `build Axum first: cargo build -p server (missing ${binary})`);
++  axum = spawn(binary, [], {
++    cwd: repoDir,
++    env: {
++      ...process.env,
++      PORT: String(axumPort),
++      MANGADEX_API_ORIGIN: upstream.baseUrl,
++      CACHE_DIR: join(webDir, ".test-cache", `notification-feed-${process.pid}`),
++      DIST_DIR: join(webDir, "public"),
++    },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  await waitForTcp(axumPort);
++  next = await startNext({ RUST_CONTENT_API_ORIGIN: `http://127.0.0.1:${axumPort}` });
++  client = createContentClient(next.baseUrl);
++});
++
++after(async () => {
++  await stop(next?.child);
++  if (axum && axum.exitCode === null) axum.kill("SIGKILL");
++  await upstream?.close();
++});
++
++test("ordinary chapter listing still uses the capped catalog feed contract", async () => {
++  const response = await client.chapters(MANGA_ID);
++  assert.equal(response.vi.length, 2000, "legacy list stays capped at 2000");
++  const feedCalls = requests.filter((value) => {
++    const url = new URL(value, "http://fixture.local");
++    return url.pathname.endsWith("/feed")
++      && url.searchParams.get("order[chapter]") === "asc"
++      && url.searchParams.get("translatedLanguage[]") === "vi";
++  });
++  assert.deepEqual(
++    feedCalls.map((value) => new URL(value, "http://fixture.local").searchParams.get("offset")),
++    ["0", "500", "1000", "1500"],
++  );
++});
++
++test("baseline observes the newest chapter beyond 2000 without an archive flood", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    await db.insert(schema.profiles).values({ userId: "opaque|reader" });
++    await db.insert(schema.libraryEntries).values({
++      userId: "opaque|reader", mangaId: MANGA_ID, title: "Fixture", lang: "vi", status: "reading",
++      followedAt: BASE, lastReadPublish: 0, revision: 1,
++    });
++    const response = await handle(db).notificationsRefreshPost(
++      jsonRequest("/api/v1/notifications/refresh", "POST", {}));
++    const body = await response.json();
++    assert.equal(response.status, 200, JSON.stringify(body));
++    assert.equal(body.created, 0);
++    assert.equal(body.checked, 1, `refresh did not scan the library: ${JSON.stringify(body)}`);
++    const cursors = await db.select().from(schema.notificationCursors);
++    assert.ok(cursors.length > 0, `no cursor; requests=${JSON.stringify(requests.slice(-10))}`);
++    assert.equal(cursors[0].lastPublish, BASE + 2499 * HOUR, "baseline uses latest available publication, not the first 2000");
++    const feedCalls = requests.filter((value) => value.includes("/chapter?") && value.includes("order[publishAt]=desc"));
++    assert.ok(feedCalls.length > 0, "baseline must query the notification feed in descending publish order");
++    assert.match(feedCalls[0], /manga=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/);
++    assert.match(feedCalls[0], /translatedLanguage\[\]=vi/);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("a chapter published after the cursor is delivered once despite catalog size", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    await db.insert(schema.profiles).values({ userId: "opaque|reader" });
++    await db.insert(schema.libraryEntries).values({
++      userId: "opaque|reader", mangaId: MANGA_ID, title: "Fixture", lang: "vi", status: "reading",
++      followedAt: BASE, lastReadPublish: 0, revision: 1,
++    });
++    await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
++    chapters.push(makeChapter(2501, BASE + 2500 * HOUR));
++    const first = await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
++    assert.equal((await first.json()).created, 1);
++    const notes = await db.select().from(schema.notifications);
++    assert.equal(notes.length, 1);
++    assert.match(notes[0].eventKey, /chapter-02501/);
++    const again = await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
++    assert.equal((await again.json()).created, 0, "repeat refresh dedupes");
++    const asc = requests.filter((value) => value.includes("/chapter?") && value.includes("order[publishAt]=asc"));
++    assert.ok(asc.some((value) => new URL(value, "http://fixture.local").searchParams.get("publishAtSince")));
++    chapters.pop();
++  } finally {
++    await pg.close();
++  }
++});
++
++test("same-timestamp backlog crossing a page edge drains exactly once", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    await db.insert(schema.profiles).values({ userId: "opaque|reader" });
++    await db.insert(schema.libraryEntries).values({
++      userId: "opaque|reader", mangaId: MANGA_ID, title: "Fixture", lang: "vi", status: "reading",
++      followedAt: BASE, lastReadPublish: 0, revision: 1,
++    });
++    const tie = BASE + 150 * DAY;
++    const tied = Array.from({ length: PAGE + 5 }, (_, index) => makeChapter(3000 + index, tie));
++    chapters.push(...tied);
++    await db.insert(schema.notificationCursors).values({
++      userId: "opaque|reader", mangaId: MANGA_ID, language: "vi",
++      lastPublish: BASE + 149 * DAY, lastChapterId: "", scanPublish: BASE + 149 * DAY, scanOffset: 0,
++    });
++
++    let created = 0;
++    let calls = 0;
++    while (calls < 60) {
++      const response = await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
++      const body = await response.json();
++      created += body.created;
++      calls += 1;
++      if (body.created === 0 && (await db.select().from(schema.notifications)).length === tied.length) break;
++    }
++    const notes = await db.select().from(schema.notifications);
++    assert.equal(notes.length, tied.length, "all same-time chapters arrive across repeat refreshes");
++    assert.equal(created, tied.length, "each chapter is created exactly once");
++    assert.equal(new Set(notes.map((item) => item.eventKey)).size, tied.length);
++    chapters.splice(chapters.length - tied.length, tied.length);
++  } finally {
++    await pg.close();
++  }
++});
++
++test("upstream failure leaves the continuation cursor unchanged", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    await db.insert(schema.profiles).values({ userId: "opaque|reader" });
++    await db.insert(schema.libraryEntries).values({
++      userId: "opaque|reader", mangaId: MANGA_ID, title: "Fixture", lang: "vi", status: "reading",
++      followedAt: BASE, lastReadPublish: 0, revision: 1,
++    });
++    await handle(db).notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
++    const before = (await db.select().from(schema.notificationCursors))[0];
++    const failing = createCommunityApi({
++      db: () => db,
++      identity: async () => ({ id: "opaque|reader", email: "reader@example.com", emailVerified: true, name: "Reader", image: null, sessionId: "s" }),
++      now: () => BASE + 200 * DAY,
++      allowlist: [],
++      content: async () => ({ notificationFeed: async () => { throw new Error("upstream down"); } }),
++    });
++    await failing.notificationsRefreshPost(jsonRequest("/api/v1/notifications/refresh", "POST", {}));
++    const after = (await db.select().from(schema.notificationCursors))[0];
++    assert.equal(after.lastPublish, before.lastPublish);
++    assert.equal(after.scanOffset, before.scanOffset);
++    assert.equal((await db.select().from(schema.notifications)).length, 0);
++  } finally {
++    await pg.close();
++  }
++});

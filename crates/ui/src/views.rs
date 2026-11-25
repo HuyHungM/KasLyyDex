@@ -45,7 +45,7 @@ fn Shell() -> impl IntoView {
               </div>
               <Show when=move || !reading()>
                   <footer class="site-footer">
-                    <span class="footer-brand">"TruyệnViệt"</span>
+                    <span class="footer-brand">"KasLyyDex"</span>
                     <p>"Dữ liệu và ảnh từ "<a href="https://mangadex.org" target="_blank" rel="noopener noreferrer">"MangaDex"</a>". Ủng hộ tác giả bằng cách mua truyện bản quyền."</p>
                   </footer>
               </Show>
@@ -60,7 +60,7 @@ fn Brand() -> impl IntoView {
     view! {
         <A href="/" attr:class="logo">
             <span class="logo-mark"><Icon name=Signal::derive(|| "book") /></span>
-            <span>"Truyện"<b>"Việt"</b></span>
+            <span>"KasLyy"<b>"Dex"</b></span>
         </A>
     }
 }

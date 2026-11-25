@@ -1,0 +1,4016 @@
+4f1da19 docs: correct Task 7 gate counts and baseline header
+5b62739 chore: gate and document advanced search UX
+d068867 test: assert source badge labels after skeleton replacement
+215b7da feat: add ranking skeleton and top rank frames
+c3b1291 feat: show source as a cover badge
+f8de0d0 fix: match genre skeleton shape in advanced search
+3f41d3f feat: add advanced search and merge genre groups
+1690cb6 fix: apply language filter to MangaDex search
+e163f1f feat: aggregate search across content sources
+d1d0997 fix: prefix Comick search ids and allow keyword-less browse
+bd26b2d feat: add Comick catalog search adapter
+f24593b feat: extend search contracts with source filters
+ .github/workflows/ci.yml                           |   9 +-
+ CHANGELOG.md                                       |  31 +
+ README.md                                          |  32 +-
+ crates/contracts/src/lib.rs                        | 151 ++++-
+ crates/core/src/comick.rs                          | 251 +++++++-
+ crates/core/src/lib.rs                             |   1 +
+ crates/core/src/mangadex.rs                        |  43 +-
+ crates/core/src/search.rs                          | 709 +++++++++++++++++++++
+ crates/server/src/main.rs                          | 171 ++---
+ docs/WEB-STATUS.md                                 |  32 +
+ infra/axum.md                                      |  35 +
+ web/README.md                                      |   4 +-
+ web/app/bxh/loading.tsx                            |  26 +
+ web/app/bxh/page.tsx                               |  12 +-
+ web/app/globals.css                                |  12 +-
+ web/app/manga/[id]/page.tsx                        |   6 +-
+ web/app/page.tsx                                   |  14 +-
+ web/app/search/page.tsx                            |  90 ++-
+ web/components/manga-card.tsx                      |   6 +-
+ web/components/rank-skeleton.tsx                   |  20 +
+ .../page.tsx => components/search/GenreGroups.tsx} |  27 +-
+ web/components/search/GenreGroupsSkeleton.tsx      |  14 +
+ web/components/site-shell.tsx                      |   2 -
+ web/components/source-badge.tsx                    |   7 +
+ web/lib/contracts.ts                               |  26 +-
+ web/package.json                                   |   2 +-
+ web/scripts/advanced-search.test.mjs               | 183 ++++++
+ web/scripts/ranking-skeleton.test.mjs              | 166 +++++
+ web/scripts/reader-playwright.test.mjs             |  13 +-
+ web/scripts/search-contracts.test.mjs              |  29 +
+ web/scripts/search-source.test.mjs                 | 334 ++++++++++
+ web/scripts/skeleton-motion.test.mjs               |   4 +-
+ web/scripts/source-badge.test.mjs                  | 152 +++++
+ web/scripts/source-ui.test.mjs                     |  28 +-
+ web/scripts/whitespace-baseline.txt                |   5 +-
+ 35 files changed, 2473 insertions(+), 174 deletions(-)
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 3561669..24ba985 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -78,24 +78,25 @@ jobs:
+       - name: TypeScript check
+         run: npm run typecheck
+         working-directory: web
+ 
+       - name: Next lint
+         run: npm run lint
+         working-directory: web
+ 
+-      - name: Aggregate Node / PGlite / API tests
+-        run: npm run test:aggregate
+-        working-directory: web
+-
++      # Aggregate now includes Playwright suites, so Chromium must exist first.
+       - name: Install Playwright Chromium
+         run: npm run browser:install
+         working-directory: web
+ 
++      - name: Aggregate Node / PGlite / API tests
++        run: npm run test:aggregate
++        working-directory: web
++
+       - name: Browser suites
+         run: npm run test:browser
+         working-directory: web
+ 
+       # Inspects tracked checkout content, so it is not vacuous on a clean tree.
+       # Baseline covers committed prior-plan SDD .diff artifacts only; new findings fail.
+       - name: Whitespace / conflict-marker check (baselined)
+         run: npm run check:whitespace
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 7c87e6c..ff5ee71 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,10 +1,41 @@
+ # Changelog
+ 
++## Unreleased — advanced search UX and final local gate
++
++- Extend `SearchParams`/`searchQuery` with `source`, `lang` and `year`; add
++  `partial: bool` to `SearchResponse` and move query parsing into `contracts` so
++  Axum and the web share the same allowlists and page clamp.
++- Add a Comick catalog search adapter and Axum `search_all` orchestration.
++  `source=all` queries both providers, keeps same-title hits from different
++  providers distinct, sorts deterministically (`sort`, source, title, id) and
++  slices to 24 per page. A locally-applied `lang`/`year` filter or a failing
++  provider sets `partial`, surfaced as a short warning in the UI; a missing
++  Comick adapter returns a structured 503.
++- Move genre groups into the `/search` ("Khám phá") advanced panel with a
++  four-group skeleton and write selected chips into `tags`. Remove the Next
++  `/the-loai` page and its navigation link.
++- Render source as a cover badge (`MangaDex`/`Comick`, accessible
++  `Nguồn: <label>`) on cards, feed, ranking and detail covers; drop the
++  `(MangaDex)`/`(Comick)` title suffixes.
++- Add a shape-matched `/bxh` loading shell (12 rows) and `rank-top rank-1/2/3`
++  frames for the top three rows, stable across tab changes and mobile widths.
++- Register `search-contracts`, `search-source`, `advanced-search`,
++  `source-badge` and `ranking-skeleton` in `test:aggregate`: 28 aggregate test
++  files (7 source + 5 new among them). CI installs Playwright Chromium before
++  aggregate because two of the added suites are browser tests; the Axum prebuild
++  hooks are unchanged.
++- Run the full deterministic local gate: aggregate 203/203, browser 23/23,
++  Rust workspace tests 90 passed/0 failed, build/clippy/scoped fmt/typecheck/
++  lint/whitespace/secrets/diff clean.
++
++No deployment, push, merge, provisioning or live provider verification was
++performed. Live MangaDex/Comick catalog and ToS checks remain manual gates.
++
+ ## Unreleased — multi-source reading UX and final local gate
+ 
+ - Read MangaDex as the primary catalog and fall back to Comick **per chapter**
+   when a chapter is external-only/unreadable; keep the last external link when
+   no match is found or the fallback fails. Chapter IDs are provider-prefixed
+   (`comick:`) and progression/XP bind to the chapter source.
+ - Show `MangaDex`/`Comick` source labels after titles on cards, detail, chapter
+   rows and the reader toolbar. Legacy DTOs without `source` still display
+diff --git a/README.md b/README.md
+index 68ff244..e188d90 100644
+--- a/README.md
++++ b/README.md
+@@ -44,31 +44,53 @@ mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
+   Escape đóng, Home/End tới đầu/cuối, Tab đóng. Một hidden input giữ nguyên giá
+   trị form GET của tìm kiếm.
+ - Skeleton có hình dạng khớp nội dung thay vì khối chung; hiệu ứng chuyển động
+   (chevron, fade ảnh, shimmer) nằm trong `prefers-reduced-motion`. Ảnh reader lỗi
+   được giải phóng khỏi skeleton (ảnh hỏng hiện thay vì skeleton vĩnh viễn); panel
+   thử lại hiện có chỉ xử lý lỗi tải chapter/WASM (`pageError`/`wasmError`), không
+   có nút thử lại riêng cho từng ảnh.
+ 
++## Tìm kiếm nâng cao và xếp hạng
++
++- `/search` ("Khám phá") dùng chung dropdown cho `source` (`all`/`mangadex`/
++  `comick`), `lang` (`all`/`vi`/`en`) và `year` (1900…năm hiện tại + 1); các
++  giá trị này nằm trong form GET và giữ nguyên `q`, `tags`, `status`, `sort`,
++  `page`. Axum gọi MangaDex và/hoặc Comick theo `source`, gộp ổn định theo
++  `sort` → source → title → id rồi cắt tối đa 24 kết quả/trang. Khi bộ lọc
++  `lang`/`year` chỉ áp được ở local hoặc một provider lỗi, response có
++  `partial: true` và UI hiện cảnh báo ngắn — không ngầm hiểu là kết quả đầy đủ.
++- Bốn nhóm thể loại (Thể loại chính / Chủ đề / Định dạng / Nội dung) nằm trong
++  panel nâng cao của `/search`; chip ghi thẳng vào `tags` và có skeleton 4 nhóm
++  lúc tải. Trang `/the-loai` cùng link điều hướng đã bị xóa ở bản Next; dùng
++  `/search` thay thế.
++- Nguồn hiển thị thành badge trên góc ảnh bìa (`MangaDex`/`Comick`, nhãn truy
++  cập `Nguồn: <label>`) ở card, feed, top rank và trang chi tiết; tiêu đề không
++  còn hậu tố `(MangaDex)`/`(Comick)`.
++- `/bxh` có route `loading.tsx` với 12 hàng skeleton khớp bảng xếp hạng và khung
++  top 3 (`rank-top rank-1/2/3`) giữ kích thước khi đổi tab; shimmer vẫn nằm
++  trong `prefers-reduced-motion`.
++
+ ## Chạy local
+ 
+ ```bash
+ # Rust toolchain: stable + wasm32-unknown-unknown + wasm-bindgen-cli 0.2.130
+ cd web
+ npm ci
+ npm run build:wasm        # bắt buộc trước Next build
+ npm run build:web         # next build (không chạy lại prebuild)
+ npm run typecheck         # cần glue WASM + Next route types đã sinh
+ npm run lint
+ cd ..
+ cargo build -p server
+ cd web
+ npm run test:source       # 7 suite nguồn/fallback/UI/theme/dropdown/skeleton
+-npm run test:aggregate    # bao gồm cả 7 suite trên, không cần secret
++npm run test:aggregate    # 28 aggregate test files (7 source + 5 new among them):
++                          # search-contracts, search-source, advanced-search,
++                          # source-badge, ranking-skeleton
+ npm run test:browser      # cần Edge local hoặc Playwright Chromium
+ ```
+ 
+ `test:source`, `test:aggregate` và `test:browser` có pretest build Axum
+ (`cargo build -p server`) trước vì fixture content/fallback spawn binary đó;
+ chạy aggregate trước khi build server sẽ cho RED giả.
+ 
+ Axum local: `cargo run -p server` (`PORT`, `DIST_DIR`, `CACHE_DIR`,
+@@ -104,19 +126,21 @@ NEXT_PUBLIC_APP_URL
+ fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+ 
+ ## Release gates
+ 
+ `.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+ secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
+ `reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
+ `cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
+-`build:wasm` → `build:web` → typecheck/lint; aggregate tests (bao gồm các suite
+-nguồn/fallback/UI/theme/dropdown/skeleton, server được build trước qua
+-pretest); Playwright Chromium install + browser suites; tracked-file
++`build:wasm` → `build:web` → typecheck/lint; cài Playwright Chromium trước rồi
++aggregate tests — 28 aggregate test files (7 source + 5 new among them), gồm
++nguồn/fallback/UI/theme/dropdown/skeleton + search-contracts/search-source/
++advanced-search/source-badge/ranking-skeleton; 2 suite mới dùng browser nên cần
++Chromium; server được build trước qua pretest; rồi browser suites; tracked-file
+ whitespace/conflict-marker scan với baseline — không vacuous trên clean
+ checkout, nhưng 783 finding đã commit trong
+ `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` được baseline hóa qua
+ `web/scripts/whitespace-baseline.txt` thay vì sửa artifact của plan cũ; mọi
+ finding mới vẫn fail.
+ 
+ Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+ CI scoped như trên. Xem
+diff --git a/crates/contracts/src/lib.rs b/crates/contracts/src/lib.rs
+index b673854..ac8940f 100644
+--- a/crates/contracts/src/lib.rs
++++ b/crates/contracts/src/lib.rs
+@@ -1,11 +1,12 @@
+ use domain::{ChapterId, MangaId};
+ use serde::{Deserialize, Serialize};
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, HashMap};
++use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ pub use domain::{
+     Chapter, CultivationLevel, CultivationRealm, Manga, ReaderBackground, ReaderMode,
+     ReaderSettings, ReadingProgress, SystemRole,
+ };
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct ApiError {
+@@ -135,16 +136,118 @@ pub struct ChapterFeedPage {
+     pub next_offset: Option<u32>,
+     pub partial: bool,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct SearchResponse {
+     pub results: Vec<MangaSummaryDto>,
+     pub total: u64,
++    #[serde(default)]
++    pub partial: Option<bool>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SearchQuery {
++    pub q: String,
++    pub page: u32,
++    pub tags: Vec<String>,
++    pub status: Option<String>,
++    pub sort: String,
++    pub source: String,
++    pub lang: String,
++    pub year: Option<i32>,
++}
++
++// shortcut: mirrors manga_core's filter allowlists to keep contracts dependency acyclic;
++// consolidate if those helpers move out of core.
++fn sort_allowed(sort: &str) -> bool {
++    matches!(sort, "follows" | "rating" | "new" | "year" | "title")
++}
++
++fn status_allowed(status: &str) -> bool {
++    matches!(status, "ongoing" | "completed" | "hiatus" | "cancelled")
++}
++
++fn is_uuid(id: &str) -> bool {
++    id.len() == 36
++        && id.bytes().enumerate().all(|(i, b)| match i {
++            8 | 13 | 18 | 23 => b == b'-',
++            _ => b.is_ascii_hexdigit(),
++        })
++}
++
++fn current_year() -> i32 {
++    let secs = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map(|elapsed| elapsed.as_secs() as i64)
++        .unwrap_or(0);
++    (1970 + secs / 31_556_952) as i32
++}
++
++/// Validates public `/api/content/search` query parameters once for every caller.
++pub fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, ApiError> {
++    let value = |key| q.get(key).map(|s| s.trim()).filter(|s| !s.is_empty());
++    let invalid = |name| ApiError::new("VALIDATION_ERROR", format!("{name} không hợp lệ."));
++    let page = match value("page") {
++        Some(raw) => raw
++            .parse::<u32>()
++            .ok()
++            .filter(|p| (1..=416).contains(p))
++            .ok_or_else(|| invalid("Số trang"))?,
++        None => 1,
++    };
++    let query = value("q").unwrap_or("");
++    if query.chars().count() > 200 {
++        return Err(invalid("Tên truyện"));
++    }
++    let sort = value("sort").unwrap_or("follows");
++    if !sort_allowed(sort) {
++        return Err(invalid("Cách sắp xếp"));
++    }
++    let status = value("status");
++    if status.is_some_and(|s| !status_allowed(s)) {
++        return Err(invalid("Trạng thái"));
++    }
++    let source = value("source").unwrap_or("all");
++    if !matches!(source, "all" | "mangadex" | "comick") {
++        return Err(invalid("Nguồn"));
++    }
++    let lang = value("lang").unwrap_or("all");
++    if !matches!(lang, "all" | "vi" | "en") {
++        return Err(invalid("Ngôn ngữ"));
++    }
++    let year = match value("year") {
++        Some(raw) => Some(
++            raw.parse::<i32>()
++                .ok()
++                .filter(|year| (1900..=current_year() + 1).contains(year))
++                .ok_or_else(|| invalid("Năm"))?,
++        ),
++        None => None,
++    };
++    let mut tags: Vec<_> = value("tags")
++        .into_iter()
++        .flat_map(|s| s.split(','))
++        .collect();
++    if tags.len() > 8 || !tags.iter().all(|id| is_uuid(id)) {
++        return Err(invalid("Thể loại"));
++    }
++    tags.sort_unstable();
++    tags.dedup();
++    Ok(SearchQuery {
++        q: query.to_owned(),
++        page,
++        tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
++        status: status.map(str::to_owned),
++        sort: sort.to_owned(),
++        source: source.to_owned(),
++        lang: lang.to_owned(),
++        year,
++    })
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct LatestChapterDto {
+     pub id: ChapterId,
+     #[serde(default)]
+     pub chapter: Option<String>,
+     pub lang: String,
+@@ -194,16 +297,62 @@ impl From<ReaderSettingsDto> for ReaderSettings {
+         }
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use serde_json::{json, Value};
++    use std::collections::HashMap;
++
++    #[test]
++    fn search_query_defaults_source_all_lang_all() {
++        let query = parse_search_query(HashMap::new()).unwrap();
++        assert_eq!(query.source, "all");
++        assert_eq!(query.lang, "all");
++        assert_eq!(query.year, None);
++
++        let response: SearchResponse =
++            serde_json::from_value(json!({ "results": [], "total": 0 })).unwrap();
++        assert!(!response.partial.unwrap_or(false));
++    }
++
++    #[test]
++    fn search_query_accepts_valid_source_lang_year() {
++        for (source, lang) in [("all", "all"), ("mangadex", "en"), ("comick", "vi")] {
++            let query = parse_search_query(HashMap::from([
++                ("source".into(), source.into()),
++                ("lang".into(), lang.into()),
++                ("year".into(), "2024".into()),
++            ]))
++            .unwrap();
++            assert_eq!(query.source, source);
++            assert_eq!(query.lang, lang);
++            assert_eq!(query.year, Some(2024));
++        }
++    }
++
++    #[test]
++    fn search_query_rejects_invalid_source_lang_year() {
++        for (name, value) in [
++            ("source", "bad"),
++            ("lang", "fr"),
++            ("year", "0"),
++            ("year", "abc"),
++            ("year", "-2024"),
++            ("year", "1899"),
++            ("page", "0"),
++        ] {
++            assert!(
++                parse_search_query(HashMap::from([(name.into(), value.into())])).is_err(),
++                "{name}={value} should be rejected"
++            );
++        }
++    }
+ 
+     #[test]
+     fn manga_summary_contract_keeps_existing_fields_and_accepts_legacy_omissions() {
+         let legacy = json!({
+             "id": "manga-id",
+             "title": "Title",
+             "cover_file": null,
+             "status": "ongoing",
+diff --git a/crates/core/src/comick.rs b/crates/core/src/comick.rs
+index 15b327d..d40dd51 100644
+--- a/crates/core/src/comick.rs
++++ b/crates/core/src/comick.rs
+@@ -1,22 +1,29 @@
+ // Verified 2026-11-21 from the official Comick catalog OpenAPI document at
+ // https://api.comick.dev/docs/json (rendered by https://api.comick.dev/docs/):
+ // - GET /v1.0/search/?q=...&page=1&limit=15 — bare array; page <= 50 with
+ //   limit <= 50, or page <= 5 with limit <= 300; defaults page=1, limit=15.
++//   Verified search filter names: q (keyword, optional for browse), page,
++//   limit, from/to (inclusive publication year), status (1 ongoing,
++//   2 completed, 3 cancelled, 4 hiatus), genres (request: slugs from /genre/;
++//   response: numeric ids), md_covers[].b2key, bayesian_rating,
++//   user_follow_count, last_chapter. There is NO documented `lang` filter on
++//   this route: language is applied by the aggregator, not invented here.
+ // - GET /v1.0/comic/{hid}/chapters?lang=...&page=1&limit=12 — returns
+ //   { chapters, total, limit, checkVol2Chap1 }; default page size 12, no max.
+ // - GET /chapter/{hid}/get_images — ordered image metadata array, may be [].
+ // - Origin budget: 200 requests/minute/client IP.
+ // - CDN image host listed in the official spec: meo.comick.pictures (HTTPS);
+ //   live delivery and ToS remain a manual release gate (no live fetch gate here).
+ // OAuth/Library endpoints are deliberately not used.
+ 
++use contracts::MangaSummaryDto;
+ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+-use serde_json::Value;
++use serde_json::{json, Value};
+ use std::time::Duration;
+ 
+ const API: &str = "https://api.comick.dev";
+ const CDN: &str = "https://meo.comick.pictures";
+ const CDN_HOST: &str = "meo.comick.pictures";
+ const TIMEOUT: Duration = Duration::from_secs(10);
+ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+ const UPSTREAM_ERR: &str = "Comick catalog unavailable";
+@@ -71,21 +78,41 @@ impl Comick {
+                 API.to_owned()
+             } else {
+                 trimmed
+             },
+         }
+     }
+ 
+     pub async fn search_titles(&self, query: &str) -> Result<Vec<ComickTitle>, Err> {
+-        let body = self.get_json(&search_path(query)).await?;
++        let body = self.get_json(&search_path(query, "all", None, 1)?).await?;
+         let results = body.as_array().ok_or_else(upstream_err)?;
+         results.iter().map(title_from_value).collect()
+     }
+ 
++    /// `lang` belongs to the shared search contract; the official search route
++    /// has no language filter, so the aggregator applies it locally.
++    pub async fn search(
++        &self,
++        q: &str,
++        lang: &str,
++        year: Option<i32>,
++        page: u32,
++    ) -> Result<Vec<MangaSummaryDto>, Err> {
++        let body = self.get_json(&search_path(q, lang, year, page)?).await?;
++        let results = body.as_array().ok_or_else(upstream_err)?;
++        results.iter().map(normalize_search_hit).collect()
++    }
++
++    /// Comic detail by prefixed ID; the official route accepts a slug or HID.
++    pub async fn detail(&self, id: &str) -> Result<MangaSummaryDto, Err> {
++        let body = self.get_json(&comic_path(id)?).await?;
++        normalize_detail(&body)
++    }
++
+     pub async fn chapters(&self, hid: &str, lang: &str) -> Result<Vec<ComickChapter>, Err> {
+         let body = self.get_json(&chapters_path(hid, lang)?).await?;
+         let chapters = body["chapters"].as_array().ok_or_else(upstream_err)?;
+         chapters
+             .iter()
+             .map(|value| chapter_from_value(value, lang).ok_or_else(upstream_err))
+             .collect()
+     }
+@@ -110,16 +137,21 @@ impl Comick {
+     }
+ }
+ 
+ /// Provider-prefixed chapter IDs used by content routes and progress records.
+ pub fn is_comick_chapter_id(id: &str) -> bool {
+     id.strip_prefix("comick:").is_some_and(valid_opaque)
+ }
+ 
++/// Provider-prefixed comic IDs accepted by detail and chapter routes.
++pub fn is_comick_manga_id(id: &str) -> bool {
++    id.strip_prefix("comick:").is_some_and(valid_opaque)
++}
++
+ fn upstream_err() -> Err {
+     UPSTREAM_ERR.to_owned()
+ }
+ 
+ fn valid_opaque(value: &str) -> bool {
+     !value.is_empty()
+         && value
+             .chars()
+@@ -131,18 +163,116 @@ fn request_opaque(id: &str) -> Option<&str> {
+     let raw = id.strip_prefix("comick:").unwrap_or(id);
+     valid_opaque(raw).then_some(raw)
+ }
+ 
+ fn encode(value: &str) -> String {
+     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+ }
+ 
+-fn search_path(query: &str) -> String {
+-    format!("/v1.0/search/?q={}&page=1&limit=15", encode(query))
++pub fn search_path(q: &str, lang: &str, year: Option<i32>, page: u32) -> Result<String, Err> {
++    // `lang` is validated for the shared contract but is not an upstream field.
++    request_opaque(lang).ok_or_else(upstream_err)?;
++    let q = q.trim();
++    if q.chars().count() > 200 || !(1..=50).contains(&page) {
++        return Err(upstream_err());
++    }
++    if year.is_some_and(|year| year < 1900) {
++        return Err(upstream_err());
++    }
++    let years = year
++        .map(|year| format!("&from={year}&to={year}"))
++        .unwrap_or_default();
++    // q is optional upstream: omit it for browse/filter-only searches.
++    let keyword = if q.is_empty() {
++        String::new()
++    } else {
++        format!("q={}&", encode(q))
++    };
++    Ok(format!(
++        "/v1.0/search/?{keyword}page={page}&limit=15{years}"
++    ))
++}
++
++/// Required fields are never filled in; optional fields use DTO defaults.
++pub fn normalize_search_hit(hit: &Value) -> Result<MangaSummaryDto, Err> {
++    let hid = hit["hid"]
++        .as_str()
++        .filter(|hid| valid_opaque(hid))
++        .ok_or_else(upstream_err)?;
++    let title = hit["title"]
++        .as_str()
++        .filter(|title| !title.trim().is_empty())
++        .ok_or_else(upstream_err)?;
++    let genres: Vec<String> = hit["genres"]
++        .as_array()
++        .map(|values| values.iter().filter_map(string_or_number).collect())
++        .unwrap_or_default();
++    let cover_file = hit["md_covers"]
++        .as_array()
++        .and_then(|covers| covers.first())
++        .and_then(|cover| image_url(cover).ok());
++    let status = match hit["status"].as_i64() {
++        Some(1) => "ongoing",
++        Some(2) => "completed",
++        Some(3) => "cancelled",
++        Some(4) => "hiatus",
++        _ => hit["status"].as_str().unwrap_or_default(),
++    };
++    Ok(MangaSummaryDto {
++        id: format!("comick:{hid}").into(),
++        title: title.to_owned(),
++        cover_file,
++        status: status.to_owned(),
++        year: hit["year"]
++            .as_i64()
++            .and_then(|year| i32::try_from(year).ok()),
++        description: hit["desc"].as_str().unwrap_or_default().to_owned(),
++        tags: genres.clone(),
++        tag_ids: genres,
++        author: String::new(),
++        artist: String::new(),
++        rating: hit["bayesian_rating"]
++            .as_str()
++            .and_then(|rating| rating.parse().ok()),
++        follows: hit["user_follow_count"].as_u64(),
++        latest_chapter: string_or_number(&hit["last_chapter"]),
++        source: "comick".to_owned(),
++        source_label: "Comick".to_owned(),
++    })
++}
++
++fn comic_path(id: &str) -> Result<String, Err> {
++    let hid = request_opaque(id).ok_or_else(upstream_err)?;
++    Ok(format!("/v1.0/comic/{}/", encode(hid)))
++}
++
++/// Detail responses nest the comic under `comic` and expose genres as
++/// `md_comic_md_genres`; the shared hit normalizer expects `genres`.
++fn normalize_detail(body: &Value) -> Result<MangaSummaryDto, Err> {
++    let mut comic = body
++        .get("comic")
++        .and_then(Value::as_object)
++        .ok_or_else(upstream_err)?
++        .clone();
++    if comic.get("genres").is_none() {
++        let genres: Vec<String> = comic["md_comic_md_genres"]
++            .as_array()
++            .map(|entries| {
++                entries
++                    .iter()
++                    .filter_map(|entry| entry["md_genres"]["slug"].as_str().map(str::to_owned))
++                    .collect()
++            })
++            .unwrap_or_default();
++        if !genres.is_empty() {
++            comic.insert("genres".into(), json!(genres));
++        }
++    }
++    normalize_search_hit(&Value::Object(comic))
+ }
+ 
+ fn chapters_path(hid: &str, lang: &str) -> Result<String, Err> {
+     let hid = request_opaque(hid).ok_or_else(upstream_err)?;
+     let lang = request_opaque(lang).ok_or_else(upstream_err)?;
+     Ok(format!(
+         "/v1.0/comic/{}/chapters?lang={}&page=1&limit=12",
+         encode(hid),
+@@ -258,16 +388,56 @@ mod tests {
+     #[test]
+     fn comick_id_rejects_path_delimiters_like_ts_parse_content_id() {
+         assert!(is_comick_chapter_id("comick:abc123"));
+         for invalid in ["comick:bad/id", "comick:bad?id", "comick:bad#id"] {
+             assert!(!is_comick_chapter_id(invalid), "accepted {invalid:?}");
+         }
+     }
+ 
++    #[test]
++    fn comick_manga_id_requires_prefix_and_nonempty_opaque_id() {
++        assert!(is_comick_manga_id("comick:comic-1"));
++        for invalid in ["comic-1", "comick:", "comick:bad/id", ""] {
++            assert!(!is_comick_manga_id(invalid), "accepted {invalid:?}");
++        }
++    }
++
++    #[test]
++    fn comick_detail_normalizes_official_comic_envelope() {
++        let body = json!({
++            "comic": {
++                "hid": "comic-1",
++                "title": "Comick Detail",
++                "desc": "detail description",
++                "status": 2,
++                "year": 2024,
++                "md_covers": [{ "b2key": "cover.jpg" }],
++                "md_comic_md_genres": [
++                    { "md_genres": { "slug": "action", "name": "Action" } }
++                ],
++                "bayesian_rating": "8.5",
++                "user_follow_count": 99,
++                "last_chapter": 3
++            }
++        });
++        let dto = normalize_detail(&body).expect("valid comic detail");
++        assert_eq!(dto.id.as_str(), "comick:comic-1");
++        assert_eq!(dto.title, "Comick Detail");
++        assert_eq!(dto.description, "detail description");
++        assert_eq!(dto.status, "completed");
++        assert_eq!(dto.tags, ["action"]);
++        assert_eq!(dto.source_label, "Comick");
++        assert_eq!(
++            comic_path(dto.id.as_str()).unwrap(),
++            "/v1.0/comic/comic%2D1/"
++        );
++        assert!(normalize_detail(&json!({})).is_err());
++    }
++
+     #[test]
+     fn comick_chapter_normalizes_missing_title_and_language() {
+         let value = json!({
+             "hid": "chap-1",
+             "chapter": "7.5",
+             "lang": "vi",
+             "title": null
+         });
+@@ -299,15 +469,82 @@ mod tests {
+             json!({ "b2key": "a.jpg", "url": "http://meo.comick.pictures/a.jpg" }),
+             json!({ "b2key": "a.jpg", "url": "https://evil.example/a.jpg" }),
+         ] {
+             assert!(page_urls_from(&[bad]).is_err(), "accepted unsafe image URL");
+         }
+     }
+ 
+     #[test]
+-    fn comick_search_path_encodes_query() {
++    fn comick_search_path_encodes_filters() {
++        let path = search_path("slime & 100%", "vi", Some(2024), 2).expect("valid filters");
++        assert!(path.starts_with("/v1.0/search/?q=slime%20%26%20100%25"));
++        assert!(path.contains("&page=2"));
++        assert!(path.contains("&limit=15"));
++        // Official /v1.0/search/ has no `lang` filter; `from`/`to` are the year filters.
++        assert!(path.contains("&from=2024&to=2024"));
++        assert!(!path.contains("lang="));
+         assert_eq!(
+-            search_path("solo leveling & 100%"),
+-            "/v1.0/search/?q=solo%20leveling%20%26%20100%25&page=1&limit=15"
++            path.matches('&').count(),
++            4,
++            "unexpected query params: {path}"
+         );
++        assert!(search_path("slime", "vi", None, 51).is_err());
++        assert!(search_path("slime", "", None, 1).is_err());
++    }
++
++    #[test]
++    fn comick_search_path_allows_browse_without_query() {
++        let path = search_path("", "all", Some(2024), 2).expect("browse without q");
++        assert_eq!(path, "/v1.0/search/?page=2&limit=15&from=2024&to=2024");
++        let blank = search_path("   ", "all", None, 1).expect("blank q is omitted");
++        assert_eq!(blank, "/v1.0/search/?page=1&limit=15");
++    }
++
++    #[test]
++    fn comick_search_hit_sets_source_pair() {
++        let hit = json!({
++            "hid": "zZc_AAsE",
++            "title": "Slime Slayer",
++            "desc": "A slime story.",
++            "year": 2024,
++            "status": 1,
++            "genres": [30, 244],
++            "md_covers": [{ "b2key": "cover.jpg" }],
++            "bayesian_rating": "7.11",
++            "user_follow_count": 14253,
++            "last_chapter": 20.1
++        });
++        let dto = normalize_search_hit(&hit).expect("valid search hit");
++        assert_eq!(dto.id.as_str(), "comick:zZc_AAsE");
++        assert_eq!(request_opaque(dto.id.as_str()), Some("zZc_AAsE"));
++        assert_eq!(dto.title, "Slime Slayer");
++        assert_eq!(dto.source, "comick");
++        assert_eq!(dto.source_label, "Comick");
++        assert_eq!(
++            dto.cover_file.as_deref(),
++            Some("https://meo.comick.pictures/cover.jpg")
++        );
++        assert_eq!(dto.year, Some(2024));
++        assert_eq!(dto.status, "ongoing");
++        assert_eq!(dto.tags, ["30", "244"]);
++        assert_eq!(dto.tag_ids, ["30", "244"]);
++        assert_eq!(dto.rating, Some(7.11));
++        assert_eq!(dto.follows, Some(14_253));
++        assert_eq!(dto.latest_chapter.as_deref(), Some("20.1"));
++    }
++
++    #[test]
++    fn comick_search_hit_rejects_missing_title_or_id() {
++        for hit in [
++            json!({ "title": "Slime" }),
++            json!({ "hid": "zZc_AAsE" }),
++            json!({ "hid": "zZc_AAsE", "title": "" }),
++            json!({ "hid": "bad/hid", "title": "Slime" }),
++        ] {
++            assert_eq!(
++                normalize_search_hit(&hit).unwrap_err(),
++                UPSTREAM_ERR,
++                "accepted incomplete hit: {hit}"
++            );
++        }
+     }
+ }
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index 3d1bf1b..e3a37d7 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -1,8 +1,9 @@
+ pub mod comick;
+ pub mod dns;
+ pub mod fallback;
+ pub mod imgcache;
+ pub mod mangadex;
++pub mod search;
+ 
+ pub use comick::Comick;
+ pub use mangadex::Md;
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 1101a11..0b53614 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -37,16 +37,21 @@ impl Md {
+     pub fn new(http: reqwest::Client) -> Self {
+         // Local fixture override for the Next -> Axum topology tests. Production
+         // keeps the upstream MangaDex origin unless this is explicitly set.
+         let api = std::env::var("MANGADEX_API_ORIGIN")
+             .ok()
+             .map(|value| value.trim().trim_end_matches('/').to_owned())
+             .filter(|value| !value.is_empty())
+             .unwrap_or_else(|| API.to_owned());
++        Self::with_origin(http, api)
++    }
++
++    /// Explicit origin for local upstream fixtures; production uses `new()`.
++    pub fn with_origin(http: reqwest::Client, api: String) -> Self {
+         Self {
+             http,
+             api,
+             popular: Cache::builder()
+                 .time_to_live(Duration::from_secs(60))
+                 .max_capacity(1)
+                 .build(),
+             latest: Cache::builder()
+@@ -148,18 +153,19 @@ impl Md {
+ 
+     pub async fn search_filtered(
+         &self,
+         q: &str,
+         page: u32,
+         tags: &[String],
+         status: Option<&str>,
+         sort: &str,
++        lang: &str,
+     ) -> Result<Arc<SearchResponse>, Err> {
+-        let path = search_path(q, page, tags, status, sort).ok_or("Bộ lọc không hợp lệ.")?;
++        let path = search_path(q, page, tags, status, sort, lang).ok_or("Bộ lọc không hợp lệ.")?;
+         let md = self.clone();
+         self.search
+             .try_get_with(path.clone(), async move {
+                 let j = md.get(&path).await?;
+                 let (mut results, chapters) =
+                     futures::join!(md.with_stats(&j), md.search_chapters(&j));
+                 for result in &mut results {
+                     let Some(manga) = items(&j)
+@@ -173,22 +179,32 @@ impl Md {
+                             result.latest_chapter =
+                                 chapter["attributes"]["chapter"].as_str().map(str::to_owned);
+                         }
+                     }
+                 }
+                 Ok(Arc::new(SearchResponse {
+                     results,
+                     total: j["total"].as_u64().unwrap_or(0),
++                    partial: Some(false),
+                 }))
+             })
+             .await
+             .map_err(|e: Arc<Err>| (*e).clone())
+     }
+ 
++    /// Existing content cache, keyed by the full multi-source query in core::search.
++    pub async fn cached_search(&self, key: &str) -> Option<Arc<SearchResponse>> {
++        self.search.get(key).await
++    }
++
++    pub async fn cache_search(&self, key: String, response: Arc<SearchResponse>) {
++        self.search.insert(key, response).await;
++    }
++
+     async fn search_chapters(&self, manga: &Value) -> Value {
+         let ids = items(manga)
+             .iter()
+             .filter_map(|m| m["attributes"]["latestUploadedChapter"].as_str())
+             .map(|id| format!("ids[]={}", utf8_percent_encode(id, NON_ALPHANUMERIC)))
+             .collect::<Vec<_>>()
+             .join("&");
+         if ids.is_empty() {
+@@ -656,17 +672,21 @@ pub fn status_param(status: &str) -> Option<&'static str> {
+ }
+ 
+ fn search_path(
+     q: &str,
+     page: u32,
+     tags: &[String],
+     status: Option<&str>,
+     sort: &str,
++    lang: &str,
+ ) -> Option<String> {
++    if !matches!(lang, "all" | "vi" | "en") {
++        return None;
++    }
+     let offset = page.saturating_sub(1).checked_mul(24)?;
+     let mut path = format!("/manga?limit=24&offset={offset}");
+     if !q.is_empty() {
+         path.push_str(&format!(
+             "&title={}",
+             utf8_percent_encode(q, NON_ALPHANUMERIC)
+         ));
+     }
+@@ -677,16 +697,20 @@ fn search_path(
+         path.push_str(&format!("&status[]={}", status_param(status)?));
+     }
+     for tag in tags {
+         path.push_str(&format!(
+             "&includedTags[]={}",
+             utf8_percent_encode(tag, NON_ALPHANUMERIC)
+         ));
+     }
++    // Official MangaDex /manga filter; omitted for `all` to keep legacy paths.
++    if lang != "all" {
++        path.push_str(&format!("&availableTranslatedLanguage[]={lang}"));
++    }
+     Some(path)
+ }
+ 
+ fn latest_groups(feed: &Value) -> Vec<(&str, Vec<LatestChapterDto>)> {
+     let mut groups: Vec<(&str, Vec<LatestChapterDto>)> = Vec::new();
+     for chapter in items(feed) {
+         let attributes = &chapter["attributes"];
+         let Some(id) = chapter["id"].as_str().filter(|id| !id.trim().is_empty()) else {
+@@ -811,22 +835,39 @@ mod tests {
+         assert_eq!(sort_param("bad"), None);
+         assert_eq!(status_param("bad"), None);
+         let path = search_path(
+             "a&b",
+             2,
+             &["test-a".into(), "test-b".into()],
+             Some("completed"),
+             "title",
++            "all",
+         )
+         .unwrap();
+         assert!(path.contains("offset=24&title=a%26b"));
+         assert!(path.contains("status[]=completed&includedTags[]=test%2Da&includedTags[]=test%2Db"));
+     }
+ 
++    #[test]
++    fn search_path_applies_official_language_filter_only_when_requested() {
++        for lang in ["vi", "en"] {
++            let path = search_path("", 1, &[], None, "follows", lang).unwrap();
++            assert!(
++                path.contains(&format!("availableTranslatedLanguage[]={lang}")),
++                "missing language filter for {lang}: {path}"
++            );
++            assert!(!path.contains("translatedLanguage[]"), "{path}");
++        }
++        let legacy = search_path("", 1, &[], None, "follows", "all").unwrap();
++        assert!(!legacy.contains("availableTranslatedLanguage"));
++        assert!(!legacy.contains("translatedLanguage"));
++        assert!(search_path("", 1, &[], None, "follows", "fr").is_none());
++    }
++
+     #[test]
+     fn manga_projection_keeps_summary_fields_and_adds_stats() {
+         let manga = json!({
+             "id": "manga-id",
+             "attributes": {
+                 "title": {"en": "Title"},
+                 "status": "ongoing",
+                 "year": 2024,
+diff --git a/crates/core/src/search.rs b/crates/core/src/search.rs
+new file mode 100644
+index 0000000..a12a9a0
+--- /dev/null
++++ b/crates/core/src/search.rs
+@@ -0,0 +1,709 @@
++use contracts::{MangaSummaryDto, SearchQuery, SearchResponse};
++use std::cmp::Ordering;
++use std::sync::Arc;
++
++use crate::{Comick, Md};
++
++type Err = String;
++
++/// Sentinel for a query that requires an unconfigured provider. Kept distinct
++/// from upstream error text so a failed request is a 502, not a 503.
++pub const CONTENT_UNAVAILABLE: &str = "Comick provider is not configured";
++
++/// Comick's official search declares page <= 50 (limit <= 50). A page past that
++/// cannot be fetched, so it is reported partial instead of silently truncated.
++const COMICK_MAX_PAGE: u32 = 50;
++const PAGE_SIZE: usize = 24;
++
++struct ProviderPage {
++    results: Vec<MangaSummaryDto>,
++    total: u64,
++    partial: bool,
++    error: Option<Err>,
++}
++
++impl ProviderPage {
++    fn failed(error: Err) -> Self {
++        Self {
++            results: Vec::new(),
++            total: 0,
++            partial: true,
++            error: Some(error),
++        }
++    }
++}
++
++/// Merges one page of results from the selected catalog providers.
++pub async fn search_all(
++    md: &Md,
++    comick: Option<&Comick>,
++    query: &SearchQuery,
++) -> Result<SearchResponse, Err> {
++    let use_md = matches!(query.source.as_str(), "all" | "mangadex");
++    let use_comick = matches!(query.source.as_str(), "all" | "comick");
++    let comick = if use_comick {
++        Some(comick.ok_or_else(|| CONTENT_UNAVAILABLE.to_owned())?)
++    } else {
++        None
++    };
++
++    let key = cache_key(query);
++    if let Some(cached) = md.cached_search(&key).await {
++        if !cached.partial.unwrap_or(false) {
++            return Ok((*cached).clone());
++        }
++    }
++
++    // Independent failures: one healthy provider still answers, marked partial.
++    let (md_page, comick_page) = match (use_md, comick) {
++        (true, Some(comick)) => {
++            let (md_page, comick_page) =
++                tokio::join!(mangadex_page(md, query), comick_page_for(comick, query));
++            (Some(md_page), Some(comick_page))
++        }
++        (true, None) => (Some(mangadex_page(md, query).await), None),
++        (false, Some(comick)) => (None, Some(comick_page_for(comick, query).await)),
++        (false, None) => unreachable!("source=all|mangadex|comick is validated upstream"),
++    };
++
++    let mut providers = Vec::with_capacity(2);
++    let mut partial = false;
++    let mut first_error = None;
++    for page in [md_page, comick_page].into_iter().flatten() {
++        partial |= page.partial || page.error.is_some();
++        match page.error {
++            Some(error) => {
++                first_error.get_or_insert(error);
++            }
++            None => providers.push(page),
++        }
++    }
++    if providers.is_empty() {
++        return Err(
++            first_error.unwrap_or_else(|| "No content provider could answer the search.".into())
++        );
++    }
++
++    let total = providers.iter().map(|page| page.total).sum();
++    let mut results: Vec<_> = providers
++        .into_iter()
++        .flat_map(|page| page.results)
++        .collect();
++    results.sort_by(|a, b| compare(a, b, &query.sort));
++    let start = query.page.saturating_sub(1) as usize * PAGE_SIZE;
++    let results = results.into_iter().skip(start).take(PAGE_SIZE).collect();
++    let response = SearchResponse {
++        results,
++        total,
++        partial: Some(partial),
++    };
++    if !partial {
++        md.cache_search(key, Arc::new(response.clone())).await;
++    }
++    Ok(response)
++}
++
++fn cache_key(query: &SearchQuery) -> String {
++    // JSON-quoted keyword keeps the delimited key unambiguous for any text.
++    let q = serde_json::to_string(&query.q).unwrap_or_default();
++    format!(
++        "aggregate|q{}:p{}:t{}:s{}:sort{}:src{}:lang{}:y{}",
++        q,
++        query.page,
++        query.tags.join(","),
++        query.status.as_deref().unwrap_or(""),
++        query.sort,
++        query.source,
++        query.lang,
++        query.year.map(|year| year.to_string()).unwrap_or_default(),
++    )
++}
++
++async fn mangadex_page(md: &Md, query: &SearchQuery) -> ProviderPage {
++    let response = match md
++        .search_filtered(
++            &query.q,
++            query.page,
++            &query.tags,
++            query.status.as_deref(),
++            &query.sort,
++            &query.lang,
++        )
++        .await
++    {
++        Ok(response) => response,
++        Err(error) => return ProviderPage::failed(error),
++    };
++    // MangaDex applies `lang` server-side via the official
++    // `availableTranslatedLanguage[]` filter. Year has no upstream filter in
++    // this adapter, so it is applied to the returned page only and marked partial.
++    let mut results = (*response).clone().results;
++    if let Some(year) = query.year {
++        results.retain(|item| item.year == Some(year));
++    }
++    ProviderPage {
++        results,
++        total: response.total,
++        partial: response.partial.unwrap_or(false) || query.year.is_some(),
++        error: None,
++    }
++}
++
++async fn comick_page_for(comick: &Comick, query: &SearchQuery) -> ProviderPage {
++    if query.page > COMICK_MAX_PAGE {
++        return ProviderPage {
++            results: Vec::new(),
++            total: 0,
++            partial: true,
++            error: None,
++        };
++    }
++    let results = match comick
++        .search(&query.q, &query.lang, query.year, query.page)
++        .await
++    {
++        Ok(results) => results,
++        Err(error) => return ProviderPage::failed(error),
++    };
++    // Verified official /genre/ slugs exist, but no official endpoint maps a
++    // MangaDex tag UUID to a Comick genre slug. Never guess one: report partial.
++    // /v1.0/search/ has no `lang` field and the summary hit carries no language,
++    // so Comick results cannot be language-filtered without per-title lookups;
++    // report partial instead of inventing a param or dropping hits. `status` is
++    // filtered locally for the same "cannot guarantee full coverage" reason.
++    let mut results = results;
++    if let Some(status) = query.status.as_deref() {
++        results.retain(|item| item.status == status);
++    }
++    ProviderPage {
++        total: results.len() as u64,
++        partial: query.lang != "all" || !query.tags.is_empty() || query.status.is_some(),
++        results,
++        error: None,
++    }
++}
++
++fn compare(a: &MangaSummaryDto, b: &MangaSummaryDto, sort: &str) -> Ordering {
++    let primary = match sort {
++        "follows" => b.follows.unwrap_or(0).cmp(&a.follows.unwrap_or(0)),
++        "rating" => b
++            .rating
++            .unwrap_or(0.0)
++            .partial_cmp(&a.rating.unwrap_or(0.0))
++            .unwrap_or(Ordering::Equal),
++        // shortcut: no publish timestamp on the summary DTO; year is the closest
++        // available proxy for "new". Revisit when upstream exposes publishAt.
++        "new" | "year" => b.year.unwrap_or(0).cmp(&a.year.unwrap_or(0)),
++        "title" => a.title.cmp(&b.title),
++        _ => Ordering::Equal,
++    };
++    primary
++        .then_with(|| a.source_label.cmp(&b.source_label))
++        .then_with(|| a.title.cmp(&b.title))
++        .then_with(|| a.id.as_str().cmp(b.id.as_str()))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::{json, Value};
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    use std::sync::{Arc, Mutex};
++    use tokio::io::{AsyncReadExt, AsyncWriteExt};
++    use tokio::net::TcpListener;
++    use tokio::task::JoinHandle;
++
++    const TAG: &str = "391b0423-d847-456f-aff0-8b0cfc03066b";
++
++    #[derive(Clone)]
++    enum Mode {
++        Md { items: Vec<Value>, fail: bool },
++        Comick { hits: Vec<Value>, fail: bool },
++    }
++
++    struct Fixture {
++        base: String,
++        hits: Arc<AtomicUsize>,
++        paths: Arc<Mutex<Vec<String>>>,
++        task: JoinHandle<()>,
++    }
++
++    impl Drop for Fixture {
++        fn drop(&mut self) {
++            self.task.abort();
++        }
++    }
++
++    impl Fixture {
++        fn count(&self) -> usize {
++            self.hits.load(Ordering::Relaxed)
++        }
++
++        fn paths(&self) -> Vec<String> {
++            self.paths.lock().expect("fixture paths").clone()
++        }
++    }
++
++    async fn fixture(mode: Mode) -> Fixture {
++        let listener = TcpListener::bind("127.0.0.1:0")
++            .await
++            .expect("bind fixture");
++        let base = format!("http://{}", listener.local_addr().expect("fixture addr"));
++        let hits = Arc::new(AtomicUsize::new(0));
++        let counter = Arc::clone(&hits);
++        let paths = Arc::new(Mutex::new(Vec::new()));
++        let seen = Arc::clone(&paths);
++        let task = tokio::spawn(async move {
++            loop {
++                let Ok((mut socket, _)) = listener.accept().await else {
++                    break;
++                };
++                let counter = Arc::clone(&counter);
++                let seen = Arc::clone(&seen);
++                let mode = mode.clone();
++                tokio::spawn(async move {
++                    let mut data = Vec::new();
++                    let mut buf = [0u8; 4096];
++                    while data.windows(4).all(|w| w != b"\r\n\r\n") {
++                        let Ok(n) = socket.read(&mut buf).await else {
++                            break;
++                        };
++                        if n == 0 {
++                            break;
++                        }
++                        data.extend_from_slice(&buf[..n]);
++                    }
++                    counter.fetch_add(1, Ordering::Relaxed);
++                    let request = String::from_utf8_lossy(&data);
++                    let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
++                    seen.lock().expect("fixture paths").push(path.clone());
++                    let (body, failed) = respond(&mode, &path);
++                    let status = if failed {
++                        "500 Internal Server Error"
++                    } else {
++                        "200 OK"
++                    };
++                    let response = format!(
++                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
++                        body.len()
++                    );
++                    let _ = socket.write_all(response.as_bytes()).await;
++                });
++            }
++        });
++        Fixture {
++            base,
++            hits,
++            paths,
++            task,
++        }
++    }
++
++    fn respond(mode: &Mode, path: &str) -> (String, bool) {
++        match mode {
++            Mode::Md { items, fail } => {
++                if path.starts_with("/manga?") {
++                    let total = items.len();
++                    return (json!({ "total": total, "data": items }).to_string(), *fail);
++                }
++                if path.starts_with("/statistics/manga") {
++                    let stats: serde_json::Map<String, Value> = items
++                        .iter()
++                        .filter_map(|item| {
++                            let id = item["id"].as_str()?;
++                            Some((id.to_owned(), item["statistics"].clone()))
++                        })
++                        .collect();
++                    return (json!({ "statistics": stats }).to_string(), false);
++                }
++                (json!({ "total": 0, "data": [] }).to_string(), false)
++            }
++            Mode::Comick { hits, fail } => {
++                if path.starts_with("/v1.0/search/") {
++                    return (json!(hits).to_string(), *fail);
++                }
++                ("[]".into(), false)
++            }
++        }
++    }
++
++    fn md_item(id: &str, title: &str, follows: u64) -> Value {
++        json!({
++            "id": id,
++            "attributes": {
++                "title": { "en": title },
++                "status": "ongoing",
++                "year": 2024,
++                "description": { "en": "fixture" },
++                "tags": []
++            },
++            "relationships": [],
++            "statistics": { "follows": follows }
++        })
++    }
++
++    fn comick_hit(hid: &str, title: &str, follows: u64, rating: &str) -> Value {
++        json!({
++            "hid": hid,
++            "title": title,
++            "desc": "modern Comick hit",
++            "status": 1,
++            "year": 2024,
++            "genres": [30, 244],
++            "md_covers": [{ "b2key": "cover.jpg" }],
++            "bayesian_rating": rating,
++            "user_follow_count": follows,
++            "last_chapter": 10
++        })
++    }
++
++    fn query(source: &str, lang: &str, sort: &str) -> SearchQuery {
++        SearchQuery {
++            q: String::new(),
++            page: 1,
++            tags: vec![],
++            status: None,
++            sort: sort.into(),
++            source: source.into(),
++            lang: lang.into(),
++            year: None,
++        }
++    }
++
++    #[test]
++    fn cache_key_covers_every_query_field() {
++        let base = query("all", "all", "follows");
++        let mut other = base.clone();
++        other.q = "ab".into();
++        let mut third = base.clone();
++        third.q = "cd".into();
++        assert_ne!(cache_key(&other), cache_key(&third));
++        for (mut changed, label) in [
++            (base.clone(), "page"),
++            (base.clone(), "tags"),
++            (base.clone(), "status"),
++            (base.clone(), "sort"),
++            (base.clone(), "source"),
++            (base.clone(), "lang"),
++            (base.clone(), "year"),
++        ] {
++            match label {
++                "page" => changed.page = 2,
++                "tags" => changed.tags = vec![TAG.into()],
++                "status" => changed.status = Some("ongoing".into()),
++                "sort" => changed.sort = "title".into(),
++                "source" => changed.source = "comick".into(),
++                "lang" => changed.lang = "vi".into(),
++                "year" => changed.year = Some(2024),
++                _ => unreachable!(),
++            }
++            assert_ne!(
++                cache_key(&base),
++                cache_key(&changed),
++                "{label} missing from key"
++            );
++        }
++    }
++
++    #[tokio::test]
++    async fn search_mangadex_only_preserves_existing_behavior() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Only MD", 1)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "Only Comick", 9, "9.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("mangadex", "all", "follows"))
++            .await
++            .expect("mangadex search succeeds");
++
++        assert_eq!(response.results.len(), 1);
++        assert_eq!(response.results[0].id.as_str(), "md-1");
++        assert_eq!(response.results[0].source_label, "MangaDex");
++        assert_eq!(response.total, 1);
++        assert_eq!(response.partial, Some(false));
++        assert_eq!(ck_fx.count(), 0, "MangaDex-only search called Comick");
++    }
++
++    fn md_search_path(fx: &Fixture) -> String {
++        fx.paths()
++            .into_iter()
++            .find(|path| path.starts_with("/manga?"))
++            .expect("MangaDex search request")
++    }
++
++    #[tokio::test]
++    async fn mangadex_lang_filters_upstream_and_all_keeps_legacy_path() {
++        for lang in ["vi", "en"] {
++            let md_fx = fixture(Mode::Md {
++                items: vec![md_item("md-1", "Localized", 1)],
++                fail: false,
++            })
++            .await;
++            let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++            let response = search_all(&md, None, &query("mangadex", lang, "follows"))
++                .await
++                .expect("mangadex language search succeeds");
++            let path = md_search_path(&md_fx);
++            assert!(
++                path.contains(&format!("availableTranslatedLanguage[]={lang}")),
++                "missing official language filter: {path}"
++            );
++            assert_eq!(response.partial, Some(false));
++        }
++
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Legacy", 1)],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let response = search_all(&md, None, &query("mangadex", "all", "follows"))
++            .await
++            .expect("legacy search succeeds");
++        let path = md_search_path(&md_fx);
++        assert!(!path.contains("availableTranslatedLanguage"), "{path}");
++        assert!(!path.contains("translatedLanguage"), "{path}");
++        assert_eq!(response.partial, Some(false));
++    }
++
++    #[tokio::test]
++    async fn source_all_lang_vi_filters_mangadex_and_marks_comick_partial() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Vietnamese", 1)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "Shared", 1, "5.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("all", "vi", "follows"))
++            .await
++            .expect("language-filtered multi-source search succeeds");
++
++        let md_path = md_search_path(&md_fx);
++        assert!(
++            md_path.contains("availableTranslatedLanguage[]=vi"),
++            "MangaDex did not receive the language filter: {md_path}"
++        );
++        assert!(
++            ck_fx.paths().iter().all(|path| !path.contains("lang=")),
++            "Comick must not receive an invented lang param: {:?}",
++            ck_fx.paths()
++        );
++        let sources: Vec<_> = response
++            .results
++            .iter()
++            .map(|item| item.source.as_str())
++            .collect();
++        assert!(sources.contains(&"mangadex"));
++        assert!(sources.contains(&"comick"));
++        assert_eq!(
++            response.partial,
++            Some(true),
++            "Comick cannot be language-filtered"
++        );
++    }
++
++    #[tokio::test]
++    async fn search_comick_only_uses_adapter() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Only MD", 1)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "Only Comick", 9, "9.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("comick", "all", "follows"))
++            .await
++            .expect("comick search succeeds");
++
++        assert_eq!(response.results.len(), 1);
++        assert_eq!(response.results[0].id.as_str(), "comick:ck-1");
++        assert_eq!(response.results[0].source_label, "Comick");
++        assert_eq!(response.results[0].description, "modern Comick hit");
++        assert_eq!(response.results[0].tags, ["30", "244"]);
++        assert_eq!(
++            response.results[0].cover_file.as_deref(),
++            Some("https://meo.comick.pictures/cover.jpg")
++        );
++        assert_eq!(response.total, 1);
++        assert_eq!(response.partial, Some(false));
++        assert_eq!(md_fx.count(), 0, "Comick-only search called MangaDex");
++    }
++
++    #[tokio::test]
++    async fn search_all_keeps_provider_duplicates_separate() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Same Title", 3)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "same title", 3, "7.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("all", "all", "follows"))
++            .await
++            .expect("multi-source search succeeds");
++
++        assert_eq!(response.results.len(), 2);
++        assert_eq!(response.total, 2);
++        let sources: Vec<_> = response.results.iter().map(|r| r.source.as_str()).collect();
++        assert!(sources.contains(&"mangadex"));
++        assert!(sources.contains(&"comick"));
++        assert!(
++            response
++                .results
++                .iter()
++                .all(|r| r.title.eq_ignore_ascii_case("Same Title")),
++            "provider duplicates must not be collapsed"
++        );
++        assert_eq!(response.partial, Some(false));
++    }
++
++    #[tokio::test]
++    async fn search_all_merges_and_sorts_deterministically() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-b", "Beta", 5), md_item("md-a", "Alpha", 9)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![
++                comick_hit("ck-1", "Alpha", 9, "8.0"),
++                comick_hit("ck-2", "Zeta", 1, "6.0"),
++            ],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("all", "all", "follows"))
++            .await
++            .expect("multi-source search succeeds");
++
++        let ids: Vec<_> = response.results.iter().map(|r| r.id.as_str()).collect();
++        assert_eq!(ids, ["comick:ck-1", "md-a", "md-b", "comick:ck-2"]);
++        assert_eq!(response.total, 4);
++    }
++
++    #[tokio::test]
++    async fn search_all_partial_when_one_provider_fails() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![md_item("md-1", "Still Here", 1)],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![],
++            fail: true,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let response = search_all(&md, Some(&comick), &query("all", "all", "follows"))
++            .await
++            .expect("one healthy provider is enough");
++
++        assert_eq!(response.results.len(), 1);
++        assert_eq!(response.results[0].source, "mangadex");
++        assert_eq!(response.partial, Some(true));
++    }
++
++    #[tokio::test]
++    async fn search_all_pages_to_24_and_sums_totals_before_slicing() {
++        let items = (0..25)
++            .map(|i| md_item(&format!("md-{i}"), &format!("Title {i}"), i))
++            .collect();
++        let md_fx = fixture(Mode::Md { items, fail: false }).await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++
++        let response = search_all(&md, None, &query("mangadex", "all", "title"))
++            .await
++            .expect("mangadex search succeeds");
++
++        assert_eq!(response.results.len(), 24);
++        assert_eq!(response.total, 25);
++        assert_eq!(response.partial, Some(false));
++    }
++
++    #[tokio::test]
++    async fn comick_filters_that_cannot_be_guaranteed_are_partial() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![],
++            fail: false,
++        })
++        .await;
++        let ck_fx = fixture(Mode::Comick {
++            hits: vec![comick_hit("ck-1", "Hit", 1, "5.0")],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++        let comick = Comick::with_origin(ck_fx.base.clone());
++
++        let mut cfg = query("comick", "vi", "follows");
++        cfg.tags = vec![TAG.into()];
++        cfg.page = 51;
++        let response = search_all(&md, Some(&comick), &cfg)
++            .await
++            .expect("partial comick search is still a response");
++        assert_eq!(response.results.len(), 0);
++        assert_eq!(response.partial, Some(true));
++        assert_eq!(
++            ck_fx.count(),
++            0,
++            "page 51 is outside the official Comick cap"
++        );
++
++        let mut cfg = query("comick", "all", "follows");
++        cfg.tags = vec![TAG.into()];
++        let response = search_all(&md, Some(&comick), &cfg)
++            .await
++            .expect("tag-filtered comick search succeeds");
++        assert_eq!(response.partial, Some(true));
++        assert_eq!(response.results.len(), 1);
++    }
++
++    #[tokio::test]
++    async fn comick_requires_a_configured_adapter() {
++        let md_fx = fixture(Mode::Md {
++            items: vec![],
++            fail: false,
++        })
++        .await;
++        let md = Md::with_origin(reqwest::Client::new(), md_fx.base.clone());
++
++        for source in ["comick", "all"] {
++            let error = search_all(&md, None, &query(source, "all", "follows"))
++                .await
++                .expect_err("missing Comick adapter must be reported");
++            assert_eq!(error, CONTENT_UNAVAILABLE);
++        }
++    }
++}
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index 88e32a4..4cdd9eb 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -1,16 +1,16 @@
+ use axum::body::Body;
+ use axum::extract::{Path, Query, State};
+ use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::get;
+ use axum::{Json, Router};
+-use contracts::{ApiError, ApiErrorEnvelope};
+-use manga_core::comick::is_comick_chapter_id;
++use contracts::{parse_search_query, ApiError, ApiErrorEnvelope, ChapterDto};
++use manga_core::comick::{is_comick_chapter_id, is_comick_manga_id, ComickChapter};
+ use manga_core::fallback::{
+     chapter_metadata as fallback_metadata, chapter_pages, enrich_chapters, ContentState,
+ };
+ use manga_core::mangadex::is_uuid;
+ use manga_core::{Comick, Md};
+ use serde::Serialize;
+ use serde_json::json;
+ use std::collections::HashMap;
+@@ -25,16 +25,20 @@ fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Err
+     (
+         status,
+         Json(ApiErrorEnvelope {
+             error: ApiError::new(code, message),
+         }),
+     )
+ }
+ 
++fn validation_error(error: ApiError) -> Err {
++    (StatusCode::BAD_REQUEST, Json(ApiErrorEnvelope { error }))
++}
++
+ fn json_cached<T: Serialize>(v: T, secs: u32) -> Response {
+     let mut res = Json(v).into_response();
+     res.headers_mut().insert(
+         header::CACHE_CONTROL,
+         HeaderValue::from_str(&format!("public, max-age={secs}")).unwrap(),
+     );
+     res
+ }
+@@ -210,83 +214,41 @@ async fn ready() -> Response {
+ async fn popular(State(state): State<ContentState>) -> Result<Response, Err> {
+     Ok(json_cached(state.md.popular().await.map_err(bad)?, 60))
+ }
+ 
+ async fn latest(State(state): State<ContentState>) -> Result<Response, Err> {
+     Ok(json_cached(state.md.latest().await.map_err(bad)?, 60))
+ }
+ 
+-async fn search(
+-    State(state): State<ContentState>,
+-    Query(q): Query<HashMap<String, String>>,
+-) -> Result<Response, Err> {
+-    let q = parse_search_query(q)?;
+-    Ok(json_cached(
+-        state
+-            .md
+-            .search_filtered(&q.q, q.page, &q.tags, q.status.as_deref(), &q.sort)
+-            .await
+-            .map_err(bad)?,
+-        60,
+-    ))
++fn content_unavailable() -> Err {
++    api_error(
++        StatusCode::SERVICE_UNAVAILABLE,
++        "CONTENT_UNAVAILABLE",
++        "Comick catalog unavailable.",
++    )
+ }
+ 
+-#[derive(Debug)]
+-struct SearchQuery {
+-    q: String,
+-    page: u32,
+-    tags: Vec<String>,
+-    status: Option<String>,
+-    sort: String,
++fn search_error(error: String) -> Err {
++    if error == manga_core::search::CONTENT_UNAVAILABLE {
++        content_unavailable()
++    } else {
++        bad(error)
++    }
+ }
+ 
+-fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
+-    let value = |key| q.get(key).map(|s| s.trim()).filter(|s| !s.is_empty());
+-    let invalid = |name| {
+-        api_error(
+-            StatusCode::BAD_REQUEST,
+-            "VALIDATION_ERROR",
+-            format!("{name} không hợp lệ."),
+-        )
+-    };
+-    let page = match value("page") {
+-        Some(raw) => raw
+-            .parse::<u32>()
+-            .ok()
+-            .filter(|p| (1..=416).contains(p))
+-            .ok_or_else(|| invalid("Số trang"))?,
+-        None => 1,
+-    };
+-    let query = value("q").unwrap_or("");
+-    if query.chars().count() > 200 {
+-        return Err(invalid("Tên truyện"));
+-    }
+-    let sort = value("sort").unwrap_or("follows");
+-    manga_core::mangadex::sort_param(sort).ok_or_else(|| invalid("Cách sắp xếp"))?;
+-    let status = value("status");
+-    if status.is_some_and(|s| manga_core::mangadex::status_param(s).is_none()) {
+-        return Err(invalid("Trạng thái"));
+-    }
+-    let mut tags: Vec<_> = value("tags")
+-        .into_iter()
+-        .flat_map(|s| s.split(','))
+-        .collect();
+-    if tags.len() > 8 || !tags.iter().all(|id| is_uuid(id)) {
+-        return Err(invalid("Thể loại"));
+-    }
+-    tags.sort_unstable();
+-    tags.dedup();
+-    Ok(SearchQuery {
+-        q: query.to_owned(),
+-        page,
+-        tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
+-        status: status.map(str::to_owned),
+-        sort: sort.to_owned(),
+-    })
++async fn search(
++    State(state): State<ContentState>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Result<Response, Err> {
++    let q = parse_search_query(q).map_err(validation_error)?;
++    let response = manga_core::search::search_all(&state.md, state.comick.as_ref(), &q)
++        .await
++        .map_err(search_error)?;
++    Ok(json_cached(response, 60))
+ }
+ 
+ #[derive(Debug)]
+ struct NotificationFeedQuery {
+     lang: String,
+     since: Option<String>,
+     offset: u32,
+     limit: u32,
+@@ -352,31 +314,70 @@ async fn rank(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Kiểu xếp hạng không hợp lệ.",
+         ));
+     }
+     Ok(json_cached(state.md.rank(kind).await.map_err(bad)?, 300))
+ }
+ 
++fn comick_chapter_dto(chapter: ComickChapter) -> ChapterDto {
++    ChapterDto {
++        id: chapter.id.into(),
++        chapter: chapter.chapter,
++        volume: None,
++        title: chapter.title,
++        lang: chapter.lang,
++        // Page count is only known through the chapter pages endpoint.
++        pages: 0,
++        external_url: None,
++        publish_at: chapter.publish_at,
++        group: chapter.group,
++        source: "comick".into(),
++        source_label: "Comick".into(),
++        readable: false,
++    }
++}
++
+ async fn manga(State(state): State<ContentState>, Path(id): Path<String>) -> Result<Response, Err> {
++    if is_comick_manga_id(&id) {
++        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
++        return Ok(json_cached(comick.detail(&id).await.map_err(bad)?, 3600));
++    }
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+     Ok(json_cached(state.md.manga(&id).await.map_err(bad)?, 3600))
+ }
+ 
+ async fn chapters(
+     State(state): State<ContentState>,
+     Path(id): Path<String>,
+ ) -> Result<Response, Err> {
++    if is_comick_manga_id(&id) {
++        let comick = state.comick.as_ref().ok_or_else(content_unavailable)?;
++        let (vi, en) = tokio::join!(comick.chapters(&id, "vi"), comick.chapters(&id, "en"));
++        let response = contracts::ChaptersResponse {
++            vi: vi
++                .map_err(bad)?
++                .into_iter()
++                .map(comick_chapter_dto)
++                .collect(),
++            en: en
++                .map_err(bad)?
++                .into_iter()
++                .map(comick_chapter_dto)
++                .collect(),
++        };
++        return Ok(json_cached(response, 60));
++    }
+     if !is_uuid(&id) {
+         return Err(api_error(
+             StatusCode::BAD_REQUEST,
+             "VALIDATION_ERROR",
+             "Mã truyện không hợp lệ.",
+         ));
+     }
+     let primary = state.md.chapters(&id).await.map_err(bad)?;
+@@ -584,39 +585,67 @@ mod tests {
+     fn search_rejects_invalid_filters_and_bounds_pagination() {
+         for (name, value) in [
+             ("sort", "bad"),
+             ("status", "bad"),
+             ("tags", "bad"),
+             ("page", "4294967295"),
+         ] {
+             assert_eq!(
+-                parse_search_query(HashMap::from([(name.into(), value.into())]))
+-                    .unwrap_err()
+-                    .0,
++                validation_error(
++                    parse_search_query(HashMap::from([(name.into(), value.into())])).unwrap_err()
++                )
++                .0,
+                 StatusCode::BAD_REQUEST
+             );
+         }
+         let id = "391b0423-d847-456f-aff0-8b0cfc03066b";
+         assert_eq!(
+-            parse_search_query(HashMap::from([("tags".into(), [id; 9].join(","))]))
+-                .unwrap_err()
+-                .0,
++            validation_error(
++                parse_search_query(HashMap::from([("tags".into(), [id; 9].join(","))]))
++                    .unwrap_err(),
++            )
++            .0,
+             StatusCode::BAD_REQUEST
+         );
+         let query = parse_search_query(HashMap::from([
+             ("tags".into(), id.into()),
+             ("sort".into(), "rating".into()),
+         ]))
+         .unwrap();
+         assert_eq!(query.tags, [id]);
+         assert_eq!(query.sort, "rating");
+         assert!(query.q.is_empty());
+     }
+ 
++    #[test]
++    fn missing_comick_adapter_maps_to_structured_503() {
++        let (status, Json(body)) = search_error(manga_core::search::CONTENT_UNAVAILABLE.to_owned());
++        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
++        assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
++        let (status, _) = search_error("Comick catalog unavailable".into());
++        assert_eq!(status, StatusCode::BAD_GATEWAY);
++    }
++
++    #[tokio::test]
++    async fn comick_manga_ids_dispatch_before_validation_and_report_unavailable() {
++        let state = ContentState {
++            md: Md::new(manga_core::dns::PublicDns::client()),
++            comick: None,
++        };
++        for result in [
++            manga(State(state.clone()), Path("comick:comic-1".into())).await,
++            chapters(State(state.clone()), Path("comick:comic-1".into())).await,
++        ] {
++            let (status, Json(body)) = result.unwrap_err();
++            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
++            assert_eq!(body.error.code, "CONTENT_UNAVAILABLE");
++        }
++    }
++
+     #[test]
+     fn notification_feed_query_bounds_language_limit_offset_and_since() {
+         let parsed = parse_notification_feed_query(HashMap::from([
+             ("lang".into(), "vi".into()),
+             ("limit".into(), "100".into()),
+             ("offset".into(), "300".into()),
+             ("since".into(), "2026-07-01T00:00:00Z".into()),
+         ]))
+diff --git a/docs/WEB-STATUS.md b/docs/WEB-STATUS.md
+index 90fcc30..ac530f6 100644
+--- a/docs/WEB-STATUS.md
++++ b/docs/WEB-STATUS.md
+@@ -124,8 +124,40 @@ Exact commands, counts and rulings are in
+   aggregate/browser suites spawn the Axum binary (ordering fix; without it
+   fixture tests false-RED on the missing binary). CI runs the same order.
+ - Whitespace gate is baselined: 783 pre-existing findings in committed
+   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` are listed in
+   `web/scripts/whitespace-baseline.txt`; any new finding still fails. The two
+   pre-existing rustfmt hunks in `crates/core/src/comick.rs` were fixed with
+   `cargo fmt -p core` and `core` joined the scoped `cargo fmt --check` set.
+ - No deployment, push, merge, or live provider verification was performed.
++
++## Advanced search UX + final local gate (Task 7)
++
++- Advanced search: `/search` ("Khám phá") now keeps `source`
++  (`all`/`mangadex`/`comick`), `lang` (`all`/`vi`/`en`) and `year`
++  (1900…current+1) in the same GET form as `q`/tags/status/sort/page. Axum
++  dispatches to MangaDex and/or Comick, keeps provider duplicates separate,
++  sorts deterministically and returns at most 24 results per page. When a
++  filter can only be applied locally or a provider fails, `partial=true` makes
++  the UI show a short warning instead of implying a complete result.
++- Genre browsing moved into the same page: four grouped tag sections with a
++  four-group skeleton; the standalone Next `/the-loai` route and nav link are
++  gone.
++- Cover badges replace title suffixes: `MangaDex`/`Comick` with accessible name
++  `Nguồn: <label>` on cards, feed, ranking and detail covers.
++- `/bxh` has a route-level loading shell with 12 shape-matched rows and
++  `rank-top rank-1/2/3` frames for the top three rows; tab changes re-show the
++  skeleton and skeleton/loaded row boxes stay within 2px, with shimmer disabled
++  under `prefers-reduced-motion`.
++- `test:aggregate` now runs 28 aggregate test files (7 source + 5 new among
++  them): the previous suites plus `search-contracts`, `search-source`,
++  `advanced-search`, `source-badge`, `ranking-skeleton`. CI installs Chromium
++  before aggregate since two of the new suites are Playwright tests; the Axum
++  prebuild hooks are unchanged.
++- Local gate results: `build:wasm`/`build` pass; aggregate 203 pass / 0 fail;
++  browser 23 pass / 0 fail; `cargo build -p server` pass; workspace tests
++  90 pass / 0 fail; clippy `-D warnings`, scoped fmt (including `core`),
++  typecheck, lint (0 errors, 7 pre-existing `@next/next/no-img-element`
++  warnings), whitespace (0 new findings), secrets (0 candidates) and
++  `git diff --check` all pass.
++- No deployment, push, merge or live provider verification was done. Live
++  MangaDex/Comick catalog and ToS checks remain manual release gates.
+diff --git a/infra/axum.md b/infra/axum.md
+index d9e34da..d66fbcc 100644
+--- a/infra/axum.md
++++ b/infra/axum.md
+@@ -66,28 +66,63 @@ files; the two Rust files touched by Task 4 were formatted with `rustfmt --editi
+ - The image proxy allowlists the verified Comick CDN host
+   (`meo.comick.pictures`, HTTPS/443, no credentials) with raw and decoded
+   path-traversal rejection; the browser only ever receives same-origin
+   `/api/img` URLs.
+ - Source labels (`MangaDex` default for legacy DTOs, `Comick` for
+   provider-prefixed chapters) come from the shared contracts and are rendered by
+   the web UI; reader tickets and progression records bind the chapter source.
+ 
++## Advanced search (Tasks 1–3, gated in Task 7)
++
++- `contracts::SearchQuery` is the single parser for `/api/content/search` and
++  its legacy `/api/search` alias. It accepts `source` (`all`/`mangadex`/
++  `comick`, default `all`), `lang` (`all`/`vi`/`en`, default `all`), `year`
++  (1900…current year + 1), and keeps the existing `q`/`tags`/`status`/`sort`/
++  `page` validation. `SearchResponse.partial` defaults to `false` for older DTOs.
++- The handler calls `core::search_all`. `source=mangadex` and `source=comick`
++  dispatch to one provider; `source=all` calls both concurrently, keeps
++  same-title hits from different providers as separate results, sorts by
++  `sort` → source label → title → id and slices to at most 24 items per page.
++  A filter the provider cannot apply (`lang`, `year`) is applied locally and
++  marks the response `partial: true`, as does a failing provider; successful
++  full responses are cached under a key containing every query field.
++  `comick`-only queries with no configured `Comick` adapter return a structured
++  `503 CONTENT_UNAVAILABLE` instead of panicking.
++- `COMICK_API_ORIGIN` keeps `web/scripts/search-source.test.mjs` on loopback
++  MangaDex/Comick fixtures. It asserts provider dispatch, merged `source_label`
++  values, `partial=true` on a Comick 500, structured 400s for bad filters and
++  cache-key changes per `source`/`lang`/`year`. No remote call or credential is
++  involved; live catalog/ToS verification of both providers is still a manual
++  release gate and is not claimed.
++
+ ## Gate notes (Task 10)
+ 
+ - `cargo fmt -p core` fixed the two known pre-existing rustfmt hunks in
+   `crates/core/src/comick.rs` (lines ~119 and ~159); `core` is now part of the
+   scoped `cargo fmt --check` set in CI. Full-workspace fmt still carries older
+   Leptos debt, so it stays out of scope.
+ - The tracked-file whitespace gate runs with
+   `web/scripts/whitespace-baseline.txt` (783 pre-existing findings in committed
+   `docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff`); new findings still fail.
+ - `npm run test:aggregate`/`test:browser` build the Axum binary via pretest
+   before suites spawn it; CI builds it as its own step first.
+ 
++## Gate notes (Task 7)
++
++- `test:aggregate` now includes `search-contracts`, `search-source`,
++  `advanced-search`, `source-badge` and `ranking-skeleton`: 28 aggregate test
++  files (7 source + 5 new among them). Two of the added suites are browser
++  based and need Playwright Chromium, so CI installs it before the aggregate
++  step; the Axum prebuild ordering is untouched.
++- The full local gate passed: aggregate 203/203, browser 23/23, workspace Rust
++  tests 90/0, `cargo build -p server`, clippy `-D warnings`, scoped
++  `cargo fmt --check` including `core`, typecheck/lint, whitespace/secrets and
++  `git diff --check`. No deploy, push or merge was performed.
++
+ ## Unverified
+ 
+ No Axum service was deployed, exposed publicly, or connected to live Neon/Google
+ configuration in this task. Docker was unavailable, so no PostgreSQL container was
+ created; the migration test used embedded PGlite as a dev/test-only engine and did
+ not touch any pre-existing database.
+ 
+ ## Task 9 hardening
+diff --git a/web/README.md b/web/README.md
+index 5f42345..8d09e4c 100644
+--- a/web/README.md
++++ b/web/README.md
+@@ -21,18 +21,18 @@ npm start -- -p 3100
+ 
+ `RUST_CONTENT_API_ORIGIN` bắt buộc (ví dụ `http://127.0.0.1:3100` cho Axum chạy local). Không có biến này, route nội dung trả 503 có cấu trúc; trang chủ vẫn hiển thị thông báo thay vì dữ liệu giả.
+ 
+  build output (`web/generated`, `web/public/wasm`, `target/`) không được commit; CI/local phải chạy `npm run build:wasm` trước `next build`.
+ 
+ ## Tính năng
+ 
+ - Trang chủ: featured, rail được theo dõi, chương mới, bảng xếp hạng, đọc tiếp/tủ truyện
+-- `/search`: lọc URL `q`, `tags` (comma-separated), `status`, `sort`, `page`; checkbox thể loại từ Axum
+-- `/the-loai`, `/bxh?kind=follows|rating|new`, `/tu-truyen`, `/manga/[id]` với tag có thể bấm
++- `/search`: lọc URL `q`, `tags` (comma-separated), `status`, `sort`, `page`, `source`, `lang`, `year`; nhóm thể loại trong bộ lọc nâng cao
++- `/bxh?kind=follows|rating|new`, `/tu-truyen`, `/manga/[id]` với tag có thể bấm
+ - Reader: cuộn dọc/lật ngang, vuốt/phím, khôi phục trang theo đúng chapter, lazy image, prefetch chapter sau, tự cuộn + dừng, nền riêng, toàn màn hình, tiến độ %
+ - Lưu localStorage `truyenviet:*`: tương thích camelCase Next cũ và snake_case Leptos; dữ liệu hỏng/không có storage không làm lỗi
+ 
+ ## Kiểm tra
+ 
+ ```bash
+ npm run lint                 # 0 error
+ npx tsc --noEmit
+diff --git a/web/app/bxh/loading.tsx b/web/app/bxh/loading.tsx
+new file mode 100644
+index 0000000..d0f7dd6
+--- /dev/null
++++ b/web/app/bxh/loading.tsx
+@@ -0,0 +1,26 @@
++import Link from "next/link";
++import { RankListSkeleton } from "@/components/rank-skeleton";
++
++const TABS = [
++  ["follows", "Theo dõi"],
++  ["rating", "Đánh giá"],
++  ["new", "Mới cập nhật"],
++] as const;
++
++export default function Loading() {
++  return (
++    <main className="wrap catalog-page">
++      <div className="page-intro">
++        <div><h1>Bảng xếp hạng</h1><p>Theo số lượt theo dõi, điểm đánh giá và cập nhật trên MangaDex.</p></div>
++      </div>
++      <section className="surface">
++        <nav className="rank-tabs" aria-label="Cách xếp hạng">
++          {TABS.map(([value, label]) => (
++            <Link key={value} href={`/bxh?kind=${value}`}>{label}</Link>
++          ))}
++        </nav>
++        <RankListSkeleton />
++      </section>
++    </main>
++  );
++}
+diff --git a/web/app/bxh/page.tsx b/web/app/bxh/page.tsx
+index 3ec7e35..14e11fd 100644
+--- a/web/app/bxh/page.tsx
++++ b/web/app/bxh/page.tsx
+@@ -1,13 +1,14 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+-import { titleWithSource } from "@/lib/format";
++import { SourceBadge } from "@/components/source-badge";
++import { RankListSkeleton } from "@/components/rank-skeleton";
+ 
+ type Props = { searchParams: Promise<{ kind?: string }> };
+ 
+ const TABS = [
+   ["follows", "Theo dõi"],
+   ["rating", "Đánh giá"],
+   ["new", "Mới cập nhật"],
+ ] as const;
+@@ -25,26 +26,27 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
+   if (list.length === 0) return <p className="empty">Chưa có truyện để xếp hạng.</p>;
+ 
+   return (
+     <ol className="rank-list">
+       {list.slice(0, 24).map((manga, index) => {
+         const cover = coverImageUrl(manga, 256);
+         return (
+           <li key={manga.id}>
+-            <Link href={`/manga/${manga.id}`} className="rank-row">
++            <Link href={`/manga/${manga.id}`} className={`rank-row${index < 3 ? ` rank-top rank-${index + 1}` : ""}`}>
+               <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+               <span className="rank-cover">
+                 {cover && (
+                   // eslint-disable-next-line @next/next/no-img-element
+                   <img src={cover} alt="" loading="lazy" />
+                 )}
++                <SourceBadge source={manga.source} />
+               </span>
+               <span className="rank-title">
+-                {titleWithSource(manga.title, manga.source)}
++                {manga.title}
+                 <small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small>
+               </span>
+               {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
+             </Link>
+           </li>
+         );
+       })}
+     </ol>
+@@ -62,23 +64,23 @@ async function RankingContent({ searchParams }: Props) {
+         <div><h1>Bảng xếp hạng</h1><p>Theo số lượt theo dõi, điểm đánh giá và cập nhật trên MangaDex.</p></div>
+       </div>
+       <section className="surface">
+         <nav className="rank-tabs" aria-label="Cách xếp hạng">
+           {TABS.map(([value, label]) => (
+             <Link key={value} href={`/bxh?kind=${value}`} aria-current={kind === value ? "page" : undefined}>{label}</Link>
+           ))}
+         </nav>
+-        <Suspense key={kind} fallback={<div className="rank-loading" role="status" aria-label="Đang tải xếp hạng" />}>
++        <Suspense key={kind} fallback={<RankListSkeleton />}>
+           <RankList kind={kind} />
+         </Suspense>
+       </section>
+     </main>
+   );
+ }
+ 
+ export default function RankingPage(props: Props) {
+   return (
+-    <Suspense fallback={<main className="wrap catalog-page" role="status" aria-label="Đang tải bảng xếp hạng" />}>
++    <Suspense fallback={<RankListSkeleton />}>
+       <RankingContent {...props} />
+     </Suspense>
+   );
+ }
+diff --git a/web/app/globals.css b/web/app/globals.css
+index d0c30af..3398cc7 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -157,18 +157,20 @@ button:disabled { cursor: default; }
+ .continue-cover { width: 44px; height: 66px; flex: none; overflow: hidden; border-radius: 6px; background: var(--hover); }
+ .continue-cover img { width: 100%; height: 100%; object-fit: cover; }
+ .continue-meta { flex: 1; min-width: 0; }
+ .cc-title, .card-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: .875rem; line-height: 1.4; font-weight: 600; }
+ .cc-ch, .card-year { margin-top: 4px; color: var(--muted); font-size: .75rem; }
+ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-color: var(--accent); }
+ .feed-row { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 12px; align-items: start; padding: 12px 16px; }
+ .feed-row + .feed-row { border-top: 1px solid var(--line); }
+-.feed-cover, .rank-cover { display: block; width: 100%; aspect-ratio: 2 / 3; overflow: hidden; border-radius: 6px; background: var(--hover); }
++.feed-cover, .rank-cover { position: relative; display: block; width: 100%; aspect-ratio: 2 / 3; overflow: hidden; border-radius: 6px; background: var(--hover); }
+ .feed-cover img, .rank-cover img { width: 100%; height: 100%; object-fit: cover; }
++.source-badge { position: absolute; z-index: 2; top: 7px; right: 7px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: .625rem; font-weight: 700; line-height: 1.35; }
++.feed-cover .source-badge, .rank-cover .source-badge { inset: auto 0 0; padding: 1px 2px; border-radius: 0 0 5px 5px; font-size: .5rem; text-align: center; }
+ .feed-details h3 { font-size: .9375rem; line-height: 1.32; }
+ .feed-details h3 a { display: inline-flex; min-height: 44px; align-items: center; }
+ .feed-details h3 a:hover, .rank-row:hover .rank-title, .card:hover .card-title, .continue-card:hover, .shelf-story:hover { color: var(--accent); }
+ .chapter-pills, .tag-options { display: flex; flex-wrap: wrap; gap: 6px; }
+ .chapter-pill { display: inline-flex; min-height: 44px; align-items: center; flex-wrap: wrap; gap: 5px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: .75rem; font-weight: 600; }
+ .chapter-pill.fresh { background: var(--soft); color: var(--accent); }
+ .chapter-pill:hover, .filter-tag:hover { border-color: var(--accent); }
+ .chapter-pill abbr { padding-inline: 3px; border: 1px solid currentColor; border-radius: 4px; font-size: .625rem; letter-spacing: .04em; text-decoration: none; }
+@@ -218,18 +220,20 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .rank-list li + li { border-top: 1px solid var(--line); }
+ .rank-row { display: grid; grid-template-columns: 2ch 40px minmax(0, 1fr) auto; gap: 11px; align-items: center; padding: 10px 13px; }
+ .rank-row > b { color: var(--muted); font-family: var(--display); font-size: 1.12rem; font-variant-numeric: tabular-nums; }
+ .rank-row .top-rank, .rank-rating { color: var(--accent); }
+ .rank-title { overflow-wrap: anywhere; font-size: .875rem; font-weight: 600; line-height: 1.4; }
+ .rank-title small { display: block; color: var(--muted); font-size: .6875rem; }
+ .rank-title small:empty { display: none; }
+ .rank-rating { font-size: .8125rem; font-weight: 700; }
+-.rank-loading { padding-inline: 14px; }
+-.rank-loading .skel-line { height: 56px; margin: 8px 0; }
++.rank-row.rank-top { border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
++.rank-row.rank-1 { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); box-shadow: inset 0 0 0 2px var(--accent); }
++.rank-row.rank-2 { background: color-mix(in srgb, var(--muted) 12%, var(--surface)); box-shadow: inset 0 0 0 2px var(--muted); }
++.rank-row.rank-3 { background: color-mix(in srgb, var(--line) 45%, var(--surface)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--muted) 55%, var(--surface)); }
+ .search-filters { margin-bottom: 22px; }
+ .search-filters summary { min-height: 48px; padding: 11px 16px; font-weight: 600; }
+ .search-filters form { padding: 14px 16px; border-top: 1px solid var(--line); }
+ .filter-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+ .filter-fields label, .reader-settings label { display: grid; min-width: 0; gap: 5px; font-size: .8125rem; font-weight: 600; }
+ .filter-tags { min-width: 0; margin: 14px 0; padding: 8px 0; border: 0; }
+ .filter-tags legend { font-weight: 600; }
+ .filter-tag { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: .8125rem; cursor: pointer; }
+@@ -275,17 +279,17 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .shelf-card { display: grid; align-content: start; justify-items: start; gap: 9px; padding: 13px; }
+ .shelf-story { display: grid; width: 100%; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 12px; }
+ .shelf-story strong { overflow-wrap: anywhere; }
+ 
+ /* Chi tiết truyện */
+ .back-link { display: inline-flex; min-height: 44px; align-items: center; color: var(--muted); font-weight: 600; font-size: .8125rem; }
+ .back-link:hover { color: var(--accent); }
+ .manga-head { display: grid; align-items: start; gap: clamp(16px, 3vw, 34px); margin: 4px 0 22px; padding: clamp(14px, 3vw, 30px); background: linear-gradient(145deg, var(--hover), var(--surface) 62%); }
+-.manga-cover { width: min(156px, 100%); aspect-ratio: 2 / 3; overflow: hidden; border-radius: 10px; background: var(--hover); box-shadow: 0 8px 22px #0003; }
++.manga-cover { position: relative; width: min(156px, 100%); aspect-ratio: 2 / 3; overflow: hidden; border-radius: 10px; background: var(--hover); box-shadow: 0 8px 22px #0003; }
+ .manga-cover img { width: 100%; height: 100%; object-fit: cover; }
+ .manga-title { margin-bottom: 13px; text-wrap: balance; }
+ .meta-row, .tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: .8125rem; }
+ .meta-row b { color: var(--text); }
+ .tag, .stat-chip { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+ .stat-chip { background: var(--soft); color: var(--accent); font-weight: 600; }
+ .tags, .desc, .manga-info .actions { margin-top: 13px; }
+ .desc { max-width: 70ch; color: var(--muted); white-space: pre-line; }
+diff --git a/web/app/manga/[id]/page.tsx b/web/app/manga/[id]/page.tsx
+index f392961..d155609 100644
+--- a/web/app/manga/[id]/page.tsx
++++ b/web/app/manga/[id]/page.tsx
+@@ -1,19 +1,20 @@
+ /* eslint-disable @next/next/no-img-element */
+ import type { Metadata } from "next";
+ import { Suspense } from "react";
+ import { notFound } from "next/navigation";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type ChaptersResponse, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterLabel, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
++import { chapterLabel, filterUrl, statusText, tagLabel } from "@/lib/format";
+ import ChapterList from "@/components/chapter-list";
+ import MangaActions from "@/components/manga-actions";
+ import { SectionTitle } from "@/components/manga-card";
++import { SourceBadge } from "@/components/source-badge";
+ import CommentSection from "@/components/comments/CommentSection";
+ 
+ type Props = { params: Promise<{ id: string }> };
+ 
+ export async function generateMetadata({ params }: Props): Promise<Metadata> {
+   const { id } = await params;
+   try {
+     const manga = await (await serverContent()).manga(id);
+@@ -39,19 +40,20 @@ async function MangaContent({ params }: Props) {
+   const cover = coverImageUrl(manga, 512);
+ 
+   return (
+     <main className="wrap">
+       <Link href="/" className="back-link">← Về trang chủ</Link>
+       <section className="surface manga-head">
+         <div className="manga-cover">
+           {cover && <img src={cover} alt="" fetchPriority="high" />}
++          <SourceBadge source={manga.source} />
+         </div>
+         <div className="manga-info">
+-          <h1 className="manga-title">{titleWithSource(manga.title, manga.source)}</h1>
++          <h1 className="manga-title">{manga.title}</h1>
+           <p className="meta-row">
+             {manga.author ? <>Tác giả: <b>{manga.author}</b></> : null}
+             {manga.status ? <span className="stat-chip">{statusText(manga.status)}</span> : null}
+             {manga.year ? <span>{manga.year}</span> : null}
+             <span>{active.length} chapter ({lang === "vi" ? "tiếng Việt" : "English"})</span>
+           </p>
+           {manga.tags.length > 0 && (
+             <div className="tags">
+diff --git a/web/app/page.tsx b/web/app/page.tsx
+index 16d466e..3a92ce1 100644
+--- a/web/app/page.tsx
++++ b/web/app/page.tsx
+@@ -1,14 +1,15 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterName, relDate, statusText, titleWithSource } from "@/lib/format";
++import { chapterName, relDate, statusText } from "@/lib/format";
+ import { CardSkeleton, MangaCard } from "@/components/manga-card";
++import { SourceBadge } from "@/components/source-badge";
+ import ContinueReading from "@/components/continue-reading";
+ 
+ async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
+   try {
+     return await load(await serverContent());
+   } catch {
+     return fallback;
+   }
+@@ -78,26 +79,27 @@ function FeatureFallback() {
+ 
+ async function Featured() {
+   const [manga] = await withContent((client) => client.rank("follows"), [] as MangaSummaryDto[]);
+   if (!manga) return <FeatureFallback />;
+   const cover = coverImageUrl(manga, 512);
+   return (
+     <section className="feature" aria-labelledby="featured-title">
+       {cover && (
+-        <div className="feature-art" aria-hidden="true">
++        <div className="feature-art">
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img className="feature-bleed" src={cover} alt="" />
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img className="feature-poster" src={cover} alt="" fetchPriority="high" />
++          <SourceBadge source={manga.source} />
+         </div>
+       )}
+       <div className="feature-copy">
+         <p className="feature-label"><span aria-hidden="true" />Truyện nổi bật</p>
+-        <h1 id="featured-title">{titleWithSource(manga.title, manga.source)}</h1>
++        <h1 id="featured-title">{manga.title}</h1>
+         <p className="feature-meta">
+           {manga.rating && manga.rating > 0 ? <strong>★ {manga.rating.toFixed(1)}</strong> : null}
+           {manga.year ? <span>{manga.year}</span> : null}
+           {manga.status ? <span>{statusText(manga.status)}</span> : null}
+         </p>
+         {manga.description ? <p className="feature-description">{manga.description}</p> : null}
+         <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
+       </div>
+@@ -124,19 +126,20 @@ async function LatestFeed() {
+         const cover = coverImageUrl(item, 256);
+         return (
+           <article className="feed-row" key={item.id}>
+             <Link href={`/manga/${item.id}`} className="feed-cover" aria-label={`Xem truyện ${item.title}`}>
+               {cover && (
+                 // eslint-disable-next-line @next/next/no-img-element
+                 <img src={cover} alt="" loading="lazy" decoding="async" />
+               )}
++              <SourceBadge source={item.source} />
+             </Link>
+             <div className="feed-details">
+-              <h3><Link href={`/manga/${item.id}`}>{titleWithSource(item.title, item.source)}</Link></h3>
++              <h3><Link href={`/manga/${item.id}`}>{item.title}</Link></h3>
+               <div className="chapter-pills">
+                 {item.chapters.map((chapter, index) => (
+                   <Link
+                     key={chapter.id}
+                     href={`/read/${chapter.id}?manga=${encodeURIComponent(item.id)}&lang=${chapter.lang}`}
+                     className={index === 0 ? "chapter-pill fresh" : "chapter-pill"}
+                   >
+                     {chapterName(chapter.chapter)}
+@@ -163,18 +166,19 @@ async function RankPanel() {
+         <li key={manga.id}>
+           <Link href={`/manga/${manga.id}`} className="rank-row">
+             <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+             <span className="rank-cover">
+               {coverImageUrl(manga, 256) && (
+                 // eslint-disable-next-line @next/next/no-img-element
+                 <img src={coverImageUrl(manga, 256) ?? ""} alt="" loading="lazy" />
+               )}
++              <SourceBadge source={manga.source} />
+             </span>
+-            <span className="rank-title">{titleWithSource(manga.title, manga.source)}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
++            <span className="rank-title">{manga.title}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
+             {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
+           </Link>
+         </li>
+       ))}
+     </ol>
+   );
+ }
+ 
+diff --git a/web/app/search/page.tsx b/web/app/search/page.tsx
+index 62e565f..740cec3 100644
+--- a/web/app/search/page.tsx
++++ b/web/app/search/page.tsx
+@@ -1,65 +1,108 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+-import type { TagDto } from "@/lib/contracts";
+-import { filterUrl, statusText, tagLabel } from "@/lib/format";
++import { searchQuery } from "@/lib/contracts";
++import { statusText } from "@/lib/format";
+ import { GridSkeleton, MangaGrid } from "@/components/manga-card";
++import GenreGroups from "@/components/search/GenreGroups";
++import GenreGroupsSkeleton from "@/components/search/GenreGroupsSkeleton";
+ import Select from "@/components/ui/Select";
+ 
+ type Query = {
+   q?: string;
+   tags?: string | string[];
+   status?: string;
+   sort?: string;
+   page?: string;
++  source?: string;
++  lang?: string;
++  year?: string;
+ };
+ 
+ type Props = { searchParams: Promise<Query> };
+ 
+ const SORTS = [
+   ["follows", "Lượt theo dõi"],
+   ["rating", "Điểm đánh giá"],
+   ["new", "Cập nhật gần đây"],
+   ["year", "Năm phát hành"],
+   ["title", "Tên A–Z"],
+ ] as const;
+ 
+ const STATUSES = ["ongoing", "completed", "hiatus", "cancelled"] as const;
++const SOURCES = [["all", "Tất cả"], ["mangadex", "MangaDex"], ["comick", "Comick"]] as const;
++const LANGS = [["all", "Tất cả"], ["vi", "Tiếng Việt"], ["en", "Tiếng Anh"]] as const;
++const MIN_YEAR = 1900;
++const MAX_YEAR = new Date().getUTCFullYear() + 1;
++const YEARS = Array.from({ length: MAX_YEAR - MIN_YEAR + 1 }, (_, index) => String(MAX_YEAR - index));
+ 
+ function parseQuery(query: Query) {
+   const raw = Array.isArray(query.tags) ? query.tags : query.tags ? [query.tags] : [];
+   const tags = raw.flatMap((value) => value.split(",")).map((tag) => tag.trim()).filter(Boolean).slice(0, 8);
+   const page = Math.min(416, Math.max(1, Number.parseInt(query.page ?? "1", 10) || 1));
++  const rawYear = typeof query.year === "string" ? query.year.trim() : "";
++  const year = /^\d{4}$/.test(rawYear) && Number(rawYear) >= MIN_YEAR && Number(rawYear) <= MAX_YEAR
++    ? Number(rawYear)
++    : undefined;
+   return {
+     q: (query.q ?? "").trim(),
+     tags,
+     status: STATUSES.includes(query.status as (typeof STATUSES)[number]) ? query.status! : "",
+     sort: SORTS.some(([value]) => value === query.sort) ? query.sort! : "follows",
+     page,
++    source: SOURCES.some(([value]) => value === query.source) ? query.source! : "all",
++    lang: LANGS.some(([value]) => value === query.lang) ? query.lang! : "all",
++    year,
+   };
+ }
+ 
++function searchHref(current: ReturnType<typeof parseQuery>, page = current.page) {
++  return `/search${searchQuery({ ...current, page })}`;
++}
++
+ async function Filters({ current }: { current: ReturnType<typeof parseQuery> }) {
+-  let tags: TagDto[] = [];
+-  try {
+-    tags = (await (await serverContent()).tags()).slice();
+-  } catch {
+-    tags = [];
+-  }
+-  tags.sort((a, b) => tagLabel(a.name).localeCompare(tagLabel(b.name)));
+-  const count = current.tags.length + Number(Boolean(current.status)) + Number(current.sort !== "follows");
++  const count = current.tags.length
++    + Number(Boolean(current.status))
++    + Number(current.sort !== "follows")
++    + Number(current.source !== "all")
++    + Number(current.lang !== "all")
++    + Number(current.year !== undefined);
+ 
+   return (
+     <details className="surface search-filters">
+       <summary>Bộ lọc{count > 0 ? ` (${count})` : ""}</summary>
+       <form action="/search" method="get">
+         <input type="hidden" name="q" value={current.q} />
+         <div className="filter-fields">
++          <label>Nguồn
++            <Select
++              name="source"
++              ariaLabel="Nguồn"
++              defaultValue={current.source}
++              options={SOURCES.map(([value, label]) => ({ value, label }))}
++            />
++          </label>
++          <label>Ngôn ngữ
++            <Select
++              name="lang"
++              ariaLabel="Ngôn ngữ"
++              defaultValue={current.lang}
++              options={LANGS.map(([value, label]) => ({ value, label }))}
++            />
++          </label>
++          <label>Năm
++            <Select
++              name="year"
++              ariaLabel="Năm"
++              defaultValue={current.year === undefined ? "" : String(current.year)}
++              options={[{ value: "", label: "Tất cả" }, ...YEARS.map((value) => ({ value, label: value }))]}
++            />
++          </label>
+           <label>Trạng thái
+             <Select
+               name="status"
+               ariaLabel="Trạng thái"
+               defaultValue={current.status}
+               options={[
+                 { value: "", label: "Tất cả" },
+                 ...STATUSES.map((status) => ({ value: status, label: statusText(status) })),
+@@ -72,28 +115,23 @@ async function Filters({ current }: { current: ReturnType<typeof parseQuery> })
+               ariaLabel="Sắp xếp"
+               defaultValue={current.sort}
+               options={SORTS.map(([value, label]) => ({ value, label }))}
+             />
+           </label>
+         </div>
+         <fieldset className="filter-tags">
+           <legend>Thể loại ({current.tags.length}/8)</legend>
+-          <div className="tag-options">
+-            {tags.map((tag) => (
+-              <label className="filter-tag" key={tag.id}>
+-                <input type="checkbox" name="tags" value={tag.id} defaultChecked={current.tags.includes(tag.id)} />
+-                {tagLabel(tag.name)}
+-              </label>
+-            ))}
+-          </div>
++          <Suspense fallback={<GenreGroupsSkeleton />}>
++            <GenreGroups selected={current.tags} />
++          </Suspense>
+         </fieldset>
+         <div className="actions">
+           <button type="submit" className="btn btn-primary">Áp dụng</button>
+-          <Link href={filterUrl(current.q, [], "", "follows", 1)} className="btn">Xóa bộ lọc</Link>
++          <Link href={`/search${searchQuery({ q: current.q })}`} className="btn">Xóa bộ lọc</Link>
+         </div>
+       </form>
+     </details>
+   );
+ }
+ 
+ async function Results({ searchParams }: Props) {
+   const current = parseQuery(await searchParams);
+@@ -117,44 +155,50 @@ async function Results({ searchParams }: Props) {
+ 
+   const pages = Math.ceil(results.total / 24);
+   const label = current.q
+     ? `${results.total} kết quả cho “${current.q}”`
+     : `${results.total} truyện`;
+ 
+   return (
+     <>
++      {results.partial ? (
++        <p className="result-info partial-warning" role="status">Lưu ý: kết quả có thể chưa đầy đủ do giới hạn từ nguồn dữ liệu.</p>
++      ) : null}
+       <p className="result-info">{results.total > 0 ? label : "Không tìm thấy truyện nào. Thử tên khác hoặc bỏ bớt bộ lọc."}</p>
+       <MangaGrid list={results.results} />
+       {pages > 1 && (
+         <nav className="pagination" aria-label="Trang kết quả">
+           {current.page > 1 ? (
+-            <Link href={filterUrl(current.q, current.tags, current.status, current.sort, current.page - 1)} className="btn">← Trước</Link>
++            <Link href={searchHref(current, current.page - 1)} className="btn">← Trước</Link>
+           ) : null}
+           <span className="page-info">Trang {current.page}/{pages}</span>
+           {current.page < pages ? (
+-            <Link href={filterUrl(current.q, current.tags, current.status, current.sort, current.page + 1)} className="btn">Sau →</Link>
++            <Link href={searchHref(current, current.page + 1)} className="btn">Sau →</Link>
+           ) : null}
+         </nav>
+       )}
+     </>
+   );
+ }
+ 
+ async function SearchContent({ searchParams }: Props) {
+   const current = parseQuery(await searchParams);
+   return (
+     <main className="wrap catalog-page">
+       <div className="page-intro">
+         <div><h1>Khám phá truyện</h1><p>Lọc theo thể loại, trạng thái hoặc cách sắp xếp.</p></div>
+       </div>
+       <Suspense fallback={
+-        <div className="surface search-filters skel" role="status" aria-label="Đang tải bộ lọc">
++        <div className="surface search-filters" role="status" aria-label="Đang tải bộ lọc">
+           <div className="skel-line w60" aria-hidden="true" />
+-          <div className="skel-pill" aria-hidden="true" />
++          <fieldset className="filter-tags">
++            <legend>Thể loại</legend>
++            <GenreGroupsSkeleton />
++          </fieldset>
+         </div>
+       }>
+         <Filters current={current} />
+       </Suspense>
+       <Suspense fallback={<GridSkeleton />}>
+         <Results searchParams={searchParams} />
+       </Suspense>
+     </main>
+diff --git a/web/components/manga-card.tsx b/web/components/manga-card.tsx
+index 9b0cb62..62068cb 100644
+--- a/web/components/manga-card.tsx
++++ b/web/components/manga-card.tsx
+@@ -1,25 +1,27 @@
+ import Link from "next/link";
+ import { coverImageUrl, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterName, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
++import { chapterName, filterUrl, statusText, tagLabel } from "@/lib/format";
++import { SourceBadge } from "@/components/source-badge";
+ 
+ export function MangaCard({ manga, rank }: { manga: MangaSummaryDto; rank?: number }) {
+   const cover = coverImageUrl(manga, 256);
+   return (
+     <Link href={`/manga/${manga.id}`} className="card">
+       <div className="card-cover">
+         {cover ? (
+           <img src={cover} alt="" loading="lazy" decoding="async" />
+         ) : (
+           <div className="no-cover" aria-hidden="true">Chưa có bìa</div>
+         )}
+         {rank !== undefined && <span className="rank-num">{rank}</span>}
++        <SourceBadge source={manga.source} />
+       </div>
+-      <h3 className="card-title">{titleWithSource(manga.title, manga.source)}</h3>
++      <h3 className="card-title">{manga.title}</h3>
+       <p className="card-year">
+         {manga.rating && manga.rating > 0 ? `★ ${manga.rating.toFixed(1)} · ` : ""}
+         {manga.latest_chapter
+           ? chapterName(manga.latest_chapter)
+           : manga.status
+             ? statusText(manga.status)
+             : manga.year?.toString() ?? ""}
+       </p>
+diff --git a/web/components/rank-skeleton.tsx b/web/components/rank-skeleton.tsx
+new file mode 100644
+index 0000000..8a43c59
+--- /dev/null
++++ b/web/components/rank-skeleton.tsx
+@@ -0,0 +1,20 @@
++export function RankListSkeleton() {
++  return (
++    <ol className="rank-list" role="status" aria-label="Đang tải xếp hạng">
++      {Array.from({ length: 12 }, (_, index) => {
++        const rank = index + 1;
++        const frame = rank <= 3 ? `rank-top rank-${rank}` : "";
++        return (
++          <li key={rank}>
++            <div className={`rank-row skel-rank skel ${frame}`} aria-hidden="true">
++              <span className="skel-bar skel-rank-no" />
++              <span className="rank-cover" />
++              <span className="rank-title"><span className="skel-bar" /><span className="skel-bar" /></span>
++              <span className="skel-bar skel-rank-score" />
++            </div>
++          </li>
++        );
++      })}
++    </ol>
++  );
++}
+diff --git a/web/app/the-loai/page.tsx b/web/components/search/GenreGroups.tsx
+similarity index 53%
+rename from web/app/the-loai/page.tsx
+rename to web/components/search/GenreGroups.tsx
+index 73c10d1..ad8f97b 100644
+--- a/web/app/the-loai/page.tsx
++++ b/web/components/search/GenreGroups.tsx
+@@ -1,55 +1,42 @@
+-import { Suspense } from "react";
+-import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import type { TagDto } from "@/lib/contracts";
+-import { filterUrl, tagLabel } from "@/lib/format";
++import { tagLabel } from "@/lib/format";
+ 
+ const GROUPS = [
+   ["genre", "Thể loại chính"],
+   ["theme", "Chủ đề"],
+   ["format", "Định dạng"],
+   ["content", "Nội dung"],
+ ] as const;
+ 
+-async function GenreGroups() {
++export default async function GenreGroups({ selected }: { selected: string[] }) {
+   let tags: TagDto[] = [];
+   try {
+     tags = await (await serverContent()).tags();
+   } catch {
+-    return <div className="surface empty" role="alert">Chưa tải được thể loại. Vui lòng thử lại sau.</div>;
++    return <p className="empty" role="alert">Chưa tải được thể loại. Vui lòng thử lại sau.</p>;
+   }
+   tags.sort((a, b) => tagLabel(a.name).localeCompare(tagLabel(b.name)));
++
+   return (
+     <>
+       {GROUPS.map(([group, title]) => {
+         const groupTags = tags.filter((tag) => tag.group === group);
+         if (groupTags.length === 0) return null;
+         return (
+           <section className="surface genre-group" key={group}>
+             <h2>{title}</h2>
+             <div className="tag-options">
+               {groupTags.map((tag) => (
+-                <Link key={tag.id} href={filterUrl("", [tag.id], "", "follows", 1)} className="chapter-pill">
++                <label className="filter-tag chapter-pill" key={tag.id}>
++                  <input type="checkbox" name="tags" value={tag.id} defaultChecked={selected.includes(tag.id)} />
+                   {tagLabel(tag.name)}
+-                </Link>
++                </label>
+               ))}
+             </div>
+           </section>
+         );
+       })}
+     </>
+   );
+ }
+-
+-export default function GenresPage() {
+-  return (
+-    <main className="wrap catalog-page">
+-      <div className="page-intro">
+-        <div><h1>Thể loại</h1><p>Chọn một chủ đề để tìm truyện hợp gu.</p></div>
+-      </div>
+-      <Suspense fallback={<div className="surface skel" role="status" aria-label="Đang tải thể loại" />}>
+-        <GenreGroups />
+-      </Suspense>
+-    </main>
+-  );
+-}
+diff --git a/web/components/search/GenreGroupsSkeleton.tsx b/web/components/search/GenreGroupsSkeleton.tsx
+new file mode 100644
+index 0000000..a08decd
+--- /dev/null
++++ b/web/components/search/GenreGroupsSkeleton.tsx
+@@ -0,0 +1,14 @@
++export default function GenreGroupsSkeleton() {
++  return (
++    <div role="status" aria-label="Đang tải thể loại">
++      {[0, 1, 2, 3].map((index) => (
++        <section className="surface genre-group skel" key={index} aria-hidden="true">
++          <div className="skel-line w30" />
++          <div className="tag-options">
++            {Array.from({ length: 9 }, (_, pill) => <div className="skel-pill" key={pill} />)}
++          </div>
++        </section>
++      ))}
++    </div>
++  );
++}
+diff --git a/web/components/site-shell.tsx b/web/components/site-shell.tsx
+index 19367b3..bf10f5d 100644
+--- a/web/components/site-shell.tsx
++++ b/web/components/site-shell.tsx
+@@ -2,27 +2,25 @@
+ 
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import SiteHeader from "@/components/site-header";
+ 
+ const LINKS = [
+   { href: "/", label: "Trang chủ", icon: "home", exact: true },
+   { href: "/search", label: "Khám phá", icon: "search", mobileHidden: true },
+-  { href: "/the-loai", label: "Thể loại", icon: "genres" },
+   { href: "/bxh", label: "Xếp hạng", icon: "rank" },
+   { href: "/tu-truyen", label: "Tủ truyện", icon: "bookmark" },
+   { href: "/thong-bao", label: "Thông báo", icon: "bell" },
+   { href: "/tai-khoan", label: "Tài khoản", icon: "user" },
+ ];
+ 
+ export function NavIcon({ name }: { name: string }) {
+   const paths: Record<string, string> = {
+     home: "M3 10 12 3l9 7v10h-6v-6H9v6H3z",
+-    genres: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
+     rank: "M7 4h10v5a5 5 0 0 1-10 0z M7 6H4a3 3 0 0 0 3 5 M17 6h3a3 3 0 0 1-3 5 M12 14v6m-4 0h8",
+     bookmark: "M6 4h12v16l-6-4-6 4z",
+     search: "M18 10a8 8 0 1 0-16 0 8 8 0 0 0 16 0z m-2 6 5 5",
+     sun: "M16 12a4 4 0 1 0-8 0 4 4 0 0 0 8 0z M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M19 5l-1.5 1.5m-11 11L5 19",
+     moon: "M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10Z",
+     book: "M12 5v15M3 4h4a5 5 0 0 1 5 3 5 5 0 0 1 5-3h4v14h-4a6 6 0 0 0-5 2 6 6 0 0 0-5-2H3z",
+     user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0",
+     bell: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4",
+diff --git a/web/components/source-badge.tsx b/web/components/source-badge.tsx
+new file mode 100644
+index 0000000..add2262
+--- /dev/null
++++ b/web/components/source-badge.tsx
+@@ -0,0 +1,7 @@
++import { sourceLabel } from "@/lib/contracts";
++
++export function SourceBadge({ source }: { source?: string }) {
++  if (source !== "comick" && source !== "mangadex") return null;
++  const label = sourceLabel(source);
++  return <span className="source-badge" role="img" aria-label={`Nguồn: ${label}`}>{label}</span>;
++}
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+index 657a414..39c5fd7 100644
+--- a/web/lib/contracts.ts
++++ b/web/lib/contracts.ts
+@@ -103,17 +103,21 @@ export type LatestChapterSummaryDto = {
+ };
+ 
+ export type LatestMangaDto = MangaSummaryDto & {
+   chapters: LatestChapterSummaryDto[];
+ };
+ 
+ export type TagDto = { id: string; name: string; group: string };
+ 
+-export type SearchResponse = { results: MangaSummaryDto[]; total: number };
++export type SearchResponse = {
++  results: MangaSummaryDto[];
++  total: number;
++  partial?: boolean;
++};
+ 
+ export type ChaptersResponse = { vi: ChapterDto[]; en: ChapterDto[] };
+ 
+ export type ChapterDto = {
+   id: string;
+   chapter: string | null;
+   volume: string | null;
+   title: string;
+@@ -246,20 +250,32 @@ export class ContentClientError extends Error {
+ }
+ 
+ /// All MangaDex image bytes flow through Axum's `/api/content/img` handler.
+ export function contentImageUrl(upstream: string): string {
+   return `${contentPath("img")}?u=${encodeURIComponent(upstream)}`;
+ }
+ 
+ export function coverImageUrl(
+-  manga: Pick<MangaSummaryDto, "id" | "cover_file">,
++  manga: Pick<MangaSummaryDto, "id" | "cover_file" | "source">,
+   size = 256,
+ ): string | null {
+   if (!manga.cover_file) return null;
++  if (manga.source === "comick") {
++    // Comick normalization supplies a full CDN URL; only the proxy allowlist's
++    // HTTPS host may pass through.
++    let upstream: URL;
++    try {
++      upstream = new URL(manga.cover_file);
++    } catch {
++      return null;
++    }
++    if (upstream.protocol !== "https:" || upstream.hostname !== "meo.comick.pictures") return null;
++    return contentImageUrl(upstream.href);
++  }
+   return contentImageUrl(
+     `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover_file}.${size}.jpg`,
+   );
+ }
+ 
+ /// Defensive boundary normalization for any legacy `/api/img?u=` page URL that
+ /// may still arrive from cached content. No upstream fetch happens here.
+ export function normalizePageUrls(pages: string[]): string[] {
+@@ -271,26 +287,32 @@ export function normalizePageUrls(pages: string[]): string[] {
+ }
+ 
+ export type SearchParams = {
+   q?: string;
+   tags?: string[];
+   status?: string;
+   sort?: string;
+   page?: number;
++  source?: string;
++  lang?: string;
++  year?: number;
+ };
+ 
+ export function searchQuery(params: SearchParams): string {
+   const query = new URLSearchParams();
+   if (params.q?.trim()) query.set("q", params.q.trim());
+   const tags = (params.tags ?? []).filter(Boolean);
+   if (tags.length > 0) query.set("tags", tags.join(","));
+   if (params.status) query.set("status", params.status);
+   if (params.sort && params.sort !== "follows") query.set("sort", params.sort);
+   if (params.page && params.page > 1) query.set("page", String(params.page));
++  if (params.source && params.source !== "all") query.set("source", params.source);
++  if (params.lang && params.lang !== "all") query.set("lang", params.lang);
++  if (params.year !== undefined) query.set("year", String(params.year));
+   const encoded = query.toString();
+   return encoded ? `?${encoded}` : "";
+ }
+ 
+ export type ContentClient = {
+   latest(signal?: AbortSignal): Promise<LatestMangaDto[]>;
+   popular(signal?: AbortSignal): Promise<MangaSummaryDto[]>;
+   tags(signal?: AbortSignal): Promise<TagDto[]>;
+diff --git a/web/package.json b/web/package.json
+index b98d52c..9b56b7f 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -10,17 +10,17 @@
+     "build:web": "next build",
+     "start": "next start",
+     "typecheck": "tsc --noEmit",
+     "browser:install": "node node_modules/playwright-core/cli.js install chromium",
+     "check:secrets": "node scripts/secret-scan.mjs ..",
+     "check:whitespace": "node scripts/whitespace-check.mjs --baseline scripts/whitespace-baseline.txt ..",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+     "pretest:aggregate": "cargo build --manifest-path ../Cargo.toml -p server",
+-    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs",
++    "test:aggregate": "node --import tsx --conditions=react-server --test scripts/account.test.mjs scripts/account-resource.test.mjs scripts/auth.test.mjs scripts/community.test.mjs scripts/content-proxy.test.mjs scripts/database.test.mjs scripts/env-validation.test.mjs scripts/guest-storage.test.mjs scripts/notification-feed.test.mjs scripts/observability.test.mjs scripts/progression.test.mjs scripts/reader-sync.test.mjs scripts/reader-wasm.test.mjs scripts/secret-scan.test.mjs scripts/smoke.test.mjs scripts/whitespace-check.test.mjs scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs scripts/search-contracts.test.mjs scripts/search-source.test.mjs scripts/advanced-search.test.mjs scripts/source-badge.test.mjs scripts/ranking-skeleton.test.mjs",
+     "pretest:browser": "cargo build --manifest-path ../Cargo.toml -p server",
+     "test:browser": "node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs scripts/community-playwright.test.mjs scripts/progression-playwright.test.mjs scripts/reader-playwright.test.mjs",
+     "pretest:source": "cargo build --manifest-path ../Cargo.toml -p server",
+     "test:source": "node --import tsx --conditions=react-server --test scripts/source-contracts.test.mjs scripts/source-fallback.test.mjs scripts/source-ui.test.mjs scripts/source-progression.test.mjs scripts/select.test.mjs scripts/skeleton-motion.test.mjs scripts/reader-theme.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+diff --git a/web/scripts/advanced-search.test.mjs b/web/scripts/advanced-search.test.mjs
+new file mode 100644
+index 0000000..1187bef
+--- /dev/null
++++ b/web/scripts/advanced-search.test.mjs
+@@ -0,0 +1,183 @@
++import assert from "node:assert/strict";
++import { existsSync } from "node:fs";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
++import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
++
++const EDGE = browserExecutable();
++const TAGS = [
++  { id: "11111111-1111-4111-8111-111111111111", name: "Action", group: "genre" },
++  { id: "22222222-2222-4222-8222-222222222222", name: "Adventure", group: "theme" },
++  { id: "33333333-3333-4333-8333-333333333333", name: "One-shot", group: "format" },
++  { id: "44444444-4444-4444-8444-444444444444", name: "Violence", group: "content" },
++];
++const GROUP_TITLES = ["Thể loại chính", "Chủ đề", "Định dạng", "Nội dung"];
++const MANGA = {
++  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++  title: "Fixture Manga",
++  cover_file: null,
++  status: "ongoing",
++  year: 2026,
++  description: "Truyện dùng để kiểm tra tìm kiếm nâng cao.",
++  tags: ["Action"],
++  tag_ids: [TAGS[0].id],
++  author: "Fixture Author",
++  artist: "Fixture Author",
++  rating: 8.5,
++  follows: 12,
++  latest_chapter: "1",
++  source: "mangadex",
++  source_label: "MangaDex",
++};
++
++let fixture;
++let app;
++let browser;
++let tagsDelay = 0;
++
++function json(res, body) {
++  res.writeHead(200, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
++  fixture = await startHttpServer(async (req, res) => {
++    const { pathname, searchParams } = new URL(req.url ?? "/", "http://content.local");
++    if (pathname === "/api/content/tags") {
++      if (tagsDelay) await new Promise((resolve) => setTimeout(resolve, tagsDelay));
++      return json(res, TAGS);
++    }
++    if (pathname === "/api/content/search") {
++      return json(res, { results: [MANGA], total: 1, partial: searchParams.get("q") === "partial" });
++    }
++    return json(res, { results: [], total: 0 });
++  });
++  app = await startNext({ RUST_CONTENT_API_ORIGIN: `${fixture.baseUrl}/api/content` });
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(app?.child);
++  await fixture?.close();
++});
++
++async function openPage(width = 1280, height = 800) {
++  const context = await browser.newContext({ viewport: { width, height } });
++  return { context, page: await context.newPage() };
++}
++
++async function searchParams(page, path) {
++  await page.goto(`${app.baseUrl}${path}`, { waitUntil: "networkidle" });
++  await page.locator(".search-filters summary").click();
++  return page.locator(".search-filters");
++}
++
++test("advanced form exposes source, language and year dropdowns and submits them with q and tags", async () => {
++  const { context, page } = await openPage();
++  const filters = await searchParams(page, `/search?q=Fixture&tags=${TAGS[0].id}`);
++  const source = filters.getByRole("combobox", { name: "Nguồn" });
++  const lang = filters.getByRole("combobox", { name: "Ngôn ngữ" });
++  const year = filters.getByRole("combobox", { name: "Năm" });
++  assert.equal(await source.count(), 1, "missing source dropdown");
++  assert.equal(await lang.count(), 1, "missing language dropdown");
++  assert.equal(await year.count(), 1, "missing year dropdown");
++
++  await source.click();
++  await page.getByRole("option", { name: "Comick", exact: true }).click();
++  await lang.click();
++  await page.getByRole("option", { name: "Tiếng Anh", exact: true }).click();
++  await year.click();
++  await page.getByRole("option", { name: "2025", exact: true }).click();
++  await filters.getByRole("button", { name: "Áp dụng" }).click();
++
++  await page.waitForURL((url) => url.searchParams.get("source") === "comick");
++  const submitted = new URL(page.url()).searchParams;
++  assert.equal(submitted.get("q"), "Fixture", "q must stay bookmarkable");
++  assert.equal(submitted.get("tags"), TAGS[0].id, "tags must stay bookmarkable");
++  assert.equal(submitted.get("lang"), "en");
++  assert.equal(submitted.get("year"), "2025");
++  assert.equal(submitted.has("page"), false);
++  await context.close();
++});
++
++test("advanced panel holds four genre groups and a pill writes into tags", async () => {
++  const { context, page } = await openPage();
++  const filters = await searchParams(page, "/search");
++  const groups = filters.locator(".genre-group");
++  assert.equal(await groups.count(), 4, "expected four merged genre groups");
++  assert.deepEqual(await groups.locator("h2").allTextContents(), GROUP_TITLES);
++
++  await groups.nth(1).getByText("Adventure", { exact: true }).click();
++  await filters.getByRole("button", { name: "Áp dụng" }).click();
++  await page.waitForURL((url) => url.searchParams.has("tags"));
++  assert.equal(new URL(page.url()).searchParams.get("tags"), TAGS[1].id);
++  await context.close();
++});
++
++test("partial results render a short warning and full results do not", async () => {
++  const { context, page } = await openPage();
++  await page.goto(`${app.baseUrl}/search?q=partial`, { waitUntil: "networkidle" });
++  const warning = page.locator(".partial-warning");
++  await warning.waitFor();
++  const text = (await warning.textContent())?.trim() ?? "";
++  assert.match(text, /chưa đầy đủ|một phần|giới hạn/i);
++  assert.ok(text.length > 0 && text.length < 160, `warning must stay short: ${text}`);
++
++  await page.goto(`${app.baseUrl}/search?q=Fixture`, { waitUntil: "networkidle" });
++  assert.equal(await page.locator(".partial-warning").count(), 0);
++  await context.close();
++});
++
++test("/the-loai link is gone and the route returns 404 without redirect", async () => {
++  const { context, page } = await openPage();
++  await page.goto(`${app.baseUrl}/search`, { waitUntil: "networkidle" });
++  assert.equal(await page.locator('a[href="/the-loai"]').count(), 0, "genre nav link must be gone");
++  const response = await page.goto(`${app.baseUrl}/the-loai`, { waitUntil: "domcontentloaded" });
++  assert.equal(response.status(), 404, "the-loai must not be redirected or served");
++  assert.match(page.url(), /\/the-loai$/);
++  await context.close();
++});
++
++test("advanced search has no horizontal overflow at 375px", async () => {
++  const { context, page } = await openPage(375, 812);
++  const filters = await searchParams(page, "/search");
++  await filters.locator(".genre-group").first().waitFor();
++  const sizes = await page.evaluate(() => ({
++    scrollWidth: document.documentElement.scrollWidth,
++    bodyWidth: document.body.scrollWidth,
++    viewport: document.documentElement.clientWidth,
++  }));
++  assert.ok(
++    sizes.scrollWidth <= sizes.viewport + 1 && sizes.bodyWidth <= sizes.viewport + 1,
++    `375px advanced search overflowed horizontally: ${JSON.stringify(sizes)}`,
++  );
++  await context.close();
++});
++
++test("genre fallback reserves four groups with at least eight pills each on first render", async () => {
++  tagsDelay = 2_000;
++  const { context, page } = await openPage();
++  try {
++    await page.goto(`${app.baseUrl}/search`, { waitUntil: "commit" });
++    const groups = page.locator(".search-filters .genre-group.skel");
++    await groups.first().waitFor({ state: "attached" });
++    assert.equal(await groups.count(), 4, "genre fallback needs four groups");
++    const pillCounts = await groups.evaluateAll((sections) => sections.map(
++      (section) => section.querySelectorAll(".skel-pill").length,
++    ));
++    assert.ok(
++      pillCounts.every((count) => count >= 8),
++      `each genre fallback group needs >=8 pills: ${JSON.stringify(pillCounts)}`,
++    );
++    assert.ok(
++      await page.locator('.search-filters [role="status"][aria-label="Đang tải thể loại"]').count() >= 1,
++      "genre fallback needs an accessible status",
++    );
++  } finally {
++    tagsDelay = 0;
++    await context.close();
++  }
++});
+diff --git a/web/scripts/ranking-skeleton.test.mjs b/web/scripts/ranking-skeleton.test.mjs
+new file mode 100644
+index 0000000..2fe7924
+--- /dev/null
++++ b/web/scripts/ranking-skeleton.test.mjs
+@@ -0,0 +1,166 @@
++import assert from "node:assert/strict";
++import { existsSync } from "node:fs";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
++import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
++
++const EDGE = browserExecutable();
++const TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
++const CHAPTER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
++
++const manga = (index) => ({
++  id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`,
++  title: `Fixture ${index}`,
++  cover_file: "cover.jpg",
++  status: "ongoing",
++  year: 2026,
++  description: "Truyện dùng để kiểm tra skeleton bảng xếp hạng.",
++  tags: ["Action"],
++  tag_ids: [TAG_ID],
++  author: "Fixture Author",
++  artist: "Fixture Author",
++  rating: 9 - index * 0.1,
++  follows: 100 - index,
++  latest_chapter: "1",
++  source: "mangadex",
++  source_label: "MangaDex",
++});
++const books = Array.from({ length: 12 }, (_, index) => manga(index + 1));
++const chapter = {
++  id: CHAPTER_ID, chapter: "1", volume: null, title: "Chương 1", lang: "vi", pages: 1,
++  external_url: null, publish_at: "2026-11-21T00:00:00Z", group: "Fixture", source: "mangadex", source_label: "MangaDex",
++};
++
++let fixture;
++let app;
++let browser;
++let contentDelay = 1500;
++
++function json(res, payload) {
++  res.writeHead(200, { "content-type": "application/json" });
++  res.end(JSON.stringify(payload));
++}
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
++  fixture = await startHttpServer(async (req, res) => {
++    const { pathname } = new URL(req.url ?? "/", "http://content.local");
++    await new Promise((resolve) => setTimeout(resolve, contentDelay));
++    if (pathname === "/api/content/rank") return json(res, books);
++    if (pathname === "/api/content/latest") return json(res, books);
++    if (pathname === "/api/content/tags") return json(res, [{ id: TAG_ID, name: "Action", group: "genre" }]);
++    if (pathname === "/api/content/search") return json(res, { results: books, total: books.length });
++    if (pathname.startsWith("/api/content/manga/") && pathname.endsWith("/chapters")) return json(res, { vi: [chapter], en: [] });
++    if (pathname.startsWith("/api/content/manga/")) return json(res, books[0]);
++    if (pathname.startsWith("/api/content/chapter/")) return json(res, chapter);
++    return json(res, { results: [], total: 0 });
++  });
++  app = await startNext({ RUST_CONTENT_API_ORIGIN: `${fixture.baseUrl}/api/content` });
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(app?.child);
++  await fixture?.close();
++});
++
++async function openPage(options = {}) {
++  const context = await browser.newContext({ viewport: { width: 375, height: 812 }, ...options });
++  return { context, page: await context.newPage() };
++}
++
++async function assertNoOverflow(page, label) {
++  const sizes = await page.evaluate(() => ({
++    scroll: document.documentElement.scrollWidth,
++    body: document.body.scrollWidth,
++    viewport: document.documentElement.clientWidth,
++  }));
++  assert.ok(sizes.scroll <= sizes.viewport + 1 && sizes.body <= sizes.viewport + 1,
++    `${label} overflowed horizontally: ${JSON.stringify(sizes)}`);
++}
++
++const SKELETON = ".rank-list .rank-row.skel";
++const REAL = ".rank-list .rank-row:not(.skel)";
++
++test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows", async () => {
++  contentDelay = 1500;
++  const { context, page } = await openPage();
++  await page.goto(`${app.baseUrl}/bxh?kind=follows`, { waitUntil: "commit" });
++  await page.locator(SKELETON).first().waitFor();
++
++  assert.match(await page.locator(".page-intro h1").first().textContent(), /Bảng xếp hạng/);
++  assert.equal(await page.locator(".rank-tabs a").count(), 3, "loading shell needs the three tabs");
++  assert.equal(await page.locator(".rank-list > li").count(), 12, "loading shell needs 12 skeleton rows");
++
++  const status = await page.locator(".rank-list").first().evaluate((el) => ({
++    role: el.getAttribute("role"), label: el.getAttribute("aria-label"),
++  }));
++  assert.equal(status.role, "status");
++  assert.ok(status.label, "skeleton needs an accessible name");
++
++  const frames = await page.locator(SKELETON).evaluateAll((rows) => rows.slice(0, 4).map((row) => row.className));
++  for (const rank of [1, 2, 3]) {
++    assert.match(frames[rank - 1], new RegExp(`rank-top\\b.*\\brank-${rank}\\b|rank-${rank}\\b.*\\brank-top\\b`),
++      `skeleton row ${rank} needs rank-top rank-${rank}`);
++  }
++  assert.doesNotMatch(frames[3], /rank-top/, "skeleton row 4 must not be framed");
++
++  const skeletonBox = await page.locator(SKELETON).first().boundingBox();
++  assert.ok(skeletonBox && skeletonBox.width > 0 && skeletonBox.height > 0);
++  await assertNoOverflow(page, "375px /bxh skeleton");
++
++  contentDelay = 0;
++  await page.locator(`${REAL}`).first().waitFor();
++  assert.equal(await page.locator(REAL).count(), 12, "ranking needs 12 real rows");
++
++  const realFrames = await page.locator(REAL).evaluateAll((rows) => rows.slice(0, 4).map((row) => row.className));
++  for (const rank of [1, 2, 3]) {
++    assert.match(realFrames[rank - 1], new RegExp(`rank-top\\b.*\\brank-${rank}\\b|rank-${rank}\\b.*\\brank-top\\b`),
++      `real row ${rank} needs rank-top rank-${rank}`);
++  }
++  assert.doesNotMatch(realFrames[3], /rank-top/, "real row 4 must not be framed");
++
++  const shadows = await page.locator(REAL).evaluateAll((rows) =>
++    rows.slice(0, 3).map((row) => getComputedStyle(row).boxShadow));
++  assert.ok(shadows.every((shadow) => shadow && shadow !== "none"), "top 3 rows need visible frames");
++  assert.equal(new Set(shadows).size, 3, "top 3 rows need distinct frame styles");
++
++  const realBox = await page.locator(REAL).first().boundingBox();
++  assert.ok(Math.abs(realBox.width - skeletonBox.width) <= 2, `skeleton width shifted: ${skeletonBox.width} vs ${realBox.width}`);
++  assert.ok(Math.abs(realBox.height - skeletonBox.height) <= 2, `skeleton height shifted: ${skeletonBox.height} vs ${realBox.height}`);
++  await assertNoOverflow(page, "375px /bxh loaded");
++  await context.close();
++});
++
++test("changing kind shows the skeleton again before the new data", async () => {
++  contentDelay = 0;
++  const { context, page } = await openPage();
++  await page.goto(`${app.baseUrl}/bxh?kind=follows`, { waitUntil: "commit" });
++  await page.locator(REAL).first().waitFor();
++
++  contentDelay = 1500;
++  await page.locator('.rank-tabs a[href="/bxh?kind=rating"]').click();
++  await page.locator(SKELETON).first().waitFor({ timeout: 10_000 });
++  assert.equal(await page.locator(".rank-list > li").count(), 12, "kind switch must re-show 12 skeleton rows");
++
++  contentDelay = 0;
++  await page.locator(REAL).first().waitFor();
++  assert.equal(await page.locator(REAL).count(), 12);
++  await context.close();
++});
++
++test("shimmer is guarded by reduced motion on the ranking skeleton", async () => {
++  for (const reducedMotion of ["no-preference", "reduce"]) {
++    contentDelay = 1500;
++    const { context, page } = await openPage({ reducedMotion });
++    await page.goto(`${app.baseUrl}/bxh`, { waitUntil: "commit" });
++    await page.locator(SKELETON).first().waitFor();
++    const animation = await page.locator(SKELETON).first().evaluate((el) => getComputedStyle(el).animationName);
++    if (reducedMotion === "reduce") assert.equal(animation, "none", "reduced motion must disable shimmer");
++    else assert.match(animation, /shimmer/, "normal motion needs shimmer");
++    await assertNoOverflow(page, `375px /bxh skeleton (${reducedMotion})`);
++    await context.close();
++  }
++});
+diff --git a/web/scripts/reader-playwright.test.mjs b/web/scripts/reader-playwright.test.mjs
+index ccd0a83..aaeb9ab 100644
+--- a/web/scripts/reader-playwright.test.mjs
++++ b/web/scripts/reader-playwright.test.mjs
+@@ -217,17 +217,21 @@ async function openPage(viewport) {
+   return { context, page };
+ }
+ 
+ test("desktop and 375px shells render decodable covers, no horizontal overflow, and no direct MangaDex requests", async () => {
+   for (const [name, viewport] of [["desktop", { width: 1280, height: 800 }], ["mobile", { width: 375, height: 812 }]]) {
+     const { context, page } = await openPage(viewport);
+     await page.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
+     await page.locator(".feature h1").waitFor();
+-    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga (MangaDex)");
++    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga");
++    const badge = page.locator(".feature-art .source-badge");
++    assert.equal(await badge.textContent(), "MangaDex");
++    assert.equal(await badge.getAttribute("aria-label"), "Nguồn: MangaDex");
++    assert.ok(await badge.isVisible());
+     assert.ok(await page.locator(".popular-rail .card").count() >= 1);
+     const cover = page.locator(".feature-poster");
+     assert.ok(cover && await cover.getAttribute("src").then((src) => src.startsWith("/api/content/img?u=")));
+     await assertDecoded(cover, `${name} feature poster`);
+     await assertDecoded(page.locator(".popular-rail .card-cover img").first(), `${name} card cover`);
+     const rail = page.locator(".site-rail");
+     if (name === "desktop") assert.equal(await rail.isVisible(), true);
+     else {
+@@ -249,18 +253,21 @@ test("search filters, clickable tags, genres, rank and library work from Axum da
+ 
+   await page.goto(`${baseUrl}/manga/${MANGA_ID}`, { waitUntil: "networkidle" });
+   const tagLink = page.locator(`.tags a[href*="tags=${TAG_ID}"]`).first();
+   assert.equal(await tagLink.count(), 1);
+   await tagLink.click();
+   await page.waitForURL(/\/search\?tags=/);
+   await page.locator(".manga-grid .card").first().waitFor();
+ 
+-  await page.goto(`${baseUrl}/the-loai`, { waitUntil: "networkidle" });
+-  assert.ok(await page.locator(".genre-group .chapter-pill").count() >= 1);
++  await page.goto(`${baseUrl}/search`, { waitUntil: "networkidle" });
++  await page.locator(".search-filters summary").click();
++  assert.ok(await page.locator(".search-filters .genre-group .chapter-pill").count() >= 1);
++  const genres = await page.goto(`${baseUrl}/the-loai`, { waitUntil: "domcontentloaded" });
++  assert.equal(genres.status(), 404, "the-loai route must be gone");
+   await page.goto(`${baseUrl}/bxh?kind=rating`, { waitUntil: "networkidle" });
+   assert.ok(await page.locator(".rank-list li").count() >= 1);
+   await page.goto(`${baseUrl}/tu-truyen`, { waitUntil: "networkidle" });
+   assert.ok(await page.locator(".empty").isVisible());
+   await page.screenshot({ path: join(SHOT_DIR, "library-empty.png") });
+   await context.close();
+ });
+ 
+diff --git a/web/scripts/search-contracts.test.mjs b/web/scripts/search-contracts.test.mjs
+new file mode 100644
+index 0000000..7eba98b
+--- /dev/null
++++ b/web/scripts/search-contracts.test.mjs
+@@ -0,0 +1,29 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { searchQuery } from "../lib/contracts.ts";
++
++test("searchQuery omits defaults so legacy URLs stay unchanged", () => {
++  assert.equal(searchQuery({}), "");
++  assert.equal(searchQuery({ source: "all", lang: "all" }), "");
++});
++
++test("searchQuery serializes source, lang and year", () => {
++  const query = searchQuery({ source: "comick", lang: "vi", year: 2024 });
++  const params = new URLSearchParams(query);
++  assert.equal(params.get("source"), "comick");
++  assert.equal(params.get("lang"), "vi");
++  assert.equal(params.get("year"), "2024");
++});
++
++test("searchQuery preserves existing serialization", () => {
++  assert.equal(
++    searchQuery({
++      q: "slime",
++      tags: ["a", "b"],
++      status: "ongoing",
++      sort: "rating",
++      page: 2,
++    }),
++    "?q=slime&tags=a%2Cb&status=ongoing&sort=rating&page=2",
++  );
++});
+diff --git a/web/scripts/search-source.test.mjs b/web/scripts/search-source.test.mjs
+new file mode 100644
+index 0000000..701edd8
+--- /dev/null
++++ b/web/scripts/search-source.test.mjs
+@@ -0,0 +1,334 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { existsSync, mkdirSync } from "node:fs";
++import { connect } from "node:net";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { freePort, repoDir, startHttpServer, webDir } from "./test-helpers.mjs";
++
++// Real Axum process + loopback MangaDex/Comick fixtures; no auth, database,
++// remote catalog, deployment or cloud configuration.
++const UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
++const TAG = "391b0423-d847-456f-aff0-8b0cfc03066b";
++
++let mangadexFixture;
++let comickFixture;
++let axum;
++let axumUrl;
++let mdRequests = [];
++let comickRequests = [];
++
++function json(res, body, status = 200) {
++  res.writeHead(status, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++function mdSearchItem(id, title) {
++  return {
++    id,
++    attributes: {
++      title: { en: title },
++      status: "ongoing",
++      year: 2024,
++      description: { en: `${title} description` },
++      tags: [],
++    },
++    relationships: [],
++  };
++}
++
++function comickHit(hid, title) {
++  return {
++    hid,
++    title,
++    desc: "modern Comick description",
++    status: 1,
++    year: 2024,
++    genres: [30, 244],
++    md_covers: [{ b2key: `${hid}-cover.jpg` }],
++    bayesian_rating: "8.25",
++    user_follow_count: 4242,
++    last_chapter: 12,
++  };
++}
++
++function waitForTcp(port, deadlineMs = 20_000) {
++  return new Promise((resolve, reject) => {
++    const deadline = Date.now() + deadlineMs;
++    const attempt = () => {
++      const socket = connect({ host: "127.0.0.1", port });
++      socket.once("connect", () => { socket.destroy(); resolve(); });
++      socket.once("error", (error) => {
++        socket.destroy();
++        if (Date.now() > deadline) reject(error);
++        else setTimeout(attempt, 100);
++      });
++    };
++    attempt();
++  });
++}
++
++async function get(path) {
++  const response = await fetch(`${axumUrl}${path}`);
++  return { response, body: await response.json() };
++}
++
++async function search(params) {
++  return get(`/api/content/search?${new URLSearchParams(params)}`);
++}
++
++before(async () => {
++  mangadexFixture = await startHttpServer((req, res) => {
++    const url = new URL(req.url ?? "", "http://fixture.local");
++    mdRequests.push(url.pathname + url.search);
++    if (url.pathname === "/manga") {
++      const title = url.searchParams.get("title") ?? "";
++      if (["md-only", "shared", "boom", "cache", "lang-vi"].includes(title)) {
++        return json(res, { total: 1, data: [mdSearchItem(UUID, title)] });
++      }
++      return json(res, { total: 0, data: [] });
++    }
++    if (url.pathname.startsWith("/statistics/manga")) return json(res, { statistics: {} });
++    if (url.pathname.startsWith("/chapter?")) return json(res, { total: 0, data: [] });
++    if (url.pathname.startsWith("/manga/") && url.pathname.endsWith("/feed")) {
++      return json(res, { total: 0, data: [] });
++    }
++    if (url.pathname.startsWith("/manga/")) {
++      const id = url.pathname.split("/")[2];
++      return json(res, { data: {
++        id,
++        attributes: { title: { en: "Bare UUID Manga" }, status: "ongoing", description: { en: "" } },
++        relationships: [],
++      } });
++    }
++    return json(res, { total: 0, data: [] });
++  });
++
++  comickFixture = await startHttpServer((req, res) => {
++    const url = new URL(req.url ?? "", "http://fixture.local");
++    comickRequests.push(url.pathname + url.search);
++    const path = decodeURIComponent(url.pathname);
++    if (url.pathname === "/v1.0/search/") {
++      const title = url.searchParams.get("q") ?? "";
++      if (title === "boom") return json(res, "upstream failure", 500);
++      if (title === "md-only") return json(res, []);
++      return json(res, [comickHit("comic-1", title || "Comick Browse")]);
++    }
++    if (path === "/v1.0/comic/comic-1/") {
++      return json(res, {
++        comic: {
++          hid: "comic-1",
++          title: "Comick Detail",
++          desc: "detail description",
++          status: 1,
++          year: 2024,
++          md_covers: [{ b2key: "detail-cover.jpg" }],
++          md_comic_md_genres: [{ md_genres: { name: "Action", slug: "action" } }],
++          bayesian_rating: "8.5",
++          user_follow_count: 99,
++          last_chapter: 3,
++        },
++      });
++    }
++    if (path === "/v1.0/comic/comic-1/chapters") {
++      const lang = url.searchParams.get("lang") ?? "vi";
++      return json(res, {
++        chapters: [{
++          hid: `chap-1-${lang}`,
++          chapter: "1",
++          lang,
++          title: "Comick Chapter",
++          published_at: "2026-11-22T00:00:00Z",
++          group: "Comick Group",
++        }],
++        total: 1,
++        limit: 12,
++      });
++    }
++    return json(res, [], 404);
++  });
++
++  const port = await freePort();
++  axumUrl = `http://127.0.0.1:${port}`;
++  const binary = join(repoDir, "target", "debug", process.platform === "win32" ? "server.exe" : "server");
++  assert.ok(existsSync(binary), `build Axum first: cargo build -p server (missing ${binary})`);
++  const cacheDir = join(webDir, ".test-cache", `search-source-${process.pid}`);
++  mkdirSync(cacheDir, { recursive: true });
++  axum = spawn(binary, [], {
++    cwd: repoDir,
++    env: {
++      ...process.env,
++      PORT: String(port),
++      MANGADEX_API_ORIGIN: mangadexFixture.baseUrl,
++      COMICK_API_ORIGIN: comickFixture.baseUrl,
++      CACHE_DIR: cacheDir,
++      DIST_DIR: join(webDir, "public"),
++    },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  await waitForTcp(port);
++});
++
++after(async () => {
++  if (axum && axum.exitCode === null) axum.kill("SIGKILL");
++  await mangadexFixture?.close();
++  await comickFixture?.close();
++});
++
++function mdSearchCount() {
++  return mdRequests.filter((url) => url.startsWith("/manga?")).length;
++}
++
++function comickSearchCount() {
++  return comickRequests.filter((url) => url.startsWith("/v1.0/search/")).length;
++}
++
++test("source=mangadex only hits MangaDex and is not partial", async () => {
++  const mdBefore = mdSearchCount();
++  const comickBefore = comickSearchCount();
++  const { response, body } = await search({ q: "md-only", source: "mangadex" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, false);
++  assert.deepEqual(body.results.map((item) => item.source_label), ["MangaDex"]);
++  assert.equal(mdSearchCount(), mdBefore + 1);
++  assert.equal(comickSearchCount(), comickBefore);
++});
++
++test("source=comick only hits Comick and keeps modern hit fields", async () => {
++  const mdBefore = mdSearchCount();
++  const { response, body } = await search({ q: "comick-only", source: "comick" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, false);
++  assert.deepEqual(body.results.map((item) => item.source_label), ["Comick"]);
++  assert.equal(body.results[0].id, "comick:comic-1");
++  assert.equal(body.results[0].description, "modern Comick description");
++  assert.equal(body.results[0].status, "ongoing");
++  assert.deepEqual(body.results[0].tags, ["30", "244"]);
++  assert.equal(body.results[0].cover_file, "https://meo.comick.pictures/comic-1-cover.jpg");
++  assert.equal(mdSearchCount(), mdBefore);
++});
++
++test("source=all returns both sources with exact labels", async () => {
++  const { response, body } = await search({ q: "shared", source: "all" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, false);
++  assert.deepEqual(body.results.map((item) => item.source_label).sort(), ["Comick", "MangaDex"]);
++  assert.equal(body.total, 2);
++});
++
++test("lang=vi filters MangaDex upstream while Comick stays partial", async () => {
++  const mdBefore = mdSearchCount();
++  const comickBefore = comickSearchCount();
++  const { response, body } = await search({ q: "lang-vi", source: "all", lang: "vi" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, true);
++  assert.deepEqual(body.results.map((item) => item.source_label).sort(), ["Comick", "MangaDex"]);
++
++  const mdQuery = mdRequests.filter((url) => url.startsWith("/manga?"));
++  assert.equal(mdQuery.length, mdBefore + 1);
++  assert.ok(
++    mdQuery.at(-1).includes("availableTranslatedLanguage[]=vi"),
++    `MangaDex fixture did not receive the language filter: ${mdQuery.at(-1)}`,
++  );
++
++  const comickQuery = comickRequests.filter((url) => url.startsWith("/v1.0/search/"));
++  assert.equal(comickQuery.length, comickBefore + 1);
++  assert.ok(
++    !comickQuery.at(-1).includes("lang="),
++    `Comick must not receive an invented lang param: ${comickQuery.at(-1)}`,
++  );
++});
++
++test("Comick fixture 500 keeps MangaDex results and marks partial", async () => {
++  const { response, body } = await search({ q: "boom", source: "all" });
++  assert.equal(response.status, 200);
++  assert.equal(body.partial, true);
++  assert.deepEqual(body.results.map((item) => item.source_label), ["MangaDex"]);
++});
++
++test("invalid source/lang/year/page returns structured 400", async () => {
++  for (const params of [
++    { source: "bad" },
++    { lang: "fr" },
++    { year: "1899" },
++    { page: "0" },
++  ]) {
++    const { response, body } = await search(params);
++    assert.equal(response.status, 400, JSON.stringify(params));
++    assert.equal(body.error.code, "VALIDATION_ERROR");
++  }
++});
++
++test("cache key includes source, lang and year", async () => {
++  const before = comickSearchCount();
++  await search({ q: "cache", source: "comick" });
++  const first = comickSearchCount();
++  assert.equal(first, before + 1);
++  await search({ q: "cache", source: "comick" });
++  assert.equal(comickSearchCount(), first, "identical full query must be cached");
++  await search({ q: "cache", source: "comick", lang: "vi" });
++  assert.equal(comickSearchCount(), first + 1, "lang must change the cache key");
++  await search({ q: "cache", source: "comick", year: "2024" });
++  assert.equal(comickSearchCount(), first + 2, "year must change the cache key");
++  await search({ q: "cache", source: "all" });
++  assert.equal(comickSearchCount(), first + 3, "source must change the cache key");
++});
++
++test("Comick lang, page and tag limits are reported as partial", async () => {
++  const lang = await search({ q: "limits", source: "comick", lang: "vi" });
++  assert.equal(lang.body.partial, true);
++
++  const before = comickSearchCount();
++  const page = await search({ q: "limits", source: "comick", page: "51" });
++  assert.equal(page.body.partial, true);
++  assert.equal(page.body.results.length, 0);
++  assert.equal(comickSearchCount(), before, "page 51 is outside the official Comick cap");
++
++  const tags = await search({ q: "limits", source: "comick", tags: TAG });
++  assert.equal(tags.body.partial, true);
++  assert.ok(
++    !comickRequests.slice(before).some((url) => url.includes("genres=")),
++    "MangaDex tag UUIDs must not be guessed as Comick genre slugs",
++  );
++});
++
++test("prefixed comic IDs dispatch to Comick detail and chapter routes", async () => {
++  const comicId = encodeURIComponent("comick:comic-1");
++  const detail = await get(`/api/content/manga/${comicId}`);
++  assert.equal(detail.response.status, 200, JSON.stringify(comickRequests));
++  assert.equal(detail.body.id, "comick:comic-1");
++  assert.equal(detail.body.title, "Comick Detail");
++  assert.equal(detail.body.source_label, "Comick");
++  assert.ok(
++    comickRequests.some((url) => decodeURIComponent(url.split("?")[0]) === "/v1.0/comic/comic-1/"),
++    JSON.stringify(comickRequests),
++  );
++
++  const chapters = await get(`/api/content/manga/${comicId}/chapters`);
++  assert.equal(chapters.response.status, 200);
++  assert.deepEqual(chapters.body.vi.map((chapter) => chapter.id), ["comick:chap-1-vi"]);
++  assert.deepEqual(chapters.body.en.map((chapter) => chapter.id), ["comick:chap-1-en"]);
++  assert.ok(chapters.body.vi.every((chapter) => chapter.source_label === "Comick"));
++});
++
++test("bare UUID detail and chapter routes stay on MangaDex", async () => {
++  const mdBefore = mdRequests.length;
++  const detail = await get(`/api/content/manga/${UUID}`);
++  assert.equal(detail.response.status, 200);
++  assert.equal(detail.body.id, UUID);
++  assert.equal(detail.body.title, "Bare UUID Manga");
++  assert.equal(detail.body.source_label, "MangaDex");
++
++  const chapters = await get(`/api/content/manga/${UUID}/chapters`);
++  assert.equal(chapters.response.status, 200);
++  assert.deepEqual(chapters.body, { vi: [], en: [] });
++  assert.ok(mdRequests.length > mdBefore);
++});
++
++test("malformed prefixed manga ID is a structured 400 before any upstream call", async () => {
++  const before = comickRequests.length;
++  const { response, body } = await get(`/api/content/manga/${encodeURIComponent("comick:")}`);
++  assert.equal(response.status, 400);
++  assert.equal(body.error.code, "VALIDATION_ERROR");
++  assert.equal(comickRequests.length, before);
++});
+diff --git a/web/scripts/skeleton-motion.test.mjs b/web/scripts/skeleton-motion.test.mjs
+index 4d441a9..faa7ccc 100644
+--- a/web/scripts/skeleton-motion.test.mjs
++++ b/web/scripts/skeleton-motion.test.mjs
+@@ -146,17 +146,17 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
+   const loadedBoxes = {
+     card: await page.locator(".popular-rail .card-cover:visible").first().boundingBox(),
+     feed: await page.locator(".feed-row:visible .feed-cover").first().boundingBox(),
+     rank: await page.locator(".rank-list .rank-row:visible").first().boundingBox(),
+   };
+   for (const key of Object.keys(loadedBoxes)) {
+     assert.ok(Math.abs(loadedBoxes[key].width - skeletonBoxes[key].width) <= 2, `${key} skeleton width shifted`);
+   }
+-  assert.match(await page.locator(".card-title:visible").first().textContent(), /MangaDex/, "source label must stay visible");
++  assert.match(await page.locator(".source-badge:visible").first().textContent(), /MangaDex/, "source badge label must stay visible");
+ 
+   contentDelay = 1200;
+   await page.goto(`${app.baseUrl}/search?q=Fixture`, { waitUntil: "commit" });
+   await page.locator(".skel-card:visible").first().waitFor();
+   await assertStatus(page.locator(".manga-grid:has(.skel-card):visible"));
+   assert.ok(await page.locator(".skel-card:visible").count() >= 4, "search needs card skeletons");
+   await assertNoOverflow(page, "375px search skeleton");
+   contentDelay = 0;
+@@ -168,17 +168,17 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
+   await page.locator(".skel-chapter:visible").first().waitFor();
+   await assertStatus(page.locator(".manga-head:has(.skel-cover):visible"));
+   await assertStatus(page.locator(".chapters-panel:has(.skel-chapter):visible"));
+   assert.ok(await page.locator(".skel-chapter:visible").count() >= 3, "chapter list needs row skeletons");
+   await assertNoOverflow(page, "375px manga skeleton");
+   contentDelay = 0;
+   await page.locator(".chapter-row:visible").first().waitFor();
+   await assertNoOverflow(page, "375px manga loaded");
+-  assert.match(await page.locator(".manga-title:visible").textContent(), /MangaDex/, "source label must stay visible");
++  assert.match(await page.locator(".manga-cover .source-badge:visible").textContent(), /MangaDex/, "source badge label must stay visible");
+   await context.close();
+ });
+ 
+ test("motion tokens exist and every transition is guarded by reduced motion", async () => {
+   const cssTokens = await (async () => {
+     const { context, page } = await openPage();
+     await page.setContent("<!doctype html><html><body></body></html>");
+     await page.addStyleTag({ content: CSS });
+diff --git a/web/scripts/source-badge.test.mjs b/web/scripts/source-badge.test.mjs
+new file mode 100644
+index 0000000..0180d89
+--- /dev/null
++++ b/web/scripts/source-badge.test.mjs
+@@ -0,0 +1,152 @@
++import assert from "node:assert/strict";
++import { execFileSync } from "node:child_process";
++import { join } from "node:path";
++import { test } from "node:test";
++import { pathToFileURL } from "node:url";
++import { coverImageUrl } from "../lib/contracts.ts";
++import { webDir } from "./test-helpers.mjs";
++
++const COMICK_COVER = "https://meo.comick.pictures/comic-1-cover.jpg";
++const COMICK_PROXY = `/api/content/img?u=${encodeURIComponent(COMICK_COVER)}`;
++const BADGE = (label) => `<span class="source-badge" role="img" aria-label="Nguồn: ${label}">${label}</span>`;
++
++// RSC mode cannot render hooks, so render shipped components in a child process
++// the same way source-ui.test.mjs does, without a hand-written stand-in.
++function render(relativePath, props, exportName = "default") {
++  const specifier = pathToFileURL(join(webDir, relativePath)).href;
++  const script = `
++    import { createElement } from "react";
++    import { renderToStaticMarkup } from "react-dom/server";
++    const mod = await import(${JSON.stringify(specifier)});
++    const exported = mod[${JSON.stringify(exportName)}] ?? mod.default ?? mod;
++    const Component = exported?.default ?? exported;
++    process.stdout.write(renderToStaticMarkup(createElement(Component, ${JSON.stringify(props)})));
++  `;
++  return execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
++    cwd: webDir,
++    encoding: "utf8",
++  });
++}
++
++const manga = {
++  id: "m1",
++  title: "Slime",
++  cover_file: COMICK_COVER,
++  status: "ongoing",
++  year: 2026,
++  description: "desc",
++  tags: [],
++  tag_ids: [],
++  author: "A",
++  artist: "A",
++  rating: 8.5,
++  follows: 12,
++  latest_chapter: "1",
++  source: "comick",
++  source_label: "Comick",
++};
++const fixture = {
++  rank: [manga],
++  latest: [{ ...manga, chapters: [{ id: "c1", chapter: "1", lang: "vi", publish_at: "2026-11-20T00:00:00Z" }] }],
++  manga,
++  chapters: { vi: [], en: [] },
++};
++
++// Async Server Components need the same stubbed content boundary as source-ui.
++function renderPage(relativePath, props) {
++  const target = pathToFileURL(join(webDir, relativePath)).href;
++  const contentServer = pathToFileURL(join(webDir, "lib/content-server.tsx")).href;
++  const stubSource = 'const d=JSON.parse(process.env.SOURCE_UI_FIXTURE||"{}");'
++    + 'export async function serverContent(){return {'
++    + 'rank:async()=>d.rank??[],latest:async()=>d.latest??[],'
++    + 'manga:async()=>d.manga??{},chapters:async()=>d.chapters??{vi:[],en:[]}}};'
++    + 'export function contentUnavailable(){return null}';
++  const stub = `data:text/javascript,${encodeURIComponent(stubSource)}`;
++  const loaderSource = `const m={${JSON.stringify(contentServer)}:${JSON.stringify(stub)}};`
++    + "export async function resolve(s,c,n){if(m[s])return{url:m[s],shortCircuit:true};return n(s,c)}";
++  const loader = `data:text/javascript,${encodeURIComponent(loaderSource)}`;
++  const script = `
++    import { register, createRequire } from "node:module";
++    import { createElement } from "react";
++    const require = createRequire(${JSON.stringify(pathToFileURL(join(webDir, "package.json")).href)});
++    const { renderToPipeableStream } = require(${JSON.stringify(join(webDir, "node_modules", "react-dom", "cjs", "react-dom-server.node.development.js"))});
++    register(${JSON.stringify(loader)}, import.meta.url);
++    const mod = await import(${JSON.stringify(target)});
++    const Component = mod.default?.default ?? mod.default ?? mod;
++    const chunks = [];
++    await new Promise((resolve, reject) => {
++      const stream = renderToPipeableStream(createElement(Component, ${JSON.stringify(props)}), {
++        onAllReady() {}, onError: reject,
++      });
++      stream.pipe({
++        write(chunk) { chunks.push(Buffer.from(chunk)); return true; },
++        end: resolve,
++        on() {}, off() {}, once() {}, emit() {}, writableEnded: false,
++      });
++    });
++    process.stdout.write(Buffer.concat(chunks).toString("utf8"));
++  `;
++  return execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
++    cwd: webDir,
++    encoding: "utf8",
++    env: { ...process.env, SOURCE_UI_FIXTURE: JSON.stringify(fixture) },
++  });
++}
++
++test("SourceBadge shows exact labels with an accessible name and hides unknown sources", () => {
++  assert.equal(render("components/source-badge.tsx", { source: "mangadex" }, "SourceBadge"), BADGE("MangaDex"));
++  assert.equal(render("components/source-badge.tsx", { source: "comick" }, "SourceBadge"), BADGE("Comick"));
++  assert.equal(render("components/source-badge.tsx", { source: "" }, "SourceBadge"), "");
++  assert.equal(render("components/source-badge.tsx", { source: "unknown" }, "SourceBadge"), "");
++  assert.equal(render("components/source-badge.tsx", {}, "SourceBadge"), "");
++});
++
++test("card cover keeps the original link and shows a badge instead of a title suffix", () => {
++  const html = render("components/manga-card.tsx", { manga, rank: 1 }, "MangaCard");
++  assert.match(html, /<a class="card" href="\/manga\/m1">/);
++  assert.match(html, new RegExp(`<div class="card-cover">[\\s\\S]*?${BADGE("Comick")}[\\s\\S]*?<\\/div>`));
++  assert.match(html, /<h3 class="card-title">Slime<\/h3>/);
++  assert.doesNotMatch(html, /\(Comick\)|\(MangaDex\)/);
++});
++
++test("home feature, feed and rank covers show badges without title suffixes", () => {
++  const html = renderPage("app/page.tsx", {});
++  assert.match(html, /<h1 id="featured-title">Slime<\/h1>/);
++  assert.match(html, /<h3><a href="\/manga\/m1">Slime<\/a><\/h3>/);
++  assert.match(html, /<span class="rank-title">Slime<small>/);
++  assert.doesNotMatch(html, /\(Comick\)|\(MangaDex\)/);
++
++  const featureStart = html.indexOf('class="feature-art"');
++  const feature = html.slice(featureStart, html.indexOf("</section>", featureStart));
++  assert.match(feature, new RegExp(BADGE("Comick")));
++  const feedLink = html.match(/<a[^>]*class="feed-cover"[\s\S]*?<\/a>/)?.[0] ?? "";
++  assert.match(feedLink, /href="\/manga\/m1"/);
++  assert.match(feedLink, new RegExp(BADGE("Comick")));
++  const rankCover = html.match(/<span class="rank-cover"><img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
++  assert.match(rankCover, new RegExp(BADGE("Comick")));
++  assert.ok(html.includes(COMICK_PROXY));
++});
++
++test("ranking and detail covers show badges", () => {
++  const rankHtml = renderPage("app/bxh/page.tsx", { searchParams: {} });
++  const rankCover = rankHtml.match(/<span class="rank-cover"><img[\s\S]*?<span class="rank-title">/)?.[0] ?? "";
++  assert.match(rankCover, new RegExp(BADGE("Comick")));
++  assert.match(rankHtml, /<span class="rank-title">Slime<small>/);
++  assert.doesNotMatch(rankHtml, /\(Comick\)|\(MangaDex\)/);
++
++  const detail = renderPage("app/manga/[id]/page.tsx", { params: {} });
++  assert.match(detail, new RegExp(`<div class="manga-cover">[\\s\\S]*?${BADGE("Comick")}`));
++  assert.match(detail, /<h1 class="manga-title">Slime<\/h1>/);
++  assert.doesNotMatch(detail, /\(Comick\)|\(MangaDex\)/);
++});
++
++test("Comick covers proxy through Axum while MangaDex stays unchanged", () => {
++  assert.equal(coverImageUrl(manga), COMICK_PROXY);
++  assert.equal(
++    coverImageUrl({ id: "m1", cover_file: "cover.jpg" }),
++    `/api/content/img?u=${encodeURIComponent("https://uploads.mangadex.org/covers/m1/cover.jpg.256.jpg")}`,
++  );
++  assert.equal(coverImageUrl({ ...manga, cover_file: null }), null);
++  assert.equal(coverImageUrl({ ...manga, cover_file: "http://meo.comick.pictures/cover.jpg" }), null);
++  assert.equal(coverImageUrl({ ...manga, cover_file: "https://evil.test/cover.jpg" }), null);
++});
+diff --git a/web/scripts/source-ui.test.mjs b/web/scripts/source-ui.test.mjs
+index 17c87cd..a7248ac 100644
+--- a/web/scripts/source-ui.test.mjs
++++ b/web/scripts/source-ui.test.mjs
+@@ -44,17 +44,17 @@ function render(relativePath, props, exportName = "default") {
+ function rowTitles(html) {
+   return [...html.matchAll(/<span class="ch-title"[^>]*>([\s\S]*?)<\/span>/g)]
+     .map((match) => match[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim());
+ }
+ 
+ const sourceManga = {
+   id: "m1",
+   title: "Slime",
+-  cover_file: null,
++  cover_file: "https://meo.comick.pictures/comic-1-cover.jpg",
+   status: "ongoing",
+   year: 2026,
+   description: "desc",
+   tags: [],
+   tag_ids: [],
+   author: "A",
+   artist: "A",
+   rating: 8.5,
+@@ -154,30 +154,36 @@ test("reader toolbar back title marks a fallback chapter", () => {
+     running: false,
+     fullscreenSupported: false,
+   };
+   const html = render("components/reader/ReaderToolbar.tsx", props);
+   const backLink = html.match(/<a class="back-link"[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? "";
+   assert.equal(backLink, "← Slime (Comick)");
+ });
+ 
+-test("manga card title shows the source label", () => {
++const badge = /<span class="source-badge" role="img" aria-label="Nguồn: Comick">Comick<\/span>/;
++
++test("manga card cover shows the source badge and keeps its link", () => {
+   const html = render("components/manga-card.tsx", { manga: sourceManga, rank: 1 }, "MangaCard");
+-  assert.match(html, /<h3 class="card-title">Slime \(Comick\)<\/h3>/);
++  assert.match(html, /<h3 class="card-title">Slime<\/h3>/);
++  assert.match(html, badge);
+   assert.match(html, /href="\/manga\/m1"/);
+ });
+ 
+-test("home feature, feed and rank titles show the source label", () => {
++test("home feature, feed and rank covers show the source badge", () => {
+   const html = renderPage("app/page.tsx", {});
+-  assert.match(html, /<h1 id="featured-title">Slime \(Comick\)<\/h1>/);
+-  assert.match(html, /<h3><a href="\/manga\/m1">Slime \(Comick\)<\/a><\/h3>/);
+-  assert.match(html, /<span class="rank-title">Slime \(Comick\)<small>12 theo dõi<\/small><\/span>/);
++  assert.match(html, /<h1 id="featured-title">Slime<\/h1>/);
++  assert.match(html, /<h3><a href="\/manga\/m1">Slime<\/a><\/h3>/);
++  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
++  assert.equal(html.split(badge).length - 1, 4);
+ });
+ 
+-test("manga detail title shows the source label", () => {
++test("manga detail cover shows the source badge", () => {
+   const html = renderPage("app/manga/[id]/page.tsx", { params: {} });
+-  assert.match(html, /<h1 class="manga-title">Slime \(Comick\)<\/h1>/);
++  assert.match(html, /<h1 class="manga-title">Slime<\/h1>/);
++  assert.match(html, badge);
+ });
+ 
+-test("ranking page titles show the source label", () => {
++test("ranking page covers show the source badge", () => {
+   const html = renderPage("app/bxh/page.tsx", { searchParams: {} });
+-  assert.match(html, /<span class="rank-title">Slime \(Comick\)<small>12 theo dõi<\/small><\/span>/);
++  assert.match(html, /<span class="rank-title">Slime<small>12 theo dõi<\/small><\/span>/);
++  assert.match(html, badge);
+ });
+diff --git a/web/scripts/whitespace-baseline.txt b/web/scripts/whitespace-baseline.txt
+index 06d8bd0..0f69315 100644
+--- a/web/scripts/whitespace-baseline.txt
++++ b/web/scripts/whitespace-baseline.txt
+@@ -1,12 +1,13 @@
+ # Baseline for committed pre-existing whitespace findings.
+-# All entries are in docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff (prior-plan artifacts).
++# Entries come from committed SDD diff artifacts in prior kaslyydex-phase-1-2/*.diff
++# and current kaslyydex-multi-source-ux/*.diff.
+ # Measured at task-10 BASE 1c4524b38c70d3351d7989628ff5b6f807cff0da; do not add new entries.
+-# 783 entries
++# 1130 entries (prior + current baselines)
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1006:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1029:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1040:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1070:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1076:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1094:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1096:trailing-whitespace
+ docs/superpowers/sdd/kaslyydex-phase-1-2/final-review.diff:1100:trailing-whitespace

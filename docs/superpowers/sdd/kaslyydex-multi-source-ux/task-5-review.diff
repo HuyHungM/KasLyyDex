@@ -1,0 +1,387 @@
+5d662e4 feat: show reading source labels in web UI
+ web/app/manga/[id]/page.tsx             |  4 +-
+ web/app/page.tsx                        |  8 ++--
+ web/components/chapter-list.tsx         |  9 ++--
+ web/components/manga-card.tsx           |  4 +-
+ web/components/reader/ReaderToolbar.tsx |  6 ++-
+ web/lib/format.ts                       |  5 ++
+ web/scripts/reader-playwright.test.mjs  |  2 +-
+ web/scripts/source-ui.test.mjs          | 85 +++++++++++++++++++++++++++++++++
+ 8 files changed, 109 insertions(+), 14 deletions(-)
+diff --git a/web/app/manga/[id]/page.tsx b/web/app/manga/[id]/page.tsx
+index af25ec6..0f82af5 100644
+--- a/web/app/manga/[id]/page.tsx
++++ b/web/app/manga/[id]/page.tsx
+@@ -1,16 +1,16 @@
+ /* eslint-disable @next/next/no-img-element */
+ import type { Metadata } from "next";
+ import { Suspense } from "react";
+ import { notFound } from "next/navigation";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type ChaptersResponse, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterLabel, filterUrl, statusText, tagLabel } from "@/lib/format";
++import { chapterLabel, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
+ import ChapterList from "@/components/chapter-list";
+ import MangaActions from "@/components/manga-actions";
+ import { SectionTitle } from "@/components/manga-card";
+ import CommentSection from "@/components/comments/CommentSection";
+ 
+ type Props = { params: Promise<{ id: string }> };
+ 
+ export async function generateMetadata({ params }: Props): Promise<Metadata> {
+@@ -41,17 +41,17 @@ async function MangaContent({ params }: Props) {
+   return (
+     <main className="wrap">
+       <Link href="/" className="back-link">← Về trang chủ</Link>
+       <section className="surface manga-head">
+         <div className="manga-cover">
+           {cover && <img src={cover} alt="" fetchPriority="high" />}
+         </div>
+         <div className="manga-info">
+-          <h1 className="manga-title">{manga.title}</h1>
++          <h1 className="manga-title">{titleWithSource(manga.title, manga.source)}</h1>
+           <p className="meta-row">
+             {manga.author ? <>Tác giả: <b>{manga.author}</b></> : null}
+             {manga.status ? <span className="stat-chip">{statusText(manga.status)}</span> : null}
+             {manga.year ? <span>{manga.year}</span> : null}
+             <span>{active.length} chapter ({lang === "vi" ? "tiếng Việt" : "English"})</span>
+           </p>
+           {manga.tags.length > 0 && (
+             <div className="tags">
+diff --git a/web/app/page.tsx b/web/app/page.tsx
+index 291c5d8..6870ab8 100644
+--- a/web/app/page.tsx
++++ b/web/app/page.tsx
+@@ -1,13 +1,13 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterName, relDate, statusText } from "@/lib/format";
++import { chapterName, relDate, statusText, titleWithSource } from "@/lib/format";
+ import { MangaCard } from "@/components/manga-card";
+ import ContinueReading from "@/components/continue-reading";
+ 
+ async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverContent>>) => Promise<T>, fallback: T): Promise<T> {
+   try {
+     return await load(await serverContent());
+   } catch {
+     return fallback;
+@@ -37,17 +37,17 @@ async function Featured() {
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img className="feature-bleed" src={cover} alt="" />
+           {/* eslint-disable-next-line @next/next/no-img-element */}
+           <img className="feature-poster" src={cover} alt="" fetchPriority="high" />
+         </div>
+       )}
+       <div className="feature-copy">
+         <p className="feature-label"><span aria-hidden="true" />Truyện nổi bật</p>
+-        <h1 id="featured-title">{manga.title}</h1>
++        <h1 id="featured-title">{titleWithSource(manga.title, manga.source)}</h1>
+         <p className="feature-meta">
+           {manga.rating && manga.rating > 0 ? <strong>★ {manga.rating.toFixed(1)}</strong> : null}
+           {manga.year ? <span>{manga.year}</span> : null}
+           {manga.status ? <span>{statusText(manga.status)}</span> : null}
+         </p>
+         {manga.description ? <p className="feature-description">{manga.description}</p> : null}
+         <Link href={`/manga/${manga.id}`} className="btn btn-primary">Xem truyện →</Link>
+       </div>
+@@ -76,17 +76,17 @@ async function LatestFeed() {
+           <article className="feed-row" key={item.id}>
+             <Link href={`/manga/${item.id}`} className="feed-cover" aria-label={`Xem truyện ${item.title}`}>
+               {cover && (
+                 // eslint-disable-next-line @next/next/no-img-element
+                 <img src={cover} alt="" loading="lazy" decoding="async" />
+               )}
+             </Link>
+             <div className="feed-details">
+-              <h3><Link href={`/manga/${item.id}`}>{item.title}</Link></h3>
++              <h3><Link href={`/manga/${item.id}`}>{titleWithSource(item.title, item.source)}</Link></h3>
+               <div className="chapter-pills">
+                 {item.chapters.map((chapter, index) => (
+                   <Link
+                     key={chapter.id}
+                     href={`/read/${chapter.id}?manga=${encodeURIComponent(item.id)}&lang=${chapter.lang}`}
+                     className={index === 0 ? "chapter-pill fresh" : "chapter-pill"}
+                   >
+                     {chapterName(chapter.chapter)}
+@@ -114,17 +114,17 @@ async function RankPanel() {
+           <Link href={`/manga/${manga.id}`} className="rank-row">
+             <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+             <span className="rank-cover">
+               {coverImageUrl(manga, 256) && (
+                 // eslint-disable-next-line @next/next/no-img-element
+                 <img src={coverImageUrl(manga, 256) ?? ""} alt="" loading="lazy" />
+               )}
+             </span>
+-            <span className="rank-title">{manga.title}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
++            <span className="rank-title">{titleWithSource(manga.title, manga.source)}<small>{manga.follows ? `${manga.follows} theo dõi` : ""}</small></span>
+             {manga.rating && manga.rating > 0 ? <span className="rank-rating">★ {manga.rating.toFixed(1)}</span> : null}
+           </Link>
+         </li>
+       ))}
+     </ol>
+   );
+ }
+ 
+diff --git a/web/components/chapter-list.tsx b/web/components/chapter-list.tsx
+index 1572eb6..a81720c 100644
+--- a/web/components/chapter-list.tsx
++++ b/web/components/chapter-list.tsx
+@@ -1,18 +1,21 @@
+ "use client";
+ 
+ import Link from "next/link";
+ import { useState, useSyncExternalStore } from "react";
+-import type { ChaptersResponse, ChapterDto } from "@/lib/contracts";
++import { sourceLabel, type ChaptersResponse, type ChapterDto } from "@/lib/contracts";
+ import { chapterLabel, fmtDate } from "@/lib/format";
+ import { getHistory, subscribe, type GuestHistory } from "@/lib/guest";
+ 
+ const NO_HISTORY: GuestHistory[] = [];
+ 
++const sourceSuffix = (chapter: ChapterDto) =>
++  chapter.source && chapter.source !== "mangadex" ? ` (${sourceLabel(chapter.source)})` : "";
++
+ export default function ChapterList({ mangaId, chapters }: { mangaId: string; chapters: ChaptersResponse }) {
+   const langs = (["vi", "en"] as const).filter((lang) => chapters[lang].length > 0);
+   const [lang, setLang] = useState<string>(langs[0] ?? "vi");
+   const history = useSyncExternalStore(subscribe, getHistory, () => NO_HISTORY);
+   const lastRead = history.find((entry) => entry.mangaId === mangaId)?.chapter ?? null;
+ 
+   if (langs.length === 0) {
+     return <p className="empty">Truyện chưa có chapter dịch tiếng Việt hoặc tiếng Anh.</p>;
+@@ -42,23 +45,23 @@ export default function ChapterList({ mangaId, chapters }: { mangaId: string; ch
+         {list.map((chapter: ChapterDto) => {
+           const read = lastRead !== null && chapter.chapter !== null && Number(chapter.chapter) <= Number(lastRead);
+           const href = `/read/${chapter.id}?manga=${encodeURIComponent(mangaId)}&lang=${active}`;
+           return (
+             <li key={chapter.id}>
+               {chapter.external_url ? (
+                 <a href={chapter.external_url} target="_blank" rel="noopener noreferrer" className="chapter-row">
+                   <span className="ch-num">{chapterLabel(chapter.chapter)}</span>
+-                  <span className="ch-title">{chapter.title || "Đọc tại nguồn ngoài"} ↗</span>
++                  <span className="ch-title">{chapter.title || "Đọc tại nguồn ngoài"}{sourceSuffix(chapter)} ↗</span>
+                   <span className="ch-date">{fmtDate(chapter.publish_at)}</span>
+                 </a>
+               ) : (
+                 <Link href={href} className="chapter-row">
+                   <span className={`ch-num${read ? " read" : ""}`}>{chapterLabel(chapter.chapter)}{read ? " ✓" : ""}</span>
+-                  <span className={`ch-title${read ? " read" : ""}`}>{chapter.title || chapter.group || "—"}</span>
++                  <span className={`ch-title${read ? " read" : ""}`}>{chapter.title || chapter.group || "—"}{sourceSuffix(chapter)}</span>
+                   <span className="ch-date">{fmtDate(chapter.publish_at)}</span>
+                 </Link>
+               )}
+             </li>
+           );
+         })}
+       </ul>
+     </div>
+diff --git a/web/components/manga-card.tsx b/web/components/manga-card.tsx
+index 826be75..40554df 100644
+--- a/web/components/manga-card.tsx
++++ b/web/components/manga-card.tsx
+@@ -1,25 +1,25 @@
+ import Link from "next/link";
+ import { coverImageUrl, type MangaSummaryDto } from "@/lib/contracts";
+-import { chapterName, filterUrl, statusText, tagLabel } from "@/lib/format";
++import { chapterName, filterUrl, statusText, tagLabel, titleWithSource } from "@/lib/format";
+ 
+ export function MangaCard({ manga, rank }: { manga: MangaSummaryDto; rank?: number }) {
+   const cover = coverImageUrl(manga, 256);
+   return (
+     <Link href={`/manga/${manga.id}`} className="card">
+       <div className="card-cover">
+         {cover ? (
+           <img src={cover} alt="" loading="lazy" decoding="async" />
+         ) : (
+           <div className="no-cover" aria-hidden="true">Chưa có bìa</div>
+         )}
+         {rank !== undefined && <span className="rank-num">{rank}</span>}
+       </div>
+-      <h3 className="card-title">{manga.title}</h3>
++      <h3 className="card-title">{titleWithSource(manga.title, manga.source)}</h3>
+       <p className="card-year">
+         {manga.rating && manga.rating > 0 ? `★ ${manga.rating.toFixed(1)} · ` : ""}
+         {manga.latest_chapter
+           ? chapterName(manga.latest_chapter)
+           : manga.status
+             ? statusText(manga.status)
+             : manga.year?.toString() ?? ""}
+       </p>
+diff --git a/web/components/reader/ReaderToolbar.tsx b/web/components/reader/ReaderToolbar.tsx
+index 480a55d..7c17dcf 100644
+--- a/web/components/reader/ReaderToolbar.tsx
++++ b/web/components/reader/ReaderToolbar.tsx
+@@ -1,12 +1,12 @@
+ "use client";
+ 
+ import Link from "next/link";
+-import type { ChapterDto } from "@/lib/contracts";
++import { sourceLabel, type ChapterDto } from "@/lib/contracts";
+ import { chapterLabel } from "@/lib/format";
+ import type { ReaderSettings } from "@/lib/guest";
+ 
+ type Props = {
+   mangaId: string;
+   mangaTitle: string;
+   chapterId: string;
+   chapters: ChapterDto[];
+@@ -19,20 +19,22 @@ type Props = {
+   onSelectChapter: (id: string) => void;
+   fullscreenSupported: boolean;
+ };
+ 
+ export default function ReaderToolbar({
+   mangaId, mangaTitle, chapterId, chapters, settings, running,
+   onSettings, onPause, onToggleRun, onFullscreen, onSelectChapter, fullscreenSupported,
+ }: Props) {
++  const current = chapters.find((item) => item.id === chapterId);
++  const sourceSuffix = current?.source && current.source !== "mangadex" ? ` (${sourceLabel(current.source)})` : "";
+   return (
+     <header className="reader-bar">
+       <div className="reader-bar-inner">
+-        <Link href={`/manga/${mangaId}`} className="back-link">← {mangaTitle}</Link>
++        <Link href={`/manga/${mangaId}`} className="back-link">← {mangaTitle}{sourceSuffix}</Link>
+         <select
+           className="chapter-select"
+           aria-label="Chọn chương"
+           value={chapterId}
+           onChange={(event) => onSelectChapter(event.target.value)}
+         >
+           {chapters.map((chapter) => (
+             <option key={chapter.id} value={chapter.id}>{chapterLabel(chapter.chapter)}</option>
+diff --git a/web/lib/format.ts b/web/lib/format.ts
+index 7dbc1b8..79a5468 100644
+--- a/web/lib/format.ts
++++ b/web/lib/format.ts
+@@ -1,9 +1,14 @@
+ // Pure presentation helpers shared by Server and Client Components.
++import { sourceLabel } from "@/lib/contracts";
++
++export function titleWithSource(title: string, source?: string): string {
++  return `${title} (${sourceLabel(source)})`;
++}
+ 
+ export function statusText(status: string): string {
+   return (
+     {
+       ongoing: "Đang tiến hành",
+       completed: "Hoàn thành",
+       hiatus: "Tạm ngưng",
+       cancelled: "Đã hủy",
+diff --git a/web/scripts/reader-playwright.test.mjs b/web/scripts/reader-playwright.test.mjs
+index c4050a1..586b3fa 100644
+--- a/web/scripts/reader-playwright.test.mjs
++++ b/web/scripts/reader-playwright.test.mjs
+@@ -205,17 +205,17 @@ async function openPage(viewport) {
+   return { context, page };
+ }
+ 
+ test("desktop and 375px shells render decodable covers, no horizontal overflow, and no direct MangaDex requests", async () => {
+   for (const [name, viewport] of [["desktop", { width: 1280, height: 800 }], ["mobile", { width: 375, height: 812 }]]) {
+     const { context, page } = await openPage(viewport);
+     await page.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
+     await page.locator(".feature h1").waitFor();
+-    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga");
++    assert.equal(await page.locator(".feature h1").textContent(), "Fixture Manga (MangaDex)");
+     assert.ok(await page.locator(".popular-rail .card").count() >= 1);
+     const cover = page.locator(".feature-poster");
+     assert.ok(cover && await cover.getAttribute("src").then((src) => src.startsWith("/api/content/img?u=")));
+     await assertDecoded(cover, `${name} feature poster`);
+     await assertDecoded(page.locator(".popular-rail .card-cover img").first(), `${name} card cover`);
+     const rail = page.locator(".site-rail");
+     if (name === "desktop") assert.equal(await rail.isVisible(), true);
+     else {
+diff --git a/web/scripts/source-ui.test.mjs b/web/scripts/source-ui.test.mjs
+new file mode 100644
+index 0000000..5fb0aad
+--- /dev/null
++++ b/web/scripts/source-ui.test.mjs
+@@ -0,0 +1,85 @@
++import assert from "node:assert/strict";
++import { execFileSync } from "node:child_process";
++import { join } from "node:path";
++import { test } from "node:test";
++import { pathToFileURL } from "node:url";
++import { titleWithSource } from "../lib/format.ts";
++import { webDir } from "./test-helpers.mjs";
++
++const chapter = (overrides = {}) => ({
++  id: "ch-1",
++  chapter: "1",
++  volume: null,
++  title: "Fallback 1",
++  lang: "vi",
++  pages: 2,
++  external_url: null,
++  publish_at: "2026-11-21T00:00:00Z",
++  group: "Group",
++  source: "mangadex",
++  source_label: "MangaDex",
++  readable: true,
++  ...overrides,
++});
++
++// The suite runs with --conditions=react-server, which resolves React's RSC
++// build (no hooks/createContext). Render the real components in a plain child
++// process so the assertions exercise shipped JSX, not a hand-written stand-in.
++function render(relativePath, props) {
++  const specifier = pathToFileURL(join(webDir, relativePath)).href;
++  const script = `
++    import { createElement } from "react";
++    import { renderToStaticMarkup } from "react-dom/server";
++    const mod = await import(${JSON.stringify(specifier)});
++    const Component = mod.default?.default ?? mod.default ?? mod;
++    process.stdout.write(renderToStaticMarkup(createElement(Component, ${JSON.stringify(props)})));
++  `;
++  return execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
++    cwd: webDir,
++    encoding: "utf8",
++  });
++}
++
++function rowTitles(html) {
++  return [...html.matchAll(/<span class="ch-title"[^>]*>([\s\S]*?)<\/span>/g)]
++    .map((match) => match[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim());
++}
++
++test("titleWithSource appends the exact source label", () => {
++  assert.equal(titleWithSource("Slime", "mangadex"), "Slime (MangaDex)");
++  assert.equal(titleWithSource("Slime", "comick"), "Slime (Comick)");
++  assert.equal(titleWithSource("Slime"), "Slime (MangaDex)");
++});
++
++test("chapter rows show (Comick) only for fallback chapters", () => {
++  const fallback = render("components/chapter-list.tsx", {
++    mangaId: "m1",
++    chapters: { vi: [chapter({ id: "comick:chap-1", source: "comick", source_label: "Comick" })], en: [] },
++  });
++  assert.deepEqual(rowTitles(fallback), ["Fallback 1 (Comick)"]);
++
++  const readable = render("components/chapter-list.tsx", {
++    mangaId: "m1",
++    chapters: {
++      vi: [chapter({ id: "md-chapter", source: "mangadex", source_label: "MangaDex" })],
++      en: [],
++    },
++  });
++  assert.deepEqual(rowTitles(readable), ["Fallback 1"]);
++  assert.doesNotMatch(readable, /Comick/);
++});
++
++test("reader toolbar back title marks a fallback chapter", () => {
++  const props = {
++    mangaId: "m1",
++    mangaTitle: "Slime",
++    chapterId: "comick:chap-1",
++    chapters: [chapter({ id: "comick:chap-1", source: "comick", source_label: "Comick" })],
++    settings: { mode: "vertical", bg: "light", fit: true, speed: 1 },
++    running: false,
++    fullscreenSupported: false,
++  };
++  const html = render("components/reader/ReaderToolbar.tsx", props);
++  const backLink = html.match(/<a class="back-link"[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? "";
++  assert.equal(backLink, "← Slime (Comick)");
++});

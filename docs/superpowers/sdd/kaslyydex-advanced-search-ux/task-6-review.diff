@@ -1,0 +1,372 @@
+d068867 test: assert source badge labels after skeleton replacement
+215b7da feat: add ranking skeleton and top rank frames
+ web/app/bxh/loading.tsx               |  26 ++++++
+ web/app/bxh/page.tsx                  |   7 +-
+ web/app/globals.css                   |   6 +-
+ web/components/rank-skeleton.tsx      |  20 ++++
+ web/scripts/ranking-skeleton.test.mjs | 166 ++++++++++++++++++++++++++++++++++
+ web/scripts/skeleton-motion.test.mjs  |   4 +-
+ 6 files changed, 222 insertions(+), 7 deletions(-)
+diff --git a/web/app/bxh/loading.tsx b/web/app/bxh/loading.tsx
+new file mode 100644
+index 0000000..d0f7dd6
+--- /dev/null
++++ b/web/app/bxh/loading.tsx
+@@ -0,0 +1,26 @@
++import Link from "next/link";
++import { RankListSkeleton } from "@/components/rank-skeleton";
++
++const TABS = [
++  ["follows", "Theo dõi"],
++  ["rating", "Đánh giá"],
++  ["new", "Mới cập nhật"],
++] as const;
++
++export default function Loading() {
++  return (
++    <main className="wrap catalog-page">
++      <div className="page-intro">
++        <div><h1>Bảng xếp hạng</h1><p>Theo số lượt theo dõi, điểm đánh giá và cập nhật trên MangaDex.</p></div>
++      </div>
++      <section className="surface">
++        <nav className="rank-tabs" aria-label="Cách xếp hạng">
++          {TABS.map(([value, label]) => (
++            <Link key={value} href={`/bxh?kind=${value}`}>{label}</Link>
++          ))}
++        </nav>
++        <RankListSkeleton />
++      </section>
++    </main>
++  );
++}
+diff --git a/web/app/bxh/page.tsx b/web/app/bxh/page.tsx
+index 220d50c..14e11fd 100644
+--- a/web/app/bxh/page.tsx
++++ b/web/app/bxh/page.tsx
+@@ -1,13 +1,14 @@
+ import { Suspense } from "react";
+ import Link from "next/link";
+ import { serverContent } from "@/lib/content-server";
+ import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
+ import { SourceBadge } from "@/components/source-badge";
++import { RankListSkeleton } from "@/components/rank-skeleton";
+ 
+ type Props = { searchParams: Promise<{ kind?: string }> };
+ 
+ const TABS = [
+   ["follows", "Theo dõi"],
+   ["rating", "Đánh giá"],
+   ["new", "Mới cập nhật"],
+ ] as const;
+@@ -25,17 +26,17 @@ async function RankList({ kind }: { kind: (typeof TABS)[number][0] }) {
+   if (list.length === 0) return <p className="empty">Chưa có truyện để xếp hạng.</p>;
+ 
+   return (
+     <ol className="rank-list">
+       {list.slice(0, 24).map((manga, index) => {
+         const cover = coverImageUrl(manga, 256);
+         return (
+           <li key={manga.id}>
+-            <Link href={`/manga/${manga.id}`} className="rank-row">
++            <Link href={`/manga/${manga.id}`} className={`rank-row${index < 3 ? ` rank-top rank-${index + 1}` : ""}`}>
+               <b className={index < 3 ? "top-rank" : undefined}>{index + 1}</b>
+               <span className="rank-cover">
+                 {cover && (
+                   // eslint-disable-next-line @next/next/no-img-element
+                   <img src={cover} alt="" loading="lazy" />
+                 )}
+                 <SourceBadge source={manga.source} />
+               </span>
+@@ -63,23 +64,23 @@ async function RankingContent({ searchParams }: Props) {
+         <div><h1>Bảng xếp hạng</h1><p>Theo số lượt theo dõi, điểm đánh giá và cập nhật trên MangaDex.</p></div>
+       </div>
+       <section className="surface">
+         <nav className="rank-tabs" aria-label="Cách xếp hạng">
+           {TABS.map(([value, label]) => (
+             <Link key={value} href={`/bxh?kind=${value}`} aria-current={kind === value ? "page" : undefined}>{label}</Link>
+           ))}
+         </nav>
+-        <Suspense key={kind} fallback={<div className="rank-loading" role="status" aria-label="Đang tải xếp hạng" />}>
++        <Suspense key={kind} fallback={<RankListSkeleton />}>
+           <RankList kind={kind} />
+         </Suspense>
+       </section>
+     </main>
+   );
+ }
+ 
+ export default function RankingPage(props: Props) {
+   return (
+-    <Suspense fallback={<main className="wrap catalog-page" role="status" aria-label="Đang tải bảng xếp hạng" />}>
++    <Suspense fallback={<RankListSkeleton />}>
+       <RankingContent {...props} />
+     </Suspense>
+   );
+ }
+diff --git a/web/app/globals.css b/web/app/globals.css
+index c954f0f..3398cc7 100644
+--- a/web/app/globals.css
++++ b/web/app/globals.css
+@@ -220,18 +220,20 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
+ .rank-list li + li { border-top: 1px solid var(--line); }
+ .rank-row { display: grid; grid-template-columns: 2ch 40px minmax(0, 1fr) auto; gap: 11px; align-items: center; padding: 10px 13px; }
+ .rank-row > b { color: var(--muted); font-family: var(--display); font-size: 1.12rem; font-variant-numeric: tabular-nums; }
+ .rank-row .top-rank, .rank-rating { color: var(--accent); }
+ .rank-title { overflow-wrap: anywhere; font-size: .875rem; font-weight: 600; line-height: 1.4; }
+ .rank-title small { display: block; color: var(--muted); font-size: .6875rem; }
+ .rank-title small:empty { display: none; }
+ .rank-rating { font-size: .8125rem; font-weight: 700; }
+-.rank-loading { padding-inline: 14px; }
+-.rank-loading .skel-line { height: 56px; margin: 8px 0; }
++.rank-row.rank-top { border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
++.rank-row.rank-1 { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); box-shadow: inset 0 0 0 2px var(--accent); }
++.rank-row.rank-2 { background: color-mix(in srgb, var(--muted) 12%, var(--surface)); box-shadow: inset 0 0 0 2px var(--muted); }
++.rank-row.rank-3 { background: color-mix(in srgb, var(--line) 45%, var(--surface)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--muted) 55%, var(--surface)); }
+ .search-filters { margin-bottom: 22px; }
+ .search-filters summary { min-height: 48px; padding: 11px 16px; font-weight: 600; }
+ .search-filters form { padding: 14px 16px; border-top: 1px solid var(--line); }
+ .filter-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+ .filter-fields label, .reader-settings label { display: grid; min-width: 0; gap: 5px; font-size: .8125rem; font-weight: 600; }
+ .filter-tags { min-width: 0; margin: 14px 0; padding: 8px 0; border: 0; }
+ .filter-tags legend { font-weight: 600; }
+ .filter-tag { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: .8125rem; cursor: pointer; }
+diff --git a/web/components/rank-skeleton.tsx b/web/components/rank-skeleton.tsx
+new file mode 100644
+index 0000000..8a43c59
+--- /dev/null
++++ b/web/components/rank-skeleton.tsx
+@@ -0,0 +1,20 @@
++export function RankListSkeleton() {
++  return (
++    <ol className="rank-list" role="status" aria-label="Đang tải xếp hạng">
++      {Array.from({ length: 12 }, (_, index) => {
++        const rank = index + 1;
++        const frame = rank <= 3 ? `rank-top rank-${rank}` : "";
++        return (
++          <li key={rank}>
++            <div className={`rank-row skel-rank skel ${frame}`} aria-hidden="true">
++              <span className="skel-bar skel-rank-no" />
++              <span className="rank-cover" />
++              <span className="rank-title"><span className="skel-bar" /><span className="skel-bar" /></span>
++              <span className="skel-bar skel-rank-score" />
++            </div>
++          </li>
++        );
++      })}
++    </ol>
++  );
++}
+diff --git a/web/scripts/ranking-skeleton.test.mjs b/web/scripts/ranking-skeleton.test.mjs
+new file mode 100644
+index 0000000..2fe7924
+--- /dev/null
++++ b/web/scripts/ranking-skeleton.test.mjs
+@@ -0,0 +1,166 @@
++import assert from "node:assert/strict";
++import { existsSync } from "node:fs";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { browserExecutable } from "./browser.mjs";
++import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
++
++const EDGE = browserExecutable();
++const TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
++const CHAPTER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
++
++const manga = (index) => ({
++  id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`,
++  title: `Fixture ${index}`,
++  cover_file: "cover.jpg",
++  status: "ongoing",
++  year: 2026,
++  description: "Truyện dùng để kiểm tra skeleton bảng xếp hạng.",
++  tags: ["Action"],
++  tag_ids: [TAG_ID],
++  author: "Fixture Author",
++  artist: "Fixture Author",
++  rating: 9 - index * 0.1,
++  follows: 100 - index,
++  latest_chapter: "1",
++  source: "mangadex",
++  source_label: "MangaDex",
++});
++const books = Array.from({ length: 12 }, (_, index) => manga(index + 1));
++const chapter = {
++  id: CHAPTER_ID, chapter: "1", volume: null, title: "Chương 1", lang: "vi", pages: 1,
++  external_url: null, publish_at: "2026-11-21T00:00:00Z", group: "Fixture", source: "mangadex", source_label: "MangaDex",
++};
++
++let fixture;
++let app;
++let browser;
++let contentDelay = 1500;
++
++function json(res, payload) {
++  res.writeHead(200, { "content-type": "application/json" });
++  res.end(JSON.stringify(payload));
++}
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `browser executable missing: ${EDGE}`);
++  fixture = await startHttpServer(async (req, res) => {
++    const { pathname } = new URL(req.url ?? "/", "http://content.local");
++    await new Promise((resolve) => setTimeout(resolve, contentDelay));
++    if (pathname === "/api/content/rank") return json(res, books);
++    if (pathname === "/api/content/latest") return json(res, books);
++    if (pathname === "/api/content/tags") return json(res, [{ id: TAG_ID, name: "Action", group: "genre" }]);
++    if (pathname === "/api/content/search") return json(res, { results: books, total: books.length });
++    if (pathname.startsWith("/api/content/manga/") && pathname.endsWith("/chapters")) return json(res, { vi: [chapter], en: [] });
++    if (pathname.startsWith("/api/content/manga/")) return json(res, books[0]);
++    if (pathname.startsWith("/api/content/chapter/")) return json(res, chapter);
++    return json(res, { results: [], total: 0 });
++  });
++  app = await startNext({ RUST_CONTENT_API_ORIGIN: `${fixture.baseUrl}/api/content` });
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(app?.child);
++  await fixture?.close();
++});
++
++async function openPage(options = {}) {
++  const context = await browser.newContext({ viewport: { width: 375, height: 812 }, ...options });
++  return { context, page: await context.newPage() };
++}
++
++async function assertNoOverflow(page, label) {
++  const sizes = await page.evaluate(() => ({
++    scroll: document.documentElement.scrollWidth,
++    body: document.body.scrollWidth,
++    viewport: document.documentElement.clientWidth,
++  }));
++  assert.ok(sizes.scroll <= sizes.viewport + 1 && sizes.body <= sizes.viewport + 1,
++    `${label} overflowed horizontally: ${JSON.stringify(sizes)}`);
++}
++
++const SKELETON = ".rank-list .rank-row.skel";
++const REAL = ".rank-list .rank-row:not(.skel)";
++
++test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows", async () => {
++  contentDelay = 1500;
++  const { context, page } = await openPage();
++  await page.goto(`${app.baseUrl}/bxh?kind=follows`, { waitUntil: "commit" });
++  await page.locator(SKELETON).first().waitFor();
++
++  assert.match(await page.locator(".page-intro h1").first().textContent(), /Bảng xếp hạng/);
++  assert.equal(await page.locator(".rank-tabs a").count(), 3, "loading shell needs the three tabs");
++  assert.equal(await page.locator(".rank-list > li").count(), 12, "loading shell needs 12 skeleton rows");
++
++  const status = await page.locator(".rank-list").first().evaluate((el) => ({
++    role: el.getAttribute("role"), label: el.getAttribute("aria-label"),
++  }));
++  assert.equal(status.role, "status");
++  assert.ok(status.label, "skeleton needs an accessible name");
++
++  const frames = await page.locator(SKELETON).evaluateAll((rows) => rows.slice(0, 4).map((row) => row.className));
++  for (const rank of [1, 2, 3]) {
++    assert.match(frames[rank - 1], new RegExp(`rank-top\\b.*\\brank-${rank}\\b|rank-${rank}\\b.*\\brank-top\\b`),
++      `skeleton row ${rank} needs rank-top rank-${rank}`);
++  }
++  assert.doesNotMatch(frames[3], /rank-top/, "skeleton row 4 must not be framed");
++
++  const skeletonBox = await page.locator(SKELETON).first().boundingBox();
++  assert.ok(skeletonBox && skeletonBox.width > 0 && skeletonBox.height > 0);
++  await assertNoOverflow(page, "375px /bxh skeleton");
++
++  contentDelay = 0;
++  await page.locator(`${REAL}`).first().waitFor();
++  assert.equal(await page.locator(REAL).count(), 12, "ranking needs 12 real rows");
++
++  const realFrames = await page.locator(REAL).evaluateAll((rows) => rows.slice(0, 4).map((row) => row.className));
++  for (const rank of [1, 2, 3]) {
++    assert.match(realFrames[rank - 1], new RegExp(`rank-top\\b.*\\brank-${rank}\\b|rank-${rank}\\b.*\\brank-top\\b`),
++      `real row ${rank} needs rank-top rank-${rank}`);
++  }
++  assert.doesNotMatch(realFrames[3], /rank-top/, "real row 4 must not be framed");
++
++  const shadows = await page.locator(REAL).evaluateAll((rows) =>
++    rows.slice(0, 3).map((row) => getComputedStyle(row).boxShadow));
++  assert.ok(shadows.every((shadow) => shadow && shadow !== "none"), "top 3 rows need visible frames");
++  assert.equal(new Set(shadows).size, 3, "top 3 rows need distinct frame styles");
++
++  const realBox = await page.locator(REAL).first().boundingBox();
++  assert.ok(Math.abs(realBox.width - skeletonBox.width) <= 2, `skeleton width shifted: ${skeletonBox.width} vs ${realBox.width}`);
++  assert.ok(Math.abs(realBox.height - skeletonBox.height) <= 2, `skeleton height shifted: ${skeletonBox.height} vs ${realBox.height}`);
++  await assertNoOverflow(page, "375px /bxh loaded");
++  await context.close();
++});
++
++test("changing kind shows the skeleton again before the new data", async () => {
++  contentDelay = 0;
++  const { context, page } = await openPage();
++  await page.goto(`${app.baseUrl}/bxh?kind=follows`, { waitUntil: "commit" });
++  await page.locator(REAL).first().waitFor();
++
++  contentDelay = 1500;
++  await page.locator('.rank-tabs a[href="/bxh?kind=rating"]').click();
++  await page.locator(SKELETON).first().waitFor({ timeout: 10_000 });
++  assert.equal(await page.locator(".rank-list > li").count(), 12, "kind switch must re-show 12 skeleton rows");
++
++  contentDelay = 0;
++  await page.locator(REAL).first().waitFor();
++  assert.equal(await page.locator(REAL).count(), 12);
++  await context.close();
++});
++
++test("shimmer is guarded by reduced motion on the ranking skeleton", async () => {
++  for (const reducedMotion of ["no-preference", "reduce"]) {
++    contentDelay = 1500;
++    const { context, page } = await openPage({ reducedMotion });
++    await page.goto(`${app.baseUrl}/bxh`, { waitUntil: "commit" });
++    await page.locator(SKELETON).first().waitFor();
++    const animation = await page.locator(SKELETON).first().evaluate((el) => getComputedStyle(el).animationName);
++    if (reducedMotion === "reduce") assert.equal(animation, "none", "reduced motion must disable shimmer");
++    else assert.match(animation, /shimmer/, "normal motion needs shimmer");
++    await assertNoOverflow(page, `375px /bxh skeleton (${reducedMotion})`);
++    await context.close();
++  }
++});
+diff --git a/web/scripts/skeleton-motion.test.mjs b/web/scripts/skeleton-motion.test.mjs
+index 4d441a9..faa7ccc 100644
+--- a/web/scripts/skeleton-motion.test.mjs
++++ b/web/scripts/skeleton-motion.test.mjs
+@@ -146,17 +146,17 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
+   const loadedBoxes = {
+     card: await page.locator(".popular-rail .card-cover:visible").first().boundingBox(),
+     feed: await page.locator(".feed-row:visible .feed-cover").first().boundingBox(),
+     rank: await page.locator(".rank-list .rank-row:visible").first().boundingBox(),
+   };
+   for (const key of Object.keys(loadedBoxes)) {
+     assert.ok(Math.abs(loadedBoxes[key].width - skeletonBoxes[key].width) <= 2, `${key} skeleton width shifted`);
+   }
+-  assert.match(await page.locator(".card-title:visible").first().textContent(), /MangaDex/, "source label must stay visible");
++  assert.match(await page.locator(".source-badge:visible").first().textContent(), /MangaDex/, "source badge label must stay visible");
+ 
+   contentDelay = 1200;
+   await page.goto(`${app.baseUrl}/search?q=Fixture`, { waitUntil: "commit" });
+   await page.locator(".skel-card:visible").first().waitFor();
+   await assertStatus(page.locator(".manga-grid:has(.skel-card):visible"));
+   assert.ok(await page.locator(".skel-card:visible").count() >= 4, "search needs card skeletons");
+   await assertNoOverflow(page, "375px search skeleton");
+   contentDelay = 0;
+@@ -168,17 +168,17 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
+   await page.locator(".skel-chapter:visible").first().waitFor();
+   await assertStatus(page.locator(".manga-head:has(.skel-cover):visible"));
+   await assertStatus(page.locator(".chapters-panel:has(.skel-chapter):visible"));
+   assert.ok(await page.locator(".skel-chapter:visible").count() >= 3, "chapter list needs row skeletons");
+   await assertNoOverflow(page, "375px manga skeleton");
+   contentDelay = 0;
+   await page.locator(".chapter-row:visible").first().waitFor();
+   await assertNoOverflow(page, "375px manga loaded");
+-  assert.match(await page.locator(".manga-title:visible").textContent(), /MangaDex/, "source label must stay visible");
++  assert.match(await page.locator(".manga-cover .source-badge:visible").textContent(), /MangaDex/, "source badge label must stay visible");
+   await context.close();
+ });
+ 
+ test("motion tokens exist and every transition is guarded by reduced motion", async () => {
+   const cssTokens = await (async () => {
+     const { context, page } = await openPage();
+     await page.setContent("<!doctype html><html><body></body></html>");
+     await page.addStyleTag({ content: CSS });

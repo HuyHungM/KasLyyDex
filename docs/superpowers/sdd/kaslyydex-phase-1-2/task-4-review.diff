@@ -1,0 +1,1659 @@
+ crates/core/src/mangadex.rs                        |    33 +-
+ crates/server/src/main.rs                          |    45 +-
+ .../sdd/kaslyydex-phase-1-2/task-4-report.md       |   131 +
+ infra/axum.md                                      |    57 +
+ infra/vercel.md                                    |   109 +-
+ web/.env.example                                   |    10 +-
+ web/app/api/auth/[...path]/route.ts                |    34 +
+ web/app/api/content/[...path]/route.ts             |    70 +
+ web/drizzle.config.ts                              |    10 +
+ web/drizzle/0000_application.sql                   |     5 +
+ web/drizzle/meta/0000_snapshot.json                |    52 +
+ web/drizzle/meta/_journal.json                     |    13 +
+ web/lib/auth/client.ts                             |    11 +
+ web/lib/auth/server.ts                             |   101 +
+ web/lib/contracts.ts                               |   125 +
+ web/lib/db/client.ts                               |    62 +
+ web/lib/db/schema.ts                               |    10 +
+ web/next.config.ts                                 |     1 +
+ web/package-lock.json                              | 10308 +++++++++++--------
+ web/package.json                                   |    12 +-
+ web/scripts/auth.test.mjs                          |   176 +
+ web/scripts/content-proxy.test.mjs                 |   143 +
+ web/scripts/database.test.mjs                      |   105 +
+ web/scripts/test-helpers.mjs                       |    99 +
+ 24 files changed, 7588 insertions(+), 4134 deletions(-)
+diff --git a/crates/core/src/mangadex.rs b/crates/core/src/mangadex.rs
+index 63165fd..7df7e58 100644
+--- a/crates/core/src/mangadex.rs
++++ b/crates/core/src/mangadex.rs
+@@ -9,16 +9,17 @@ use std::sync::Arc;
+ use std::time::Duration;
+ 
+ const API: &str = "https://api.mangadex.org";
+ const LIST_PARAMS: &str = "&includes[]=cover_art&includes[]=author&contentRating[]=safe&contentRating[]=suggestive&hasAvailableChapters=true";
+ 
+ #[derive(Clone)]
+ pub struct Md {
+     pub http: reqwest::Client,
++    api: String,
+     popular: Cache<(), Arc<Vec<MangaSummaryDto>>>,
+     latest: Cache<(), Arc<Vec<LatestMangaDto>>>,
+     search: Cache<String, Arc<SearchResponse>>,
+     manga: Cache<String, Arc<MangaSummaryDto>>,
+     chapters: Cache<String, Arc<ChaptersResponse>>,
+     tags: Cache<(), Arc<Vec<TagDto>>>,
+     ranks: Cache<String, Arc<Vec<MangaSummaryDto>>>,
+ }
+@@ -26,18 +27,26 @@ pub struct Md {
+ type Err = String;
+ 
+ fn api_err(e: impl std::fmt::Display) -> Err {
+     e.to_string()
+ }
+ 
+ impl Md {
+     pub fn new(http: reqwest::Client) -> Self {
++        // Local fixture override for the Next -> Axum topology tests. Production
++        // keeps the upstream MangaDex origin unless this is explicitly set.
++        let api = std::env::var("MANGADEX_API_ORIGIN")
++            .ok()
++            .map(|value| value.trim().trim_end_matches('/').to_owned())
++            .filter(|value| !value.is_empty())
++            .unwrap_or_else(|| API.to_owned());
+         Self {
+             http,
++            api,
+             popular: Cache::builder()
+                 .time_to_live(Duration::from_secs(60))
+                 .max_capacity(1)
+                 .build(),
+             latest: Cache::builder()
+                 .time_to_live(Duration::from_secs(60))
+                 .max_capacity(1)
+                 .build(),
+@@ -62,17 +71,17 @@ impl Md {
+                 .max_capacity(2)
+                 .build(),
+         }
+     }
+ 
+     async fn get(&self, path: &str) -> Result<Value, Err> {
+         let res = self
+             .http
+-            .get(format!("{API}{path}"))
++            .get(format!("{}{path}", self.api))
+             .send()
+             .await
+             .map_err(api_err)?;
+         let status = res.status();
+         if !status.is_success() {
+             return Err(if status.as_u16() == 429 {
+                 "MangaDex giới hạn truy cập, vui lòng thử lại sau ít giây.".into()
+             } else {
+@@ -461,16 +470,25 @@ fn summary_with_stats(manga: &Value, stats: &Value) -> Option<MangaSummaryDto> {
+     if let Some(id) = manga["id"].as_str() {
+         let stats = &stats["statistics"][id];
+         item.rating = stats["rating"]["bayesian"].as_f64();
+         item.follows = stats["follows"].as_u64();
+     }
+     Some(item)
+ }
+ 
++/// Shared identifier guard for content handlers on both API namespaces.
++pub fn is_uuid(id: &str) -> bool {
++    id.len() == 36
++        && id.bytes().enumerate().all(|(i, b)| match i {
++            8 | 13 | 18 | 23 => b == b'-',
++            _ => b.is_ascii_hexdigit(),
++        })
++}
++
+ pub fn sort_param(sort: &str) -> Option<&'static str> {
+     Some(match sort {
+         "follows" => "order[followedCount]=desc",
+         "rating" => "order[rating]=desc",
+         "new" => "order[latestUploadedChapter]=desc",
+         "year" => "order[year]=desc",
+         "title" => "order[title]=asc",
+         _ => return None,
+@@ -562,16 +580,29 @@ fn latest_groups(feed: &Value) -> Vec<(&str, Vec<LatestChapterDto>)> {
+     groups
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use serde_json::json;
+ 
++    #[test]
++    fn content_ids_are_uuids_and_never_opaque_auth_ids() {
++        assert!(is_uuid("391b0423-d847-456f-aff0-8b0cfc03066b"));
++        for bad in [
++            "not-a-uuid",
++            "google|opaque",
++            "",
++            "391b0423d847456faff08b0cfc03066b",
++        ] {
++            assert!(!is_uuid(bad), "{bad}");
++        }
++    }
++
+     #[test]
+     fn catalog_filters_use_known_upstream_values() {
+         for (sort, upstream) in [
+             ("follows", "order[followedCount]=desc"),
+             ("rating", "order[rating]=desc"),
+             ("new", "order[latestUploadedChapter]=desc"),
+             ("year", "order[year]=desc"),
+             ("title", "order[title]=asc"),
+diff --git a/crates/server/src/main.rs b/crates/server/src/main.rs
+index ed2fb6f..6b50e92 100644
+--- a/crates/server/src/main.rs
++++ b/crates/server/src/main.rs
+@@ -1,15 +1,16 @@
+ use axum::body::Body;
+ use axum::extract::{Path, Query, State};
+ use axum::http::{header, HeaderValue, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::get;
+ use axum::{Json, Router};
+ use contracts::{ApiError, ApiErrorEnvelope};
++use manga_core::mangadex::is_uuid;
+ use manga_core::Md;
+ use serde::Serialize;
+ use std::collections::HashMap;
+ use tower_http::compression::CompressionLayer;
+ use tower_http::services::{ServeDir, ServeFile};
+ 
+ type Err = (StatusCode, Json<ApiErrorEnvelope>);
+ 
+@@ -101,24 +102,16 @@ fn parse_search_query(q: HashMap<String, String>) -> Result<SearchQuery, Err> {
+         q: query.to_owned(),
+         page,
+         tags: tags.into_iter().map(str::to_ascii_lowercase).collect(),
+         status: status.map(str::to_owned),
+         sort: sort.to_owned(),
+     })
+ }
+ 
+-fn is_uuid(id: &str) -> bool {
+-    id.len() == 36
+-        && id.bytes().enumerate().all(|(i, b)| match i {
+-            8 | 13 | 18 | 23 => b == b'-',
+-            _ => b.is_ascii_hexdigit(),
+-        })
+-}
+-
+ async fn tags(State(md): State<Md>) -> Result<Response, Err> {
+     Ok(json_cached(md.tags().await.map_err(bad)?, 86_400))
+ }
+ 
+ async fn rank(
+     State(md): State<Md>,
+     Query(q): Query<HashMap<String, String>>,
+ ) -> Result<Response, Err> {
+@@ -224,32 +217,48 @@ async fn static_cache_headers(
+             .unwrap_or("");
+         let policy = static_cache_control(&path, res.status(), content_type);
+         res.headers_mut()
+             .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+     }
+     res
+ }
+ 
++/// Browser-facing content namespace. Legacy /api/* paths remain registered
++/// below for existing native/UI clients; both share these handlers and state.
++fn content_routes() -> Router<Md> {
++    Router::new()
++        .route("/api/content/popular", get(popular))
++        .route("/api/content/latest", get(latest))
++        .route("/api/content/search", get(search))
++        .route("/api/content/tags", get(tags))
++        .route("/api/content/rank", get(rank))
++        .route("/api/content/manga/{id}", get(manga))
++        .route("/api/content/manga/{id}/chapters", get(chapters))
++        .route("/api/content/chapter/{id}/pages", get(pages))
++        .route("/api/content/img", get(img))
++}
++
+ #[tokio::main]
+ async fn main() {
+     let md = Md::new(manga_core::dns::PublicDns::client());
+     let dist = std::env::var("DIST_DIR").unwrap_or_else(|_| "crates/ui/dist".into());
+     let spa = ServeDir::new(&dist).fallback(ServeFile::new(format!("{dist}/index.html")));
+ 
+     let app = Router::new()
+         .route("/api/popular", get(popular))
+         .route("/api/latest", get(latest))
+         .route("/api/search", get(search))
+         .route("/api/tags", get(tags))
+         .route("/api/rank", get(rank))
+         .route("/api/manga/{id}", get(manga))
+         .route("/api/manga/{id}/chapters", get(chapters))
+         .route("/api/chapter/{id}/pages", get(pages))
+         .route("/api/img", get(img))
++        .merge(content_routes())
+         .fallback_service(spa)
+         .layer(axum::middleware::from_fn(static_cache_headers))
+         .layer(CompressionLayer::new())
+         .with_state(md);
+ 
+     let port: u16 = std::env::var("PORT")
+         .ok()
+         .and_then(|p| p.parse().ok())
+@@ -292,16 +301,36 @@ mod tests {
+             ("sort".into(), "rating".into()),
+         ]))
+         .unwrap();
+         assert_eq!(query.tags, [id]);
+         assert_eq!(query.sort, "rating");
+         assert!(query.q.is_empty());
+     }
+ 
++    #[tokio::test]
++    async fn content_handlers_reject_invalid_ids_before_any_upstream_call() {
++        let md = Md::new(manga_core::dns::PublicDns::client());
++        for (result, message) in [
++            (
++                manga(State(md.clone()), Path("not-a-uuid".into())).await,
++                "manga",
++            ),
++            (
++                chapters(State(md.clone()), Path("google|opaque".into())).await,
++                "chapters",
++            ),
++            (pages(State(md), Path("short".into())).await, "pages"),
++        ] {
++            let (status, Json(body)) = result.unwrap_err();
++            assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
++            assert_eq!(body.error.code, "VALIDATION_ERROR", "{message}");
++        }
++    }
++
+     #[test]
+     fn spa_routes_and_errors_must_revalidate() {
+         for path in ["/", "/index.html", "/search", "/manga/abc", "/read/abc"] {
+             assert_eq!(
+                 static_cache_control(path, StatusCode::OK, "text/html"),
+                 "no-cache",
+                 "{path}"
+             );
+diff --git a/infra/axum.md b/infra/axum.md
+new file mode 100644
+index 0000000..cef5ac6
+--- /dev/null
++++ b/infra/axum.md
+@@ -0,0 +1,57 @@
++# Axum content service — `/api/content/*`
++
++## What changed in Task 4
++
++The Axum server now registers two route sets that share the same handlers and
++`Md` state:
++
++- Legacy: `/api/popular`, `/api/latest`, `/api/search`, `/api/tags`, `/api/rank`,
++  `/api/manga/{id}`, `/api/manga/{id}/chapters`, `/api/chapter/{id}/pages`,
++  `/api/img`.
++- Browser namespace: the same paths under `/api/content/…`.
++
++MangaDex access, DNS handling, at-home URL handling, caching and the image proxy
++remain in Axum. Next does not duplicate that logic. Invalid content IDs are
++rejected before any upstream call with the shared nested
++`{ error: { code, message, details } }` envelope.
++
++`MANGADEX_API_ORIGIN` is an optional local/test override for `Md`. It defaults to
++`https://api.mangadex.org`; production code does not need to set it. The local
++topology test uses a fixture server through this override so no remote MangaDex
++request is required.
++
++## Next boundary
++
++The browser calls same-origin `/api/content/*`. `web/app/api/content/[...path]/route.ts`
++proxies to `${RUST_CONTENT_API_ORIGIN}/api/content/*`, forwarding only safe request
++headers and a small response-header allowlist. Cookies and authorization headers
++are not forwarded. Missing or invalid origin yields a structured 503 on content
++routes only. Upstream network failures yield a structured 502.
++
++A route handler is used instead of a `next.config.ts` rewrite so the unconfigured
++case can return a JSON 503 while public pages and builds stay credential-free.
++`next.config.ts` only opts `pg` out of Server Component bundling.
++
++## Local verification
++
++```bash
++cargo test -p server
++cargo clippy --workspace --all-targets -- -D warnings
++cargo build -p server
++cd web && npm run test:task4
++```
++
++The content test starts a local MangaDex fixture, the real compiled Axum binary,
++and a built Next server. It asserts legacy and `/api/content` routes both work,
++the Next proxy passes through content and malformed-ID errors, and the missing
++origin case returns 503.
++
++`cargo fmt --check` still reports pre-existing formatting differences in unrelated
++files; the two Rust files touched by Task 4 were formatted with `rustfmt --edition 2021`.
++
++## Unverified
++
++No Axum service was deployed, exposed publicly, or connected to live Neon/Google
++configuration in this task. Docker was unavailable, so no PostgreSQL container was
++created; the migration test used embedded PGlite as a dev/test-only engine and did
++not touch any pre-existing database.
+diff --git a/infra/vercel.md b/infra/vercel.md
+index 73bcb33..61867dc 100644
+--- a/infra/vercel.md
++++ b/infra/vercel.md
+@@ -1,52 +1,79 @@
+-# Vercel deployment — Task 3 local baseline
++# Vercel deployment — Task 4 local integration status
+ 
+-## What exists locally
++## No deployment in this task
+ 
+-- Next.js app directory: `web/`. Framework: Next.js 16.4.6. Build: `npm run build`.
+-- Default Next.js output (no `output: "export"` or standalone override); Vercel uses its
+-  native Next.js adapter.
+-- `GET /api/v1/health` returns `{ ok: true, version }` with `version` read from
+-  `web/package.json`. It is prerendered as a static route: no runtime env, database,
+-  auth, metrics, or secret access.
+-- Existing reader/catalog routes are unchanged: `/`, `/search`, `/manga/[id]`,
+-  `/read/[chapterId]`, `/api/img`, `/api/pages/[chapterId]`.
++No Vercel deployment, project creation, linking, domain setup or environment-variable
++write happened during Task 4. Cloud work remains paused by owner decision. A prior
++`create_project` request returned `402 resource_creation_blocked` (team exceeded
++fair-use limits); no Vercel project was created. Do not bypass that limit with a
++temporary project, new team, or alternate account.
++
++Current Vercel documentation also states that the **first deployment of a brand-new
++project is always Production**, even when requested with `--target preview`. The
++first-deploy target and domain decision must be resolved with the owner before any
++future deployment. This document does not claim a Preview URL exists.
++
++## Local code added
++
++- `web/lib/auth/server.ts` uses the officially published `@neon/auth@0.8.2`
++  server entry point `@neon/auth/next/server` (`createNeonAuth`). Configuration is
++  lazy and server-only; missing or invalid `NEON_AUTH_BASE_URL` /
++  `NEON_AUTH_COOKIE_SECRET` returns a structured 503 from `/api/auth/*` only.
++- `web/lib/auth/client.ts` uses `@neon/auth/next` and exposes the Google social
++  sign-in call. Google provider settings themselves are owned by the Neon branch;
++  no OAuth credentials are read in the browser bundle.
++- `web/lib/db/client.ts` creates a pooled `pg` client and Drizzle instance only on
++  first use. No `DATABASE_URL` is needed for builds, public pages or health.
++- `web/lib/contracts.ts` holds browser-safe typed content contracts/client and
++  the shared error envelope.
++- `web/app/api/content/[...path]/route.ts` is the same-origin content boundary.
++  Without `RUST_CONTENT_API_ORIGIN` it returns a structured 503; it never invents
++  a fake response.
++- `web/app/api/v1/health` and `/` remain credential-free.
++
++## Environment names (values are owner-supplied, never committed)
++
++```
++NEON_AUTH_BASE_URL
++NEON_AUTH_COOKIE_SECRET
++DATABASE_URL
++GOOGLE_CLIENT_ID
++GOOGLE_CLIENT_SECRET
++RUST_CONTENT_API_ORIGIN
++NEXT_PUBLIC_APP_URL
++```
++
++`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` document the owner-managed Google
++provider inputs; the current SDK adapter does not consume them in Next. Never
++prefix server secrets with `NEXT_PUBLIC_`.
+ 
+ ## Local verification
+ 
+-Run from `web/`:
++From `web/`:
+ 
+ ```bash
+ npm ci
+-npm run test:smoke                  # build + node --test scripts/smoke.test.mjs
+ npx tsc --noEmit
+-npx eslint app/api/v1/health/route.ts scripts/smoke.test.mjs
+-npm run lint                        # see known baseline errors below
++npm run test:task4
++npm run test:smoke
++npx eslint lib/auth lib/contracts.ts lib/db app/api/auth app/api/content drizzle.config.ts next.config.ts scripts
++npm run lint   # four pre-existing set-state-in-effect errors remain
+ ```
+ 
+-`npm run test:smoke` starts the built app with Neon/auth-related environment keys
+-removed and asserts that `/` returns 200 with KasLyyDex branding and that
+-`/api/v1/health` returns exactly `ok` and `version`.
+-
+-Full `npm run lint` still reports four pre-existing `react-hooks/set-state-in-effect`
+-errors in `components/chapter-list.tsx`, `components/continue-reading.tsx`,
+-`components/manga-actions.tsx`, and `components/reader.tsx`. They are unrelated to
+-Task 3 and were not suppressed or refactored here.
+-
+-## Owner-owned Preview steps (not executed in this task)
+-
+-1. `vercel login` with the account that owns the existing project.
+-2. Link the repo to that project with `vercel link` from the repository root and keep
+-   Project Settings → Root Directory as `web` (or link from `web/` if that project
+-   already targets `web` as its root).
+-3. Confirm Framework Preset is Next.js and Build Command is `npm run build`.
+-4. Keep this Preview credential-free: do **not** set `DATABASE_URL`,
+-   `BETTER_AUTH_SECRET`, `NEON_*`, `GOOGLE_CLIENT_*`, or other auth/Neon values.
+-5. Create a Preview with `vercel deploy` (no `--prod`). Do not promote to Production.
+-6. Verify `<preview-url>/` returns 200 and shows KasLyyDex, and
+-   `<preview-url>/api/v1/health` returns `{ "ok": true, "version": "..." }`.
+-7. Record the Preview URL only in the ignored SDD report
+-   (`docs/superpowers/sdd/kaslyydex-phase-1-2/task-3-report.md`), never in source.
+-
+-Task 4 depends on that verified Preview before connecting Neon Managed Auth. This
+-document is extended there with Axum `/api/content/*` and `RUST_CONTENT_API_ORIGIN`
+-notes.
++`npm run test:task4` builds Next, builds the Axum server, then runs the auth,
++PGlite migration and local Next→Axum content tests with Node's built-in runner.
++The auth and JWT/JWKS tests use local fixtures only; they do not prove a Neon
++project, Google OAuth tenant, or live token exchange works.
++
++Full `npm run lint` still reports the four pre-existing
++`react-hooks/set-state-in-effect` errors in `components/chapter-list.tsx`,
++`components/continue-reading.tsx`, `components/manga-actions.tsx` and
++`components/reader.tsx`. None were suppressed or refactored here.
++
++## Explicit unverified gates
++
++- Neon Managed Auth enablement on any branch.
++- Google OAuth provider configuration with owner credentials.
++- Live Neon permission and schema/migration application.
++- Real Google sign-in and live JWT/JWKS verification.
++- Any Vercel Preview or Production deployment, domain or environment wiring.
+diff --git a/web/.env.example b/web/.env.example
+index d3e16fc..2b4625e 100644
+--- a/web/.env.example
++++ b/web/.env.example
+@@ -1,6 +1,14 @@
++# Neon Managed Auth (server-only; never prefix with NEXT_PUBLIC_)
++NEON_AUTH_BASE_URL=
++NEON_AUTH_COOKIE_SECRET=
++
++# Application database (server-only; pooled pg/Drizzle)
+ DATABASE_URL=
+-BETTER_AUTH_SECRET=
++
++# Google OAuth is configured on the Neon branch; values are owner-supplied.
+ GOOGLE_CLIENT_ID=
+ GOOGLE_CLIENT_SECRET=
++
++# Same-origin browser content boundary -> Axum content service
+ RUST_CONTENT_API_ORIGIN=
+ NEXT_PUBLIC_APP_URL=
+diff --git a/web/app/api/auth/[...path]/route.ts b/web/app/api/auth/[...path]/route.ts
+new file mode 100644
+index 0000000..41b4723
+--- /dev/null
++++ b/web/app/api/auth/[...path]/route.ts
+@@ -0,0 +1,34 @@
++import type { NextRequest } from "next/server";
++import { authErrorResponse, getAuth } from "@/lib/auth/server";
++import { errorEnvelope } from "@/lib/contracts";
++
++type Context = { params: Promise<{ path: string[] }> };
++
++async function handle(request: NextRequest, context: Context) {
++  try {
++    const handlers = getAuth().handler();
++    switch (request.method) {
++      case "GET":
++      case "POST":
++      case "PUT":
++      case "PATCH":
++      case "DELETE":
++        return await handlers[request.method](request, context);
++      default:
++        return Response.json(
++          errorEnvelope("METHOD_NOT_ALLOWED", "Method not allowed."),
++          { status: 405, headers: { Allow: "GET, POST, PUT, PATCH, DELETE" } },
++        );
++    }
++  } catch (error) {
++    const response = authErrorResponse(error);
++    if (response) return response;
++    throw error;
++  }
++}
++
++export const GET = handle;
++export const POST = handle;
++export const PUT = handle;
++export const PATCH = handle;
++export const DELETE = handle;
+diff --git a/web/app/api/content/[...path]/route.ts b/web/app/api/content/[...path]/route.ts
+new file mode 100644
+index 0000000..a9c0b05
+--- /dev/null
++++ b/web/app/api/content/[...path]/route.ts
+@@ -0,0 +1,70 @@
++import type { NextRequest } from "next/server";
++import { errorEnvelope, serviceUnavailableResponse } from "@/lib/contracts";
++
++type Context = { params: Promise<{ path: string[] }> };
++
++const RESPONSE_HEADERS = ["content-type", "cache-control", "etag", "last-modified"];
++const REQUEST_HEADERS = ["accept", "accept-language", "if-none-match"];
++
++function contentOrigin(): string | Response {
++  const raw = process.env.RUST_CONTENT_API_ORIGIN?.trim();
++  if (!raw) return serviceUnavailableResponse("content", ["RUST_CONTENT_API_ORIGIN"]);
++  try {
++    const url = new URL(raw);
++    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
++      throw new Error("invalid origin");
++    }
++    return url.origin;
++  } catch {
++    return Response.json(
++      errorEnvelope("CONTENT_CONFIG_INVALID", "RUST_CONTENT_API_ORIGIN is invalid.", {
++        service: "content",
++      }),
++      { status: 503 },
++    );
++  }
++}
++
++export async function GET(request: NextRequest, context: Context) {
++  const origin = contentOrigin();
++  if (typeof origin !== "string") return origin;
++
++  const { path } = await context.params;
++  const target = new URL(
++    `${origin}/api/content/${path.map(encodeURIComponent).join("/")}`,
++  );
++  target.search = new URL(request.url).search;
++
++  const headers = new Headers();
++  for (const name of REQUEST_HEADERS) {
++    const value = request.headers.get(name);
++    if (value) headers.set(name, value);
++  }
++
++  let upstream: Response;
++  try {
++    upstream = await fetch(target, {
++      headers,
++      cache: "no-store",
++      redirect: "manual",
++      signal: AbortSignal.timeout(15_000),
++    });
++  } catch {
++    return Response.json(
++      errorEnvelope("CONTENT_UPSTREAM_UNAVAILABLE", "Content service is unreachable.", {
++        service: "content",
++      }),
++      { status: 502 },
++    );
++  }
++
++  const responseHeaders = new Headers();
++  for (const name of RESPONSE_HEADERS) {
++    const value = upstream.headers.get(name);
++    if (value) responseHeaders.set(name, value);
++  }
++  return new Response(upstream.body, {
++    status: upstream.status,
++    headers: responseHeaders,
++  });
++}
+diff --git a/web/drizzle.config.ts b/web/drizzle.config.ts
+new file mode 100644
+index 0000000..61afc6c
+--- /dev/null
++++ b/web/drizzle.config.ts
+@@ -0,0 +1,10 @@
++import { defineConfig } from "drizzle-kit";
++
++export default defineConfig({
++  schema: "./lib/db/schema.ts",
++  out: "./drizzle",
++  dialect: "postgresql",
++  dbCredentials: {
++    url: process.env.DATABASE_URL ?? "",
++  },
++});
+diff --git a/web/drizzle/0000_application.sql b/web/drizzle/0000_application.sql
+new file mode 100644
+index 0000000..4b6cf05
+--- /dev/null
++++ b/web/drizzle/0000_application.sql
+@@ -0,0 +1,5 @@
++CREATE TABLE "profiles" (
++	"user_id" text PRIMARY KEY NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
++	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
++);
+diff --git a/web/drizzle/meta/0000_snapshot.json b/web/drizzle/meta/0000_snapshot.json
+new file mode 100644
+index 0000000..6d78764
+--- /dev/null
++++ b/web/drizzle/meta/0000_snapshot.json
+@@ -0,0 +1,52 @@
++{
++  "id": "22dd94d3-dbf5-4b57-905f-0faf2655144b",
++  "prevId": "00000000-0000-0000-0000-000000000000",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.profiles": {
++      "name": "profiles",
++      "schema": "",
++      "columns": {
++        "user_id": {
++          "name": "user_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {},
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/web/drizzle/meta/_journal.json b/web/drizzle/meta/_journal.json
+new file mode 100644
+index 0000000..acd92bc
+--- /dev/null
++++ b/web/drizzle/meta/_journal.json
+@@ -0,0 +1,13 @@
++{
++  "version": "7",
++  "dialect": "postgresql",
++  "entries": [
++    {
++      "idx": 0,
++      "version": "7",
++      "when": 1795224965478,
++      "tag": "0000_application",
++      "breakpoints": true
++    }
++  ]
++}
+\ No newline at end of file
+diff --git a/web/lib/auth/client.ts b/web/lib/auth/client.ts
+new file mode 100644
+index 0000000..5c33128
+--- /dev/null
++++ b/web/lib/auth/client.ts
+@@ -0,0 +1,11 @@
++"use client";
++
++import { createAuthClient } from "@neon/auth/next";
++
++export const authClient = createAuthClient();
++
++// Managed Better Auth owns provider configuration; Google credentials are set in
++// the Neon branch, never in the browser bundle.
++export function signInWithGoogle(callbackURL = "/") {
++  return authClient.signIn.social({ provider: "google", callbackURL });
++}
+diff --git a/web/lib/auth/server.ts b/web/lib/auth/server.ts
+new file mode 100644
+index 0000000..0d534be
+--- /dev/null
++++ b/web/lib/auth/server.ts
+@@ -0,0 +1,101 @@
++import "server-only";
++
++import { createNeonAuth, type NeonAuth } from "@neon/auth/next/server";
++import { createRemoteJWKSet, jwtVerify } from "jose";
++import { errorEnvelope } from "../contracts";
++
++export type AuthConfig = {
++  baseUrl: string;
++  cookieSecret: string;
++  origin: string;
++};
++
++type AuthErrorCode = "AUTH_NOT_CONFIGURED" | "AUTH_CONFIG_INVALID";
++
++export class AuthConfigurationError extends Error {
++  readonly code: AuthErrorCode;
++  readonly missing: string[];
++
++  constructor(code: AuthErrorCode, message: string, missing: string[] = []) {
++    super(message);
++    this.name = "AuthConfigurationError";
++    this.code = code;
++    this.missing = missing;
++  }
++}
++
++export function readAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
++  const baseUrl = env.NEON_AUTH_BASE_URL?.trim();
++  const cookieSecret = env.NEON_AUTH_COOKIE_SECRET?.trim();
++  const missing = [
++    ...(!baseUrl ? ["NEON_AUTH_BASE_URL"] : []),
++    ...(!cookieSecret ? ["NEON_AUTH_COOKIE_SECRET"] : []),
++  ];
++  if (missing.length > 0) {
++    throw new AuthConfigurationError(
++      "AUTH_NOT_CONFIGURED",
++      "Neon Managed Auth is not configured.",
++      missing,
++    );
++  }
++
++  let url: URL;
++  try {
++    url = new URL(baseUrl!);
++  } catch {
++    throw new AuthConfigurationError("AUTH_CONFIG_INVALID", "NEON_AUTH_BASE_URL must be a URL.");
++  }
++  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
++    throw new AuthConfigurationError("AUTH_CONFIG_INVALID", "NEON_AUTH_BASE_URL is invalid.");
++  }
++  if (cookieSecret!.length < 32) {
++    throw new AuthConfigurationError(
++      "AUTH_CONFIG_INVALID",
++      "NEON_AUTH_COOKIE_SECRET must be at least 32 characters.",
++    );
++  }
++  return { baseUrl: url.toString().replace(/\/$/, ""), cookieSecret: cookieSecret!, origin: url.origin };
++}
++
++export function authErrorResponse(error: unknown): Response | null {
++  if (!(error instanceof AuthConfigurationError)) return null;
++  const details: Record<string, string> = { service: "auth" };
++  if (error.missing.length > 0) details.missing = error.missing.join(",");
++  return Response.json(errorEnvelope(error.code, error.message, details), { status: 503 });
++}
++
++let auth: NeonAuth | undefined;
++
++// createNeonAuth validates the cookie secret eagerly, so construct it only on
++// the first route that actually needs authentication.
++export function getAuth(): NeonAuth {
++  if (!auth) {
++    const config = readAuthConfig();
++    auth = createNeonAuth({
++      baseUrl: config.baseUrl,
++      cookies: { secret: config.cookieSecret, sameSite: "lax" },
++    });
++  }
++  return auth;
++}
++
++let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
++let jwksFor = "";
++
++export async function verifyNeonJwt(token: string) {
++  try {
++    const config = readAuthConfig();
++    if (!jwks || jwksFor !== config.baseUrl) {
++      jwks = createRemoteJWKSet(new URL(`${config.baseUrl}/.well-known/jwks.json`));
++      jwksFor = config.baseUrl;
++    }
++    const { payload } = await jwtVerify(token, jwks, {
++      algorithms: ["EdDSA"],
++      issuer: config.origin,
++      audience: config.origin,
++    });
++    return payload;
++  } catch {
++    return null;
++  }
++}
+diff --git a/web/lib/contracts.ts b/web/lib/contracts.ts
+new file mode 100644
+index 0000000..b9db079
+--- /dev/null
++++ b/web/lib/contracts.ts
+@@ -0,0 +1,125 @@
++// Browser-safe contracts shared by the Next BFF and later native clients.
++
++export type ApiErrorEnvelope = {
++  error: {
++    code: string;
++    message: string;
++    details: Record<string, string>;
++  };
++};
++
++export function errorEnvelope(
++  code: string,
++  message: string,
++  details: Record<string, string> = {},
++): ApiErrorEnvelope {
++  return { error: { code, message, details } };
++}
++
++export function serviceUnavailableResponse(
++  service: "auth" | "content" | "database",
++  missing: string[],
++): Response {
++  return Response.json(
++    errorEnvelope(
++      `${service.toUpperCase()}_NOT_CONFIGURED`,
++      `${service} service is not configured.`,
++      { service, missing: missing.join(",") },
++    ),
++    { status: 503 },
++  );
++}
++
++export type MangaSummaryDto = {
++  id: string;
++  title: string;
++  cover_file: string | null;
++  status: string;
++  year: number | null;
++  description: string;
++  tags: string[];
++  tag_ids: string[];
++  author: string;
++  artist: string;
++  rating: number | null;
++  follows: number | null;
++  latest_chapter: string | null;
++};
++
++export type LatestMangaDto = MangaSummaryDto & {
++  chapters: { id: string; chapter: string | null; lang: string; publish_at: string }[];
++};
++
++export type ChapterDto = {
++  id: string;
++  chapter: string | null;
++  volume: string | null;
++  title: string;
++  lang: string;
++  pages: number;
++  external_url: string | null;
++  publish_at: string;
++  group: string;
++};
++
++export type PagesResponse = { pages: string[] };
++
++export type ContentEndpoint =
++  | "latest"
++  | "popular"
++  | "tags"
++  | "rank"
++  | "search"
++  | "manga"
++  | "chapter";
++
++export function contentPath(endpoint: ContentEndpoint, ...segments: string[]): string {
++  const tail = segments.map(encodeURIComponent).join("/");
++  return `/api/content/${endpoint}${tail ? `/${tail}` : ""}`;
++}
++
++export class ContentClientError extends Error {
++  readonly status: number;
++  readonly body: ApiErrorEnvelope | null;
++
++  constructor(status: number, body: ApiErrorEnvelope | null) {
++    super(`Content request failed with status ${status}`);
++    this.status = status;
++    this.body = body;
++  }
++}
++
++export type ContentClient = {
++  latest(signal?: AbortSignal): Promise<LatestMangaDto[]>;
++  popular(signal?: AbortSignal): Promise<MangaSummaryDto[]>;
++  manga(id: string, signal?: AbortSignal): Promise<MangaSummaryDto>;
++  chapters(id: string, signal?: AbortSignal): Promise<{ vi: ChapterDto[]; en: ChapterDto[] }>;
++  pages(chapterId: string, signal?: AbortSignal): Promise<PagesResponse>;
++};
++
++export function createContentClient(origin = "/api/content"): ContentClient {
++  const root = origin.endsWith("/api/content")
++    ? origin.slice(0, -"/api/content".length)
++    : origin.replace(/\/$/, "");
++
++  async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
++    const res = await fetch(`${root}${path}`, { signal, cache: "no-store" });
++    const payload = await res.json().catch(() => null);
++    if (!res.ok) throw new ContentClientError(res.status, payload as ApiErrorEnvelope | null);
++    return payload as T;
++  }
++
++  return {
++    latest: (signal) => get<LatestMangaDto[]>(contentPath("latest"), signal),
++    popular: (signal) => get<MangaSummaryDto[]>(contentPath("popular"), signal),
++    manga: (id, signal) => get<MangaSummaryDto>(contentPath("manga", id), signal),
++    chapters: (id, signal) => get<{ vi: ChapterDto[]; en: ChapterDto[] }>(
++      contentPath("manga", id, "chapters"),
++      signal,
++    ),
++    pages: (chapterId, signal) => get<PagesResponse>(
++      contentPath("chapter", chapterId, "pages"),
++      signal,
++    ),
++  };
++}
+diff --git a/web/lib/db/client.ts b/web/lib/db/client.ts
+new file mode 100644
+index 0000000..a066f91
+--- /dev/null
++++ b/web/lib/db/client.ts
+@@ -0,0 +1,62 @@
++import "server-only";
++
++import { drizzle } from "drizzle-orm/node-postgres";
++import { Pool } from "pg";
++import { errorEnvelope } from "../contracts";
++import * as schema from "./schema";
++
++export type DatabaseConfig = { url: string };
++
++export class DatabaseConfigurationError extends Error {
++  readonly code: "DATABASE_NOT_CONFIGURED" | "DATABASE_CONFIG_INVALID";
++  readonly missing: string[];
++
++  constructor(
++    code: "DATABASE_NOT_CONFIGURED" | "DATABASE_CONFIG_INVALID",
++    message: string,
++    missing: string[] = [],
++  ) {
++    super(message);
++    this.name = "DatabaseConfigurationError";
++    this.code = code;
++    this.missing = missing;
++  }
++}
++
++export function readDatabaseConfig(env: NodeJS.ProcessEnv = process.env): DatabaseConfig {
++  const url = env.DATABASE_URL?.trim();
++  if (!url) {
++    throw new DatabaseConfigurationError(
++      "DATABASE_NOT_CONFIGURED",
++      "Application database is not configured.",
++      ["DATABASE_URL"],
++    );
++  }
++  try {
++    const parsed = new URL(url);
++    if (!["postgres:", "postgresql:"].includes(parsed.protocol)) throw new Error("protocol");
++  } catch {
++    throw new DatabaseConfigurationError("DATABASE_CONFIG_INVALID", "DATABASE_URL is invalid.");
++  }
++  return { url };
++}
++
++export function databaseErrorResponse(error: unknown): Response | null {
++  if (!(error instanceof DatabaseConfigurationError)) return null;
++  const details: Record<string, string> = { service: "database" };
++  if (error.missing.length > 0) details.missing = error.missing.join(",");
++  return Response.json(errorEnvelope(error.code, error.message, details), { status: 503 });
++}
++
++function connect(url: string) {
++  const pool = new Pool({ connectionString: url, max: 5 });
++  return { pool, db: drizzle({ client: pool, schema }) };
++}
++
++let connection: ReturnType<typeof connect> | undefined;
++
++// Pool creation stays lazy so builds and public routes need no DATABASE_URL.
++export function getDatabase() {
++  if (!connection) connection = connect(readDatabaseConfig().url);
++  return connection.db;
++}
+diff --git a/web/lib/db/schema.ts b/web/lib/db/schema.ts
+new file mode 100644
+index 0000000..9e40ae3
+--- /dev/null
++++ b/web/lib/db/schema.ts
+@@ -0,0 +1,10 @@
++import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
++
++// Application-owned table only. Neon Managed Auth owns its identity/session
++// tables in its own schema and they are never managed from this file.
++export const profiles = pgTable("profiles", {
++  // Opaque Managed Auth user id: never assume a UUID or parse this value.
++  userId: text("user_id").primaryKey(),
++  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
++  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
++});
+diff --git a/web/next.config.ts b/web/next.config.ts
+index 0fb9987..529f62a 100644
+--- a/web/next.config.ts
++++ b/web/next.config.ts
+@@ -1,13 +1,14 @@
+ import type { NextConfig } from "next";
+ 
+ const nextConfig: NextConfig = {
+   cacheComponents: true,
+   partialPrefetching: true,
++  serverExternalPackages: ["pg"],
+   turbopack: {
+     rules: {
+       "*.css": {
+         loaders: ["@tailwindcss/turbopack"],
+         as: "*.css",
+       },
+     },
+   },
+diff --git a/web/package.json b/web/package.json
+index d672b1b..c51aeb2 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -2,27 +2,37 @@
+   "name": "kaslyydex",
+   "version": "0.1.0",
+   "private": true,
+   "scripts": {
+     "dev": "next dev",
+     "build": "next build",
+     "start": "next start",
+     "lint": "eslint",
+-    "test:smoke": "npm run build && node --test scripts/smoke.test.mjs"
++    "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
++    "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs"
+   },
+   "dependencies": {
++    "@neon/auth": "^0.8.2",
++    "drizzle-orm": "^0.45.4",
++    "jose": "^6.2.18",
+     "next": "16.4.6",
++    "pg": "^8.23.1",
+     "react": "19.3.0",
+     "react-dom": "19.3.0",
++    "server-only": "^0.0.1",
+     "undici": "^8.12.4"
+   },
+   "devDependencies": {
++    "@electric-sql/pglite": "^0.5.17",
+     "@tailwindcss/turbopack": "4.3.3",
+     "@types/node": "^20",
++    "@types/pg": "^8.15.5",
+     "@types/react": "^19",
+     "@types/react-dom": "^19",
++    "drizzle-kit": "^0.31.11",
+     "eslint": "^9",
+     "eslint-config-next": "16.4.6",
+     "tailwindcss": "4.3.3",
++    "tsx": "^4.23.15",
+     "typescript": "^5"
+   }
+ }
+diff --git a/web/scripts/auth.test.mjs b/web/scripts/auth.test.mjs
+new file mode 100644
+index 0000000..3293fd4
+--- /dev/null
++++ b/web/scripts/auth.test.mjs
+@@ -0,0 +1,176 @@
++import assert from "node:assert/strict";
++import { after, before, test } from "node:test";
++import { exportJWK, generateKeyPair, SignJWT } from "jose";
++import { startHttpServer, startNext, stop } from "./test-helpers.mjs";
++
++// These tests exercise the real Neon SDK adapter against a local fixture upstream.
++// They are fixture-only: no Neon project, Google OAuth tenant, or live session is used.
++const { AuthConfigurationError, getAuth, readAuthConfig, verifyNeonJwt } = await import(
++  "../lib/auth/server.ts"
++);
++
++let unconfigured;
++let configuredFixture;
++let configuredNext;
++
++before(async () => {
++  unconfigured = await startNext();
++  configuredFixture = await startHttpServer((_req, res) => {
++    res.writeHead(200, {
++      "content-type": "application/json",
++      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
++    });
++    res.end(JSON.stringify({ ok: true }));
++  });
++  configuredNext = await startNext({
++    NEON_AUTH_BASE_URL: `${configuredFixture.baseUrl}/neondb/auth`,
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++  });
++});
++
++after(async () => {
++  await stop(configuredNext?.child);
++  await stop(unconfigured?.child);
++  await configuredFixture?.close();
++});
++
++test("auth config validates explicit server env and never invents credentials", () => {
++  assert.throws(
++    () => readAuthConfig({}),
++    (error) => error instanceof AuthConfigurationError
++      && error.code === "AUTH_NOT_CONFIGURED"
++      && error.missing.includes("NEON_AUTH_BASE_URL")
++      && error.missing.includes("NEON_AUTH_COOKIE_SECRET"),
++  );
++  assert.throws(
++    () => readAuthConfig({ NEON_AUTH_BASE_URL: "not a url", NEON_AUTH_COOKIE_SECRET: "x".repeat(40) }),
++    (error) => error.code === "AUTH_CONFIG_INVALID",
++  );
++  assert.throws(
++    () => readAuthConfig({ NEON_AUTH_BASE_URL: "https://auth.example.com", NEON_AUTH_COOKIE_SECRET: "short" }),
++    (error) => error.code === "AUTH_CONFIG_INVALID",
++  );
++  const config = readAuthConfig({
++    NEON_AUTH_BASE_URL: "https://ep-1.neonauth.example.com/neondb/auth",
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++  });
++  assert.equal(config.origin, "https://ep-1.neonauth.example.com");
++  assert.equal(config.baseUrl, "https://ep-1.neonauth.example.com/neondb/auth");
++});
++
++test("the real Neon SDK creates a lazy server instance only with valid config", () => {
++  const previous = process.env.NEON_AUTH_BASE_URL;
++  const previousSecret = process.env.NEON_AUTH_COOKIE_SECRET;
++  try {
++    process.env.NEON_AUTH_BASE_URL = "https://ep-1.neonauth.example.com/neondb/auth";
++    process.env.NEON_AUTH_COOKIE_SECRET = "fixture-secret-with-at-least-32-characters";
++    const auth = getAuth();
++    assert.equal(typeof auth.handler, "function");
++    assert.equal(typeof auth.getSession, "function");
++    assert.equal(typeof auth.signIn.email, "function");
++  } finally {
++    if (previous === undefined) delete process.env.NEON_AUTH_BASE_URL;
++    else process.env.NEON_AUTH_BASE_URL = previous;
++    if (previousSecret === undefined) delete process.env.NEON_AUTH_COOKIE_SECRET;
++    else process.env.NEON_AUTH_COOKIE_SECRET = previousSecret;
++  }
++});
++
++test("missing auth config returns structured 503 only on auth routes", async () => {
++  for (const [path, init] of [
++    ["/api/auth/get-session", undefined],
++    ["/api/auth/sign-in/email", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ email: "reader@example.com", password: "secret" }),
++    }],
++  ]) {
++    const res = await fetch(`${unconfigured.baseUrl}${path}`, init);
++    assert.equal(res.status, 503, path);
++    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
++    const body = await res.json();
++    assert.equal(body.error.code, "AUTH_NOT_CONFIGURED", path);
++    assert.equal(body.error.details.service, "auth", path);
++    assert.deepEqual(body.error.details.missing?.split(",").sort(), [
++      "NEON_AUTH_BASE_URL",
++      "NEON_AUTH_COOKIE_SECRET",
++    ]);
++    assert.deepEqual(res.headers.getSetCookie(), [], "must not mint a fake session");
++  }
++
++  const health = await fetch(`${unconfigured.baseUrl}/api/v1/health`);
++  assert.equal(health.status, 200);
++});
++
++test("fixture-only SDK proxy forwards email/password and Google provider requests", async () => {
++  const emailRes = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/email`, {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ email: "reader@example.com", password: "fixture-password" }),
++  });
++  assert.equal(emailRes.status, 200);
++
++  const googleRes = await fetch(`${configuredNext.baseUrl}/api/auth/sign-in/social`, {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ provider: "google", callbackURL: "/api/auth/callback/google" }),
++  });
++  assert.equal(googleRes.status, 200);
++
++  assert.ok(configuredFixture.requests.some((r) => r.url.includes("sign-in/email")));
++  const googleRequest = configuredFixture.requests.find((r) => r.url.includes("sign-in/social"));
++  assert.ok(googleRequest);
++  assert.match(googleRequest.body, /"provider":"google"/);
++});
++
++test("fixture-only SDK proxy rewrites session cookies to Secure and HttpOnly in production", async () => {
++  const res = await fetch(`${configuredNext.baseUrl}/api/auth/get-session`);
++  assert.equal(res.status, 200);
++  const cookies = res.headers.getSetCookie();
++  assert.ok(cookies.length > 0);
++  for (const cookie of cookies) {
++    assert.match(cookie, /__Secure-neon-auth/);
++    assert.match(cookie, /;\s*Secure\b/i, cookie);
++    assert.match(cookie, /;\s*HttpOnly\b/i, cookie);
++    assert.match(cookie, /SameSite=Lax/i, cookie);
++  }
++});
++
++test("fixture-only JWT/JWKS verifier checks EdDSA signature, issuer and audience", async () => {
++  const { publicKey, privateKey } = await generateKeyPair("EdDSA");
++  const jwk = await exportJWK(publicKey);
++  jwk.kid = "fixture-key";
++  jwk.use = "sig";
++  jwk.alg = "EdDSA";
++
++  const fixture = await startHttpServer((_req, res) => {
++    res.writeHead(200, { "content-type": "application/json" });
++    res.end(JSON.stringify({ keys: [jwk] }));
++  });
++  const previousBaseUrl = process.env.NEON_AUTH_BASE_URL;
++  const previousSecret = process.env.NEON_AUTH_COOKIE_SECRET;
++  try {
++    const baseUrl = `${fixture.baseUrl}/neondb/auth`;
++    process.env.NEON_AUTH_BASE_URL = baseUrl;
++    process.env.NEON_AUTH_COOKIE_SECRET = "fixture-secret-with-at-least-32-characters";
++    const origin = new URL(baseUrl).origin;
++    const sign = (issuer) => new SignJWT({ sub: "opaque-user-id" })
++      .setProtectedHeader({ alg: "EdDSA", kid: "fixture-key" })
++      .setIssuedAt()
++      .setExpirationTime("5m")
++      .setIssuer(issuer)
++      .setAudience(origin)
++      .sign(privateKey);
++
++    const valid = await verifyNeonJwt(await sign(origin));
++    assert.equal(valid?.sub, "opaque-user-id");
++    assert.equal(await verifyNeonJwt(await sign("https://wrong-issuer.example.com")), null);
++    assert.ok(fixture.requests.some((r) => r.url.includes(".well-known/jwks.json")));
++  } finally {
++    if (previousBaseUrl === undefined) delete process.env.NEON_AUTH_BASE_URL;
++    else process.env.NEON_AUTH_BASE_URL = previousBaseUrl;
++    if (previousSecret === undefined) delete process.env.NEON_AUTH_COOKIE_SECRET;
++    else process.env.NEON_AUTH_COOKIE_SECRET = previousSecret;
++    await fixture.close();
++  }
++});
+diff --git a/web/scripts/content-proxy.test.mjs b/web/scripts/content-proxy.test.mjs
+new file mode 100644
+index 0000000..67dcc72
+--- /dev/null
++++ b/web/scripts/content-proxy.test.mjs
+@@ -0,0 +1,143 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { existsSync } from "node:fs";
++import { connect } from "node:net";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
++
++// Local topology only. The MangaDex fixture stands in for the remote service;
++// no remote MangaDex request is needed and no credentials are involved.
++const { contentPath, createContentClient } = await import("../lib/contracts.ts");
++
++let mangadexFixture;
++let axum;
++let axumUrl;
++let proxied;
++let unconfigured;
++
++function waitForTcp(port, deadlineMs = 20_000) {
++  return new Promise((resolve, reject) => {
++    const deadline = Date.now() + deadlineMs;
++    const attempt = () => {
++      const socket = connect({ host: "127.0.0.1", port });
++      socket.once("connect", () => { socket.destroy(); resolve(); });
++      socket.once("error", (error) => {
++        socket.destroy();
++        if (Date.now() > deadline) reject(error);
++        else setTimeout(attempt, 100);
++      });
++    };
++    attempt();
++  });
++}
++
++before(async () => {
++  mangadexFixture = await startHttpServer((req, res) => {
++    res.writeHead(200, { "content-type": "application/json" });
++    if (req.url.startsWith("/chapter")) {
++      res.end(JSON.stringify({
++        total: 1,
++        data: [{
++          id: "fixture-chapter-1",
++          attributes: {
++            chapter: "1",
++            pages: 2,
++            externalUrl: null,
++            translatedLanguage: "vi",
++            readableAt: "2026-11-20T00:00:00Z",
++          },
++          relationships: [{ type: "manga", id: "fixture-manga-1" }],
++        }],
++      }));
++      return;
++    }
++    if (req.url.startsWith("/manga?")) {
++      res.end(JSON.stringify({
++        total: 1,
++        data: [{
++          id: "fixture-manga-1",
++          attributes: {
++            title: { vi: "Fixture Manga" },
++            status: "ongoing",
++            description: { vi: "Local fixture" },
++          },
++          relationships: [],
++        }],
++      }));
++      return;
++    }
++    res.end(JSON.stringify({ total: 0, data: [] }));
++  });
++
++  const port = await freePort();
++  axumUrl = `http://127.0.0.1:${port}`;
++  const binary = join(repoDir, "target", "debug", process.platform === "win32" ? "server.exe" : "server");
++  assert.ok(existsSync(binary), `build the Axum server first: cargo build -p server (missing ${binary})`);
++  axum = spawn(binary, [], {
++    cwd: repoDir,
++    env: {
++      ...process.env,
++      PORT: String(port),
++      MANGADEX_API_ORIGIN: mangadexFixture.baseUrl,
++      DIST_DIR: join(webDir, "public"),
++    },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  await waitForTcp(port);
++
++  proxied = await startNext({ RUST_CONTENT_API_ORIGIN: axumUrl });
++  unconfigured = await startNext();
++});
++
++after(async () => {
++  await stop(proxied?.child);
++  await stop(unconfigured?.child);
++  if (axum && axum.exitCode === null) axum.kill("SIGKILL");
++  await mangadexFixture?.close();
++});
++
++test("Axum keeps legacy endpoints and exposes the /api/content namespace", async () => {
++  for (const path of ["/api/latest", "/api/content/latest"]) {
++    const res = await fetch(`${axumUrl}${path}`);
++    assert.equal(res.status, 200, path);
++    const body = await res.json();
++    assert.ok(Array.isArray(body), path);
++    assert.equal(body[0]?.title, "Fixture Manga", path);
++  }
++});
++
++test("Next proxies /api/content/latest through the real local Axum server", async () => {
++  assert.equal(contentPath("latest"), "/api/content/latest");
++  assert.equal(contentPath("manga", "abc"), "/api/content/manga/abc");
++
++  const client = createContentClient(proxied.baseUrl);
++  const latest = await client.latest();
++  assert.ok(Array.isArray(latest));
++  assert.equal(latest[0].title, "Fixture Manga");
++
++  const direct = await fetch(`${proxied.baseUrl}/api/content/latest`);
++  assert.equal(direct.status, 200);
++  assert.match(direct.headers.get("content-type") ?? "", /application\/json/);
++  assert.match(direct.headers.get("cache-control") ?? "", /max-age=60/);
++});
++
++test("Next proxy passes Axum's structured rejection for malformed content IDs", async () => {
++  const res = await fetch(`${proxied.baseUrl}/api/content/manga/not-a-uuid`);
++  assert.equal(res.status, 400);
++  const body = await res.json();
++  assert.equal(body.error.code, "VALIDATION_ERROR");
++  assert.equal(typeof body.error.message, "string");
++});
++
++test("missing content origin returns a structured 503 without breaking public routes", async () => {
++  const res = await fetch(`${unconfigured.baseUrl}/api/content/latest`);
++  assert.equal(res.status, 503);
++  const body = await res.json();
++  assert.equal(body.error.code, "CONTENT_NOT_CONFIGURED");
++  assert.equal(body.error.details.service, "content");
++  assert.equal(body.error.details.missing, "RUST_CONTENT_API_ORIGIN");
++
++  const health = await fetch(`${unconfigured.baseUrl}/api/v1/health`);
++  assert.equal(health.status, 200);
++});
+diff --git a/web/scripts/database.test.mjs b/web/scripts/database.test.mjs
+new file mode 100644
+index 0000000..23ebe7a
+--- /dev/null
++++ b/web/scripts/database.test.mjs
+@@ -0,0 +1,105 @@
++import assert from "node:assert/strict";
++import { readFile } from "node:fs/promises";
++import { fileURLToPath } from "node:url";
++import { test } from "node:test";
++import { PGlite } from "@electric-sql/pglite";
++import { getTableName } from "drizzle-orm";
++
++const { readDatabaseConfig } = await import("../lib/db/client.ts");
++const { profiles } = await import("../lib/db/schema.ts");
++
++const migrationUrl = new URL("../drizzle/0000_application.sql", import.meta.url);
++
++async function freshDatabase() {
++  const db = new PGlite();
++  const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
++  await db.exec(sql);
++  return { db, sql };
++}
++
++test("application migration owns only profiles and never touches Neon Auth tables", async () => {
++  const { db, sql } = await freshDatabase();
++  try {
++    assert.doesNotMatch(sql, /neon_auth/i, "Drizzle SQL must not manage Neon-owned identity tables");
++    assert.doesNotMatch(sql, /CREATE\s+SCHEMA/i);
++
++    const tables = await db.query(`
++      SELECT table_schema, table_name
++      FROM information_schema.tables
++      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
++      ORDER BY table_schema, table_name
++    `);
++    assert.deepEqual(
++      tables.rows.map((row) => `${row.table_schema}.${row.table_name}`),
++      ["public.profiles"],
++      "only the application profiles table may be created",
++    );
++
++    const columns = await db.query(`
++      SELECT column_name, data_type, is_nullable
++      FROM information_schema.columns
++      WHERE table_schema = 'public' AND table_name = 'profiles'
++      ORDER BY ordinal_position
++    `);
++    assert.deepEqual(columns.rows, [
++      { column_name: "user_id", data_type: "text", is_nullable: "NO" },
++      { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO" },
++      { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
++    ]);
++
++    const pk = await db.query(`
++      SELECT a.attname
++      FROM pg_index i
++      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
++      WHERE i.indrelid = 'public.profiles'::regclass AND i.indisprimary
++    `);
++    assert.deepEqual(pk.rows.map((row) => row.attname), ["user_id"]);
++
++    const authSchemas = await db.query(`
++      SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'neon_auth'
++    `);
++    assert.equal(authSchemas.rows.length, 0, "Neon Auth owns its own schema, not this migration");
++  } finally {
++    await db.close();
++  }
++});
++
++test("profiles accept opaque user ids and enforce uniqueness inside a transaction", async () => {
++  const { db } = await freshDatabase();
++  try {
++    const opaqueId = "google|not-a-uuid|opaque-123";
++    await db.exec(`
++      INSERT INTO profiles (user_id) VALUES ('${opaqueId}');
++    `);
++    const found = await db.query("SELECT user_id FROM profiles WHERE user_id = $1", [opaqueId]);
++    assert.deepEqual(found.rows, [{ user_id: opaqueId }]);
++
++    await assert.rejects(
++      db.exec(`INSERT INTO profiles (user_id) VALUES ('${opaqueId}');`),
++      /duplicate key|unique/i,
++    );
++
++    await assert.rejects(
++      db.transaction(async (tx) => {
++        await tx.query("INSERT INTO profiles (user_id) VALUES ($1)", ["rollback-user"]);
++        throw new Error("force rollback");
++      }),
++      /force rollback/,
++    );
++    const rolledBack = await db.query("SELECT user_id FROM profiles WHERE user_id = $1", ["rollback-user"]);
++    assert.equal(rolledBack.rows.length, 0);
++  } finally {
++    await db.close();
++  }
++});
++
++test("Drizzle schema and database config stay application-only and lazy", () => {
++  assert.equal(getTableName(profiles), "profiles");
++  const keys = Object.keys(profiles);
++  assert.ok(keys.includes("userId"));
++  assert.ok(!keys.some((key) => /auth|session|account/i.test(key)));
++  assert.throws(
++    () => readDatabaseConfig({}),
++    (error) => error.code === "DATABASE_NOT_CONFIGURED" && error.missing.includes("DATABASE_URL"),
++  );
++});
+diff --git a/web/scripts/test-helpers.mjs b/web/scripts/test-helpers.mjs
+new file mode 100644
+index 0000000..60e8cfb
+--- /dev/null
++++ b/web/scripts/test-helpers.mjs
+@@ -0,0 +1,99 @@
++import { spawn } from "node:child_process";
++import { once } from "node:events";
++import { createServer as createHttpServer } from "node:http";
++import { createServer } from "node:net";
++import { fileURLToPath } from "node:url";
++
++export const webDir = fileURLToPath(new URL("..", import.meta.url));
++export const repoDir = fileURLToPath(new URL("../..", import.meta.url));
++const nextBin = fileURLToPath(new URL("../node_modules/next/dist/bin/next", import.meta.url));
++
++export function freePort() {
++  return new Promise((resolve, reject) => {
++    const probe = createServer();
++    probe.once("error", reject);
++    probe.listen(0, "127.0.0.1", () => {
++      const { port } = probe.address();
++      probe.close(() => resolve(port));
++    });
++  });
++}
++
++export function envWithoutExternalConfig(overrides = {}) {
++  const env = { ...process.env };
++  for (const key of Object.keys(env)) {
++    if (/DATABASE|POSTGRES|NEON|AUTH|GOOGLE_CLIENT|RUST_CONTENT_API_ORIGIN|MANGADEX_API_ORIGIN/i.test(key)) {
++      delete env[key];
++    }
++  }
++  return { ...env, NODE_ENV: "production", ...overrides };
++}
++
++async function waitForTcp(port, deadlineMs = 30_000) {
++  const deadline = Date.now() + deadlineMs;
++  let lastError;
++  while (Date.now() < deadline) {
++    try {
++      const res = await fetch(`http://127.0.0.1:${port}/favicon.ico`, {
++        signal: AbortSignal.timeout(2_000),
++      });
++      await res.arrayBuffer();
++      return;
++    } catch (error) {
++      lastError = error;
++      await new Promise((resolve) => setTimeout(resolve, 200));
++    }
++  }
++  throw new Error(`server on ${port} did not become ready: ${lastError}`);
++}
++
++export async function startNext(overrides = {}) {
++  const port = await freePort();
++  const baseUrl = `http://127.0.0.1:${port}`;
++  const child = spawn(
++    process.execPath,
++    [nextBin, "start", "-p", String(port), "-H", "127.0.0.1"],
++    { cwd: webDir, env: envWithoutExternalConfig(overrides), stdio: ["ignore", "pipe", "pipe"] },
++  );
++  let output = "";
++  child.stdout.on("data", (chunk) => { output += chunk; });
++  child.stderr.on("data", (chunk) => { output += chunk; });
++  try {
++    await waitForTcp(port);
++  } catch (error) {
++    child.kill("SIGKILL");
++    throw new Error(`${error.message}\n${output}`);
++  }
++  return { child, baseUrl, output: () => output };
++}
++
++export async function stop(child) {
++  if (!child || child.exitCode !== null) return;
++  const exited = once(child, "exit", { signal: AbortSignal.timeout(5_000) }).catch(() => {});
++  child.kill("SIGTERM");
++  await exited;
++  if (child.exitCode === null) child.kill("SIGKILL");
++}
++
++export async function startHttpServer(handler) {
++  const port = await freePort();
++  const requests = [];
++  const server = createHttpServer((req, res) => {
++    const chunks = [];
++    req.on("data", (chunk) => chunks.push(chunk));
++    req.on("end", () => {
++      const body = Buffer.concat(chunks).toString("utf8");
++      requests.push({ method: req.method, url: req.url, body, headers: req.headers });
++      Promise.resolve(handler(req, res, body)).catch((error) => {
++        res.writeHead(500, { "content-type": "application/json" });
++        res.end(JSON.stringify({ error: error.message }));
++      });
++    });
++  });
++  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
++  return {
++    baseUrl: `http://127.0.0.1:${port}`,
++    requests,
++    close: () => new Promise((resolve) => server.close(resolve)),
++  };
++}

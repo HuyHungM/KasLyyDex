@@ -1,0 +1,97 @@
+10f5715 fix: reveal broken reader images instead of keeping skeleton gate
+ web/components/reader/ReaderPages.tsx |  2 ++
+ web/scripts/skeleton-motion.test.mjs  | 35 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 37 insertions(+)
+diff --git a/web/components/reader/ReaderPages.tsx b/web/components/reader/ReaderPages.tsx
+index 08ceb82..3106109 100644
+--- a/web/components/reader/ReaderPages.tsx
++++ b/web/components/reader/ReaderPages.tsx
+@@ -56,20 +56,21 @@ export default function ReaderPages({
+       <div className="reader-paged" ref={containerRef} onPointerDown={onPause}>
+         <img
+           key={`${page}-${pages[page] ?? ""}`}
+           className="reader-page img-fade"
+           src={pages[page] ?? ""}
+           data-index={page}
+           data-loaded="false"
+           alt={`Trang ${page + 1}`}
+           draggable={false}
+           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
++          onError={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+           onPointerDown={(event) => {
+             if (!event.isPrimary) {
+               pointerStart.current = null;
+               return;
+             }
+             pointerStart.current = { x: event.clientX, y: event.clientY };
+           }}
+           onPointerCancel={() => { pointerStart.current = null; }}
+           onPointerUp={(event) => {
+             const start = pointerStart.current;
+@@ -103,15 +104,16 @@ export default function ReaderPages({
+         <img
+           key={`${src}-${index}`}
+           className="reader-page img-fade"
+           src={src}
+           data-index={index}
+           data-loaded="false"
+           alt={`Trang ${index + 1}`}
+           loading={index < 2 || index === page ? "eager" : "lazy"}
+           decoding="async"
+           onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
++          onError={(event) => event.currentTarget.setAttribute("data-loaded", "true")}
+         />
+       ))}
+     </div>
+   );
+ }
+diff --git a/web/scripts/skeleton-motion.test.mjs b/web/scripts/skeleton-motion.test.mjs
+index 8ee335c..4d441a9 100644
+--- a/web/scripts/skeleton-motion.test.mjs
++++ b/web/scripts/skeleton-motion.test.mjs
+@@ -283,10 +283,45 @@ test("reader page images keep a page-shaped skeleton, then fade in after load/de
+       };
+     });
+     assert.ok(after.width > 0, "decoded image has no pixels");
+     assert.equal(after.opacity, "1", "loaded image must be visible");
+     assert.equal(after.animation, reducedMotion === "reduce" ? "none" : "img-in");
+     await assertNoOverflow(page, `375px reader loaded (${reducedMotion})`);
+     await page.unroute("**/api/content/img*");
+     await context.close();
+   }
+ });
++
++test("broken reader images are released from the skeleton gate on error, without faking decode", async () => {
++  contentDelay = 0;
++  for (const mode of ["vertical", "horizontal"]) {
++    const { context, page } = await openPage();
++    if (mode === "horizontal") {
++      await context.addInitScript(() => {
++        localStorage.setItem("truyenviet:reader", JSON.stringify({ mode: "horizontal", fit: false, bg: "light", speed: 2 }));
++      });
++    }
++    await page.route("**/api/content/img*", (route) => route.abort("failed"));
++    await page.goto(`${app.baseUrl}/read/${CHAPTER_ID}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "domcontentloaded" });
++    const selector = mode === "horizontal" ? '.reader-paged .reader-page[data-index="0"]' : '.reader-page[data-index="0"]';
++    const image = page.locator(selector);
++    await image.waitFor();
++    await page.waitForFunction(
++      (sel) => document.querySelector(sel)?.getAttribute("data-loaded") === "true",
++      selector,
++      { timeout: 5000 },
++    );
++    await page.waitForTimeout(400); // let the release animation settle
++    const state = await image.evaluate((element) => ({
++      loaded: element.getAttribute("data-loaded"),
++      opacity: getComputedStyle(element).opacity,
++      background: getComputedStyle(element).backgroundColor,
++      naturalWidth: element.naturalWidth,
++    }));
++    assert.equal(state.loaded, "true", "onError must release the fade gate");
++    assert.equal(state.naturalWidth, 0, "a broken image must not be reported as decoded");
++    assert.equal(state.opacity, "1", "broken image must be visible, not stuck at opacity 0");
++    assert.equal(state.background, "rgba(0, 0, 0, 0)", "error must not keep the permanent skeleton frame");
++    await page.unroute("**/api/content/img*");
++    await context.close();
++  }
++});

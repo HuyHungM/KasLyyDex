@@ -1,54 +1,153 @@
-# TruyệnViệt — web đọc manga (Rust)
+# KasLyyDex — web đọc manga (Next + Rust)
 
-Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org) (free, không cần key).
+Web đọc manga tiếng Việt / tiếng Anh, dữ liệu từ [MangaDex API](https://mangadex.org)
+thông qua dịch vụ Axum. Không cần API key MangaDex.
 
-## Kiến trúc (2 giai đoạn)
-
-- **Giai đoạn 1 (hiện tại): web** — frontend **Leptos 0.8 CSR → WebAssembly**, backend **Axum** mỏng serve API + SPA.
-- **Giai đoạn 2 (chờ confirm): native Windows + Android** — UI **Slint** (`crates/app`, đã dựng sẵn khung UI), dùng chung crate `core`.
+## Kiến trúc Phase 1–2
 
 ```
-crates/core    # dùng chung: MangaDex client (reqwest + DNS 1.1.1.1), cache RAM moka, cache ảnh đĩa
-crates/server  # Axum: /api/* + proxy ảnh + serve static (giai đoạn 1)
-crates/ui      # Leptos CSR + trunk (giai đoạn 1)
-crates/app     # Slint (giai đoạn 2 — chưa vào workspace)
-legacy-next    # bản Next.js 16 đầu tiên (tham khảo)
+web/            Next.js 16 App Router: UI, BFF, auth session, PostgreSQL/Drizzle
+crates/server   Axum: /api/content/*, proxy ảnh, cache, static legacy SPA
+crates/core     MangaDex client, DNS, RAM/disk cache (dùng bởi Axum)
+crates/domain, contracts, reader-core, reader-wasm   contracts + WASM reader
+crates/ui       legacy Leptos SPA (giữ lại, fmt baseline chưa sửa)
+crates/app      Slint prototype (deferred Phase 3/4, outside workspace)
 ```
 
-## Chạy bản web
+MangaDex chỉ được gọi từ Axum. Browser gọi same-origin `/api/content/*`; Next
+không chuyển Cookie/Authorization tới Axum. Reader WASM được build từ Rust trước
+mỗi lần `next build`; glue và file `.wasm` sinh ra không được commit.
+
+## Nguồn dữ liệu và fallback
+
+- MangaDex là nguồn chính cho catalog, danh sách chapter và metadata. Comick là
+  fallback **theo từng chapter**: khi chapter MangaDex chỉ có `externalUrl`
+  (hoặc chapter không đọc được), Axum thử tìm chapter Comick cùng tựa theo tựa
+  đã normalize, rồi trả về metadata/page đã proxied. Chapter enum/ngoài tiêu chí
+  hoặc Comick lỗi vẫn giữ nguyên liên kết ngoài; catalog MangaDex không đổi.
+- Source hiển thị sau tiêu đề ở thẻ truyện, trang chi tiết, danh sách chapter và
+  thanh reader: `MangaDex` (mặc định cho DTO cũ/không có `source`) hoặc `Comick`.
+  ID chapter Comick có tiền tố `comick:`; tiến độ/XP gắn với source của chapter.
+- `COMICK_API_ORIGIN` là override local/test cho catalog Comick, mặc định
+  `https://api.comick.dev`; fixture dùng biến này để chạy offline. Không cần
+  API key/secret và không giá trị nào được commit. Việc xác minh live endpoint,
+  nội dung catalog và ToS của hai provider **vẫn là manual release gate** —
+  fixture local không thay thế được kiểm tra đó.
+
+## Giao diện đọc
+
+- Reader theme mặc định `auto`: nền/chế độ đọc đi theo theme site; người dùng
+  có thể chọn thủ công `light`, `sepia`, `dark`, và lựa chọn đó được lưu theo
+  preference. Giá trị `auto` được chuẩn hóa ở cả guest local và validator API.
+- Native `<select>` được thay bằng dropdown dùng `role="combobox"`/`listbox"`:
+  ArrowDown/ArrowUp mở và di chuyển (bỏ qua option disabled), Enter/Space chọn,
+  Escape đóng, Home/End tới đầu/cuối, Tab đóng. Một hidden input giữ nguyên giá
+  trị form GET của tìm kiếm.
+- Skeleton có hình dạng khớp nội dung thay vì khối chung; hiệu ứng chuyển động
+  (chevron, fade ảnh, shimmer) nằm trong `prefers-reduced-motion`. Ảnh reader lỗi
+  được giải phóng khỏi skeleton (ảnh hỏng hiện thay vì skeleton vĩnh viễn); panel
+  thử lại hiện có chỉ xử lý lỗi tải chapter/WASM (`pageError`/`wasmError`), không
+  có nút thử lại riêng cho từng ảnh.
+
+## Tìm kiếm nâng cao và xếp hạng
+
+- `/search` ("Khám phá") dùng chung dropdown cho `source` (`all`/`mangadex`/
+  `comick`), `lang` (`all`/`vi`/`en`) và `year` (1900…năm hiện tại + 1); các
+  giá trị này nằm trong form GET và giữ nguyên `q`, `tags`, `status`, `sort`,
+  `page`. Axum gọi MangaDex và/hoặc Comick theo `source`, gộp ổn định theo
+  `sort` → source → title → id rồi cắt tối đa 24 kết quả/trang. Khi bộ lọc
+  `lang`/`year` chỉ áp được ở local hoặc một provider lỗi, response có
+  `partial: true` và UI hiện cảnh báo ngắn — không ngầm hiểu là kết quả đầy đủ.
+- Bốn nhóm thể loại (Thể loại chính / Chủ đề / Định dạng / Nội dung) nằm trong
+  panel nâng cao của `/search`; chip ghi thẳng vào `tags` và có skeleton 4 nhóm
+  lúc tải. Trang `/the-loai` cùng link điều hướng đã bị xóa ở bản Next; dùng
+  `/search` thay thế.
+- Nguồn hiển thị thành badge trên góc ảnh bìa (`MangaDex`/`Comick`, nhãn truy
+  cập `Nguồn: <label>`) ở card, feed, top rank và trang chi tiết; tiêu đề không
+  còn hậu tố `(MangaDex)`/`(Comick)`.
+- `/bxh` có route `loading.tsx` với 12 hàng skeleton khớp bảng xếp hạng và khung
+  top 3 (`rank-top rank-1/2/3`) giữ kích thước khi đổi tab; shimmer vẫn nằm
+  trong `prefers-reduced-motion`.
+
+## Chạy local
 
 ```bash
-cargo build --release -p server
-cd crates/ui && trunk build --release && cd ../..
-cargo run --release -p server     # http://localhost:3100
+# Rust toolchain: stable + wasm32-unknown-unknown + wasm-bindgen-cli 0.2.130
+cd web
+npm ci
+npm run build:wasm        # bắt buộc trước Next build
+npm run build:web         # next build (không chạy lại prebuild)
+npm run typecheck         # cần glue WASM + Next route types đã sinh
+npm run lint
+cd ..
+cargo build -p server
+cd web
+npm run test:source       # 7 suite nguồn/fallback/UI/theme/dropdown/skeleton
+npm run test:aggregate    # 28 aggregate test files (7 source + 5 new among them):
+                          # search-contracts, search-source, advanced-search,
+                          # source-badge, ranking-skeleton
+npm run test:browser      # cần Edge local hoặc Playwright Chromium
 ```
 
-Windows: nếu toolchain mặc định là GNU và build WASM lỗi `dlltool`, dùng toolchain MSVC cho Trunk:
-`rustup target add wasm32-unknown-unknown --toolchain stable-x86_64-pc-windows-msvc` rồi
-`$env:RUSTUP_TOOLCHAIN='stable-x86_64-pc-windows-msvc'; trunk build --release`.
+`test:source`, `test:aggregate` và `test:browser` có pretest build Axum
+(`cargo build -p server`) trước vì fixture content/fallback spawn binary đó;
+chạy aggregate trước khi build server sẽ cho RED giả.
 
-Biến môi trường: `PORT` (3100), `DIST_DIR` (`crates/ui/dist`), `CACHE_DIR` (mặc định `%LOCALAPPDATA%/TruyenViet/cache`).
+Axum local: `cargo run -p server` (`PORT`, `DIST_DIR`, `CACHE_DIR`,
+`MANGADEX_API_ORIGIN` optional). Next local: `npm run dev` trong `web/`.
 
-## Tính năng
+Health endpoints:
+- `/api/v1/health` — liveness, credential-free, trả `{ok,version}` (Next) hoặc
+  `{ok,service}` (Axum).
+- `/api/v1/ready` — readiness: cấu hình, DB/upstream với timeout 1.5s; chỉ trả
+  tên biến bị thiếu, không trả giá trị. Trên Axum readiness là config-only.
 
-- Trang chủ hiển thị các chương vừa cập nhật, truyện phổ biến và tiến độ đọc.
-- Trang khám phá (`/search`) có bộ lọc theo thể loại, trạng thái và cách sắp xếp. URL giữ bộ lọc khi chia sẻ hoặc chuyển trang.
-- Trang thể loại (`/the-loai`) và bảng xếp hạng (`/bxh`) sử dụng dữ liệu MangaDex.
-- Tủ truyện (`/tu-truyen`) lưu truyện theo dõi trên trình duyệt và báo chương mới khi mở tủ.
-- Trang truyện có chương tiếng Việt và tiếng Anh, mô tả, điểm đánh giá khi có dữ liệu và liên kết đến nguồn ngoài.
-- Trang đọc hỗ trợ cuộn dọc, lật ngang, vuốt, tự cuộn, chế độ toàn màn hình khi trình duyệt hỗ trợ và ba nền đọc.
-- Giao diện sáng/tối, cài đặt đọc và trang đang đọc dở được lưu trên trình duyệt.
+`node infra/healthcheck http://127.0.0.1:3000` in status codes, không in secret.
+Thêm `--liveness-only` cho môi trường chưa cấu hình DB/auth.
 
-## Tối ưu
+## Biến môi trường (không commit giá trị)
 
-- **API** dùng bộ nhớ đệm moka và HTTP `max-age`. Danh sách, chương và tìm kiếm được giữ 60 giây, bảng xếp hạng 5 phút, chi tiết truyện 1 giờ và thể loại 24 giờ.
-- **Ảnh**: cache đĩa SHA-256 vĩnh viễn (`immutable`), proxy cùng origin — không CORS, không phụ thuộc DNS client (vài mạng sinkhole host MangaDex về 127.0.0.1; server resolve qua 1.1.1.1/8.8.8.8 bằng hickory-resolver)
-- **WASM**: profile `wasm-release` (`opt-level="z"`, LTO, `panic=abort`) + wasm-opt; asset hash tên + immutable cache
-- **Static**: HTML no-cache, asset immutable; nén brotli/gzip mọi response
-- **Reader**: prefetch URL chapter kế tiếp khi đang đọc; ảnh lazy-load + `decoding=async`
+Xem `web/.env.example`:
 
-## Giai đoạn 2 (Slint native + Android)
+```
+SESSION_SECRET
+GOOGLE_CLIENT_ID
+RUST_CONTENT_API_ORIGIN
+READER_TICKET_SECRET
+```
 
-`crates/app/ui/app.slint` đã có UI đầy đủ (home/search/manga/reader, dark theme). Khi được confirm:
-thêm `crates/app` vào workspace, viết `main.rs` nối Slint ↔ `core` (tokio thread + `upgrade_in_event_loop`),
-build Windows (winit/femtovg) và Android (slint android backend + cargo-apk/gradle).
+D1 được gắn vào Worker qua binding `DB` trong `web/cloudflare.config.ts`, không
+phải biến môi trường. `SESSION_SECRET` (>=32 ký tự) ký session cookie;
+`GOOGLE_CLIENT_ID` là public client id cho Google Identity Services (không dùng
+client secret). `READER_TICKET_SECRET` (>=32 ký tự) ký reader ticket; thiếu là
+progression API fail-closed 503. Không tiền tố server secret bằng `NEXT_PUBLIC_`.
+
+## Release gates
+
+`.github/workflows/ci.yml` chạy mọi gate local, deterministic, không secret:
+secret-pattern scan; `cargo fmt --check` scoped (`domain`, `contracts`,
+`reader-core`, `reader-wasm`, `server`, `core`); clippy workspace `-D warnings`;
+`cargo test --workspace`; build Axum `cargo build -p server`; `npm ci`;
+`build:wasm` → `build:web` → typecheck/lint; cài Playwright Chromium trước rồi
+aggregate tests — 28 aggregate test files (7 source + 5 new among them), gồm
+nguồn/fallback/UI/theme/dropdown/skeleton + search-contracts/search-source/
+advanced-search/source-badge/ranking-skeleton; 2 suite mới dùng browser nên cần
+Chromium; server được build trước qua pretest; rồi browser suites; tracked-file
+whitespace/conflict-marker scan với baseline — không vacuous trên clean
+checkout, nhưng 1130 finding đã commit trong
+`docs/superpowers/sdd/kaslyydex-phase-1-2/*.diff` và
+`docs/superpowers/sdd/kaslyydex-multi-source-ux/*.diff` được baseline hóa qua
+`web/scripts/whitespace-baseline.txt` thay vì sửa artifact của plan cũ; mọi
+finding mới vẫn fail.
+
+Full-workspace `cargo fmt --check` vẫn là baseline debt từ các file Leptos cũ;
+CI scoped như trên. Xem `infra/deployment.md` và `infra/cloudflare.md` cho runbook, migration/rollback
+cơ sở dữ liệu và các external gate chưa chạy.
+Live Comick/MangaDex provider verification và kiểm tra ToS vẫn là manual gate;
+không có deploy/push/merge nào được thực hiện cho các thay đổi này.
+
+Observability: structured JSON logs có `correlationId`, redaction cho Cookie/
+Authorization/ticket/password/email/connection string/upstream key; metric names
+`kaslyydex.user_requests` và `kaslyydex.user_request.duration_ms` chỉ với label
+`operation`/`outcome` bounded. Local `metric()` là no-op; ingestion trên Cloudflare
+chưa được xác minh và paid Observability không được bật tự động.

@@ -3,8 +3,8 @@
 /crates/ui/dist
 node_modules
 .next
-legacy-next/node_modules
-legacy-next/.next
+web/node_modules
+web/.next
 .env
 .env.*
 !.env.example
@@ -13,3 +13,17 @@ legacy-next/.next
 /build-*.txt
 /task*-*.log
 /.worktrees
+web/generated
+web/public/wasm
+web/.test-cache
+web/.test-screenshots
+web/.test-*.log
+/.test-*.log
+web/*.tsbuildinfo
+
+/dist/
+.vinext/
+.cloudflare/
+
+# Legacy Netlify local state
+.netlify

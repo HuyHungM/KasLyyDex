@@ -1,0 +1,1270 @@
+4d9591a fix: gate reader restores and scope synced account state
+ .../sdd/kaslyydex-phase-1-2/task-6-report.md       | 240 +++++++++++++++++++++
+ web/components/account/HistoryView.tsx             |   6 +-
+ web/components/account/ProfileForm.tsx             |   1 +
+ web/components/account/SettingsForm.tsx            |   1 +
+ web/components/continue-reading.tsx                |   1 +
+ web/components/library-view.tsx                    |   6 +-
+ web/components/manga-actions.tsx                   |  18 +-
+ web/components/reader/ReaderClient.tsx             |  53 ++++-
+ web/lib/account/client.ts                          |  65 +++---
+ web/lib/account/resource.ts                        |  51 +++++
+ web/lib/me/handlers.ts                             |   8 +-
+ web/lib/me/service.ts                              |  21 +-
+ web/lib/reader-sync.ts                             |  47 ++++
+ web/lib/validators.ts                              |   6 +-
+ web/package.json                                   |   5 +-
+ web/scripts/account-resource.test.mjs              |  46 ++++
+ web/scripts/account.test.mjs                       |  33 +++
+ web/scripts/reader-sync-playwright.test.mjs        | 234 ++++++++++++++++++++
+ web/scripts/reader-sync.test.mjs                   |  58 +++++
+ 19 files changed, 848 insertions(+), 52 deletions(-)
+diff --git a/web/components/account/HistoryView.tsx b/web/components/account/HistoryView.tsx
+index 70925fa..657a996 100644
+--- a/web/components/account/HistoryView.tsx
++++ b/web/components/account/HistoryView.tsx
+@@ -18,21 +18,25 @@ function LocalHistory() {
+         <Link key={`${entry.mangaId}:${entry.chapterId}`} href={`/read/${encodeURIComponent(entry.chapterId)}?manga=${encodeURIComponent(entry.mangaId)}&lang=${encodeURIComponent(entry.lang)}`} className="history-row">
+           <span><strong>{entry.mangaTitle}</strong><small>{chapterLabel(entry.chapter)} · thiết bị này</small></span>
+           {entry.total ? <progress max={entry.total} value={entry.page ?? 1} /> : null}
+         </Link>
+       ))}
+     </div>
+   );
+ }
+ 
+ function SyncedHistory() {
+-  const remote = useRemoteResource<{ items: ProgressEntryDto[] }>("/api/v1/me/progress");
++  const { session } = useAccountSession();
++  const remote = useRemoteResource<{ items: ProgressEntryDto[] }>(
++    "/api/v1/me/progress",
++    session.user?.id ?? "guest",
++  );
+   if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải lịch sử…</div>;
+   if (remote.error || !remote.data) {
+     return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được lịch sử."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;
+   }
+   if (remote.data.items.length === 0) return <div className="surface empty"><h2>Chưa có lịch sử đọc</h2><p>Tiến độ sẽ được đồng bộ khi bạn mở truyện.</p></div>;
+   return (
+     <div className="history-list">
+       {remote.data.items.map((item) => (
+         <Link key={`${item.mangaId}:${item.chapterId}:${item.lang}`} href={`/read/${encodeURIComponent(item.chapterId)}?manga=${encodeURIComponent(item.mangaId)}&lang=${encodeURIComponent(item.lang)}`} className="history-row">
+           <span>
+diff --git a/web/components/account/ProfileForm.tsx b/web/components/account/ProfileForm.tsx
+index efc796a..d9efbcb 100644
+--- a/web/components/account/ProfileForm.tsx
++++ b/web/components/account/ProfileForm.tsx
+@@ -44,20 +44,21 @@ function ProfileFields({ profile, onSaved }: { profile: AccountProfileDto; onSav
+       <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu hồ sơ"}</button>
+       {message ? <p className={message.startsWith("Đã") ? "account-hint" : "account-error"} role="status">{message}</p> : null}
+     </form>
+   );
+ }
+ 
+ export default function ProfileForm() {
+   const { session } = useAccountSession();
+   const remote = useRemoteResource<{ profile: AccountProfileDto }>(
+     session.status === "authenticated" ? "/api/v1/me" : null,
++    session.user?.id ?? "guest",
+   );
+ 
+   if (session.status !== "authenticated") return null;
+   if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải hồ sơ…</div>;
+   if (remote.error || !remote.data) {
+     return (
+       <div className="surface account-card" role="alert">
+         <p>{remote.error ?? "Không tải được hồ sơ."}</p>
+         <button type="button" className="btn" onClick={remote.reload}>Thử lại</button>
+       </div>
+diff --git a/web/components/account/SettingsForm.tsx b/web/components/account/SettingsForm.tsx
+index b69f26b..93d7af7 100644
+--- a/web/components/account/SettingsForm.tsx
++++ b/web/components/account/SettingsForm.tsx
+@@ -69,20 +69,21 @@ function GuestSettings() {
+         return "Đã lưu trên thiết bị này.";
+       }} />
+     </div>
+   );
+ }
+ 
+ export default function SettingsForm() {
+   const { session } = useAccountSession();
+   const remote = useRemoteResource<ReaderSettingsDto>(
+     session.status === "authenticated" ? "/api/v1/me/settings" : null,
++    session.user?.id ?? "guest",
+   );
+ 
+   if (session.status === "loading") return <div className="surface account-card">Đang kiểm tra phiên đăng nhập…</div>;
+   if (session.status !== "authenticated") return <GuestSettings />;
+   if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải cài đặt…</div>;
+   if (remote.error || !remote.data) {
+     return (
+       <div className="surface account-card" role="alert">
+         <p>{remote.error ?? "Không tải được cài đặt."}</p>
+         <button type="button" className="btn" onClick={remote.reload}>Thử lại</button>
+diff --git a/web/components/continue-reading.tsx b/web/components/continue-reading.tsx
+index 62ed5eb..69e22ff 100644
+--- a/web/components/continue-reading.tsx
++++ b/web/components/continue-reading.tsx
+@@ -31,20 +31,21 @@ function Card({ to, mangaId, title, chapter, cover, page, total }: {
+       </div>
+     </Link>
+   );
+ }
+ 
+ export default function ContinueReading() {
+   const history = useSyncExternalStore(subscribe, getHistory, () => EMPTY);
+   const { session } = useAccountSession();
+   const remote = useRemoteResource<{ items: ProgressEntryDto[] }>(
+     session.status === "authenticated" ? "/api/v1/me/progress" : null,
++    session.user?.id ?? "guest",
+   );
+ 
+   if (session.status !== "authenticated") {
+     if (history.length === 0) return null;
+     return (
+       <section className="section">
+         <SectionTitle>Đọc tiếp</SectionTitle>
+         <div className="continue-grid">
+           {history.slice(0, 6).map((entry) => (
+             <Card
+diff --git a/web/components/library-view.tsx b/web/components/library-view.tsx
+index f83aac1..abf7e71 100644
+--- a/web/components/library-view.tsx
++++ b/web/components/library-view.tsx
+@@ -47,21 +47,25 @@ function EmptyLibrary() {
+   return (
+     <div className="surface empty">
+       <h2>Tủ truyện còn trống</h2>
+       <p>Thêm truyện từ trang chi tiết để theo dõi chương mới và đọc tiếp tại đây.</p>
+       <Link href="/" className="btn btn-primary">Khám phá truyện</Link>
+     </div>
+   );
+ }
+ 
+ function SyncedLibrary() {
+-  const remote = useRemoteResource<{ items: LibraryEntryDto[] }>("/api/v1/me/library");
++  const { session } = useAccountSession();
++  const remote = useRemoteResource<{ items: LibraryEntryDto[] }>(
++    "/api/v1/me/library",
++    session.user?.id ?? "guest",
++  );
+   const [busy, setBusy] = useState<string | null>(null);
+   const [error, setError] = useState<string | null>(null);
+ 
+   if (remote.loading && !remote.data) return <div className="surface account-card">Đang tải tủ truyện…</div>;
+   if (remote.error || !remote.data) {
+     return <div className="surface account-card" role="alert"><p>{remote.error ?? "Không tải được tủ truyện."}</p><button type="button" className="btn" onClick={remote.reload}>Thử lại</button></div>;
+   }
+   if (remote.data.items.length === 0) return <EmptyLibrary />;
+   return (
+     <>
+diff --git a/web/components/manga-actions.tsx b/web/components/manga-actions.tsx
+index a1a2864..8723876 100644
+--- a/web/components/manga-actions.tsx
++++ b/web/components/manga-actions.tsx
+@@ -20,35 +20,41 @@ type Props = {
+ };
+ 
+ const NO_HISTORY: GuestHistory[] = [];
+ const NO_LIBRARY: GuestLibraryEntry[] = [];
+ 
+ export default function MangaActions({ mangaId, title, coverFile, lang, firstChapterId, firstChapterLabel, hasExternal }: Props) {
+   const history = useSyncExternalStore(subscribe, getHistory, () => NO_HISTORY);
+   const library = useSyncExternalStore(subscribe, getLibrary, () => NO_LIBRARY);
+   const { session } = useAccountSession();
+   const authed = session.status === "authenticated";
+-  const remoteLibrary = useRemoteResource<{ items: LibraryEntryDto[] }>(authed ? "/api/v1/me/library" : null);
+-  const remoteProgress = useRemoteResource<{ items: ProgressEntryDto[] }>(authed ? "/api/v1/me/progress" : null);
++  // While the session is unresolved (or errored), neither guest nor synced
++  // writes are safe. An explicit unconfigured auth state is a real guest.
++  const resolved = authed || session.status === "guest" || session.status === "unconfigured";
++  const useLocal = session.status === "guest" || session.status === "unconfigured";
++  const identity = session.user?.id ?? "guest";
++  const remoteLibrary = useRemoteResource<{ items: LibraryEntryDto[] }>(authed ? "/api/v1/me/library" : null, identity);
++  const remoteProgress = useRemoteResource<{ items: ProgressEntryDto[] }>(authed ? "/api/v1/me/progress" : null, identity);
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+ 
+-  const localResume = history.find((entry) => entry.mangaId === mangaId);
++  const localResume = useLocal ? history.find((entry) => entry.mangaId === mangaId) : null;
+   const remoteResume = remoteProgress.data?.items.find((entry) => entry.mangaId === mangaId) ?? null;
+   const resume = authed && remoteResume
+     ? { chapterId: remoteResume.chapterId, lang: remoteResume.lang, chapter: remoteResume.chapter }
+     : localResume;
+   const followed = authed
+     ? Boolean(remoteLibrary.data?.items.some((entry) => entry.mangaId === mangaId))
+-    : library.some((entry) => entry.mangaId === mangaId);
++    : useLocal && library.some((entry) => entry.mangaId === mangaId);
+ 
+   async function toggleFollow() {
++    if (!resolved) return;
+     if (!authed) {
+       toggleLibrary({ mangaId, title, coverFile, lang });
+       return;
+     }
+     setBusy(true);
+     setError(null);
+     try {
+       const url = `/api/v1/me/library/${encodeURIComponent(mangaId)}`;
+       if (followed) await accountMutate(url, "DELETE");
+       else await accountMutate(url, "PUT", { title, coverFile, lang, status: "reading" });
+@@ -67,17 +73,17 @@ export default function MangaActions({ mangaId, title, coverFile, lang, firstCha
+           Đọc từ đầu · {firstChapterLabel}
+         </Link>
+       ) : (
+         <span className="btn btn-disabled">{hasExternal ? "Chapter chỉ có ở nguồn ngoài" : "Chưa có chapter"}</span>
+       )}
+       {resume && (
+         <Link href={`/read/${encodeURIComponent(resume.chapterId)}?manga=${encodeURIComponent(mangaId)}&lang=${encodeURIComponent(resume.lang)}`} className="btn">
+           Đọc tiếp · {chapterLabel(resume.chapter)}
+         </Link>
+       )}
+-      <button type="button" className="btn" aria-pressed={followed} disabled={busy} onClick={() => void toggleFollow()}>
+-        {followed ? "✓ Đang theo dõi" : "+ Thêm vào tủ truyện"}
++      <button type="button" className="btn" aria-pressed={followed} disabled={busy || !resolved} onClick={() => void toggleFollow()}>
++        {!resolved ? "Đang xác định phiên…" : followed ? "✓ Đang theo dõi" : "+ Thêm vào tủ truyện"}
+       </button>
+       {error ? <span className="account-error" role="alert">{error}</span> : null}
+     </div>
+   );
+ }
+diff --git a/web/components/reader/ReaderClient.tsx b/web/components/reader/ReaderClient.tsx
+index 27206ed..2ae2e41 100644
+--- a/web/components/reader/ReaderClient.tsx
++++ b/web/components/reader/ReaderClient.tsx
+@@ -1,19 +1,20 @@
+ "use client";
+ 
+ import Link from "next/link";
+ import { useRouter } from "next/navigation";
+ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+ import type { ReaderWasm } from "@/generated/reader-wasm";
+ import type { ChapterDto, MangaSummaryDto, ProgressEntryDto } from "@/lib/contracts";
+ import type { ReaderSettingsDto } from "@/lib/validators";
+ import { accountGet, accountMutate, useAccountSession } from "@/lib/account/client";
++import { ReaderRestoreCoordinator } from "@/lib/reader-sync";
+ import {
+   DEFAULT_SETTINGS, getHistoryFor, getSettings, normalizeSettings, pushHistory, restoredPage,
+   saveProgress, saveSettings, setLibraryLast, type ReaderSettings,
+ } from "@/lib/guest";
+ import ReaderPages from "./ReaderPages";
+ import ReaderToolbar from "./ReaderToolbar";
+ 
+ type Props = {
+   manga: MangaSummaryDto;
+   chapter: ChapterDto;
+@@ -38,31 +39,34 @@ export default function ReaderClient(props: Props) {
+   return <ReaderSession key={props.chapter.id} {...props} />;
+ }
+ 
+ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Props) {
+   const router = useRouter();
+   const root = useRef<HTMLDivElement>(null);
+   const pagesContainer = useRef<HTMLDivElement>(null);
+   const wasm = useRef<ReaderWasm | null>(null);
+   const savedChapter = useRef("");
+   const prefetched = useRef("");
+-  const settledRemote = useRef("");
++  const restore = useRef(new ReaderRestoreCoordinator());
+   const settleUntil = useRef(0);
+   const { session } = useAccountSession();
+ 
+   const [page, setPage] = useState(0);
+   const [progress, setProgress] = useState(0);
+   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
+   const [wasmError, setWasmError] = useState<string | null>(null);
+   const [wasmAttempt, setWasmAttempt] = useState(0);
+   const [loaded, setLoaded] = useState(false);
+   const [running, setRunning] = useState(false);
++  const [remoteReadyKey, setRemoteReadyKey] = useState("");
++  const [syncError, setSyncError] = useState<string | null>(null);
++  const [syncAttempt, setSyncAttempt] = useState(0);
+ 
+   const fullscreenSupported = useSyncExternalStore(
+     noopSubscribe,
+     () => Boolean(typeof document !== "undefined" && document.fullscreenEnabled),
+     () => false,
+   );
+ 
+   const total = pages.length;
+   const index = chapters.findIndex((item) => item.id === chapter.id);
+   const prev = index > 0 ? chapters[index - 1] : null;
+@@ -166,56 +170,72 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+     const state = wasm.current;
+     if (!state) return;
+     const history = getHistoryFor(manga.id);
+     if (!history || history.chapterId !== chapter.id) return;
+     saveProgress(chapter.id, state.pageIndex() + 1, state.totalPages());
+   }, [loaded, page, total, chapter.id, manga.id]);
+ 
+   // Authenticated reading re-applies server settings and position through the
+   // same Rust state machine; guests keep the local-only path untouched.
+   useEffect(() => {
+-    const key = `${chapter.id}|${lang}`;
+-    if (session.status !== "authenticated" || !loaded || total === 0 || settledRemote.current === key) return;
+-    settledRemote.current = key;
++    const userId = session.user?.id;
++    const key = `${chapter.id}|${lang}|${userId ?? ""}`;
++    const controller = restore.current;
++    if (session.status !== "authenticated" || !userId || !loaded || total === 0) return;
++    const generation = controller.begin(key);
++    let alive = true;
+     void Promise.all([
+       accountGet<ReaderSettingsDto>("/api/v1/me/settings"),
+       accountGet<{ items: ProgressEntryDto[] }>("/api/v1/me/progress"),
+     ]).then(([prefs, history]) => {
++      // A slow response from an earlier chapter/user must never touch WASM.
++      if (!alive || controller.resolve(generation, key) !== key) return;
+       const state = wasm.current;
+       if (!state) return;
+       state.applySettingsJson(JSON.stringify(prefs));
+       const match = history.items.find((item) => item.mangaId === manga.id && item.chapterId === chapter.id && item.lang === lang);
+       if (match) {
+         const target = Math.min(Math.max(match.page - 1, 0), state.totalPages() - 1);
+         if (target > state.pageIndex()) {
+           state.setPage(target);
+           settleUntil.current = Date.now() + 800;
+         }
+       }
+       syncFromWasm();
+-    }).catch(() => undefined);
+-  }, [session.status, loaded, total, chapter.id, manga.id, lang, syncFromWasm]);
++      setRemoteReadyKey(key);
++    }).catch(() => {
++      if (!alive || !controller.fail(generation, key)) return;
++      setRemoteReadyKey("");
++      setSyncError("Không khôi phục được tiến độ từ tài khoản.");
++    });
++    return () => {
++      alive = false;
++    };
++  }, [session.status, session.user?.id, loaded, total, chapter.id, manga.id, lang, syncFromWasm, syncAttempt]);
++
++  useEffect(() => () => restore.current.dispose(), []);
+ 
+   useEffect(() => {
+-    if (session.status !== "authenticated" || !loaded || total === 0) return;
++    const key = `${chapter.id}|${lang}|${session.user?.id ?? ""}`;
++    if (session.status !== "authenticated" || !loaded || total === 0 || !restore.current.isReady(key)) return;
+     const state = wasm.current;
+     if (!state) return;
+     void accountMutate(`/api/v1/me/progress/${encodeURIComponent(chapter.id)}`, "PUT", {
+       mangaId: manga.id,
+       lang,
+       page: state.pageIndex() + 1,
+       total: state.totalPages(),
+       chapter: chapter.chapter,
+       title: chapter.title,
+       coverFile: manga.cover_file,
+     }).catch(() => undefined);
+-  }, [session.status, loaded, page, total, chapter, manga, lang]);
++  }, [session.status, session.user?.id, remoteReadyKey, loaded, page, total, chapter, manga, lang]);
+ 
+   // One-off restoration scroll on chapter load and when returning to vertical
+   // mode. It is deliberately independent from the observer and from `page`, so
+   // normal scrolling (and auto-scroll) is never snapped back.
+   useEffect(() => {
+     if (!loaded || settings.mode !== "vertical" || total === 0) return;
+     const target = wasm.current?.pageIndex() ?? 0;
+     if (target === 0) return;
+     pagesContainer.current
+       ?.querySelector(`img[data-index="${target}"]`)
+@@ -350,20 +370,37 @@ function ReaderSession({ manga, chapter, chapters, lang, pages, pageError }: Pro
+           } catch {
+             // Unsupported/denied fullscreen is not a reading error.
+           }
+         }}
+         onSelectChapter={(id) => {
+           const target = chapters.find((item) => item.id === id);
+           if (target) router.push(hrefFor(target));
+         }}
+       />
+       <main className={`reader-main${settings.fit ? "" : " full-width"}`} onPointerDown={() => setRunning(false)}>
++        {syncError && session.status === "authenticated" ? (
++          <div className="panel" role="alert">
++            <p>{syncError}</p>
++            <button
++              type="button"
++              className="link-btn"
++              onClick={() => {
++                setSyncError(null);
++                setRemoteReadyKey("");
++                restore.current.dispose();
++                setSyncAttempt((attempt) => attempt + 1);
++              }}
++            >
++              Thử lại đồng bộ
++            </button>
++          </div>
++        ) : null}
+         {external ? (
+           <div className="panel">
+             <p>Chương này được đăng ở nguồn ngoài (không có ảnh trên MangaDex).</p>
+             <a className="text-link" href={chapter.external_url ?? "#"} target="_blank" rel="noopener noreferrer">Đọc tại nguồn ↗</a>
+           </div>
+         ) : showRetry ? (
+           <div className="panel" role="alert">
+             <p>{wasmError ?? pageError}</p>
+             <button
+               type="button"
+diff --git a/web/lib/account/client.ts b/web/lib/account/client.ts
+index 7d4d573..b2495fe 100644
+--- a/web/lib/account/client.ts
++++ b/web/lib/account/client.ts
+@@ -1,14 +1,15 @@
+ "use client";
+ 
+-import { useCallback, useEffect, useSyncExternalStore, useState } from "react";
++import { useEffect, useRef, useSyncExternalStore, useState } from "react";
+ import { authClient } from "@/lib/auth/client";
++import { RemoteResourceController } from "@/lib/account/resource";
+ 
+ export type AccountUser = {
+   id: string;
+   name: string | null;
+   email: string | null;
+   emailVerified: boolean;
+   image: string | null;
+ };
+ 
+ export type SessionState = {
+@@ -108,22 +109,22 @@ export async function refreshSession(): Promise<SessionState> {
+ export function useAccountSession() {
+   const state = useSyncExternalStore(subscribe, getSnapshot, () => LOADING);
+   useEffect(() => {
+     if (started) return;
+     started = true;
+     void loadSession();
+   }, []);
+   return { session: state, refresh: refreshSession };
+ }
+ 
+-export async function accountGet<T>(path: string): Promise<T> {
+-  const response = await fetch(path, { credentials: "same-origin", cache: "no-store" });
++export async function accountGet<T>(path: string, signal?: AbortSignal): Promise<T> {
++  const response = await fetch(path, { credentials: "same-origin", cache: "no-store", signal });
+   return parseAccountResponse<T>(response);
+ }
+ 
+ export async function accountMutate<T>(path: string, method: "PUT" | "PATCH" | "POST" | "DELETE", body?: unknown): Promise<T> {
+   const response = await fetch(path, {
+     method,
+     credentials: "same-origin",
+     cache: "no-store",
+     headers: body === undefined ? undefined : { "content-type": "application/json" },
+     body: body === undefined ? undefined : JSON.stringify(body),
+@@ -131,48 +132,64 @@ export async function accountMutate<T>(path: string, method: "PUT" | "PATCH" | "
+   return parseAccountResponse<T>(response);
+ }
+ 
+ export type RemoteState<T> = {
+   data: T | null;
+   loading: boolean;
+   error: string | null;
+   reload: () => void;
+ };
+ 
+-/// Client-side fetch without setState directly in an effect: the async loader
+-/// is the only place that updates React state.
+-export function useRemoteResource<T>(path: string | null): RemoteState<T> {
++/// Client-side fetch with a generation guard: a stale/key-switched response
++/// can never write into the current account's state.
++export function useRemoteResource<T>(path: string | null, identityKey = ""): RemoteState<T> {
+   const [data, setData] = useState<T | null>(null);
+   const [loading, setLoading] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+   const [revision, setRevision] = useState(0);
+-
+-  const load = useCallback(async () => {
+-    if (!path) return;
+-    setLoading(true);
+-    try {
+-      setData(await accountGet<T>(path));
+-      setError(null);
+-    } catch (cause) {
+-      setData(null);
+-      setError(cause instanceof Error ? cause.message : "Không tải được dữ liệu.");
+-    } finally {
+-      setLoading(false);
+-    }
+-  }, [path]);
++  const controller = useRef(new RemoteResourceController<T>());
++  const key = `${identityKey}|${path ?? ""}`;
+ 
+   useEffect(() => {
+-    let alive = true;
++    const current = controller.current;
++    const abort = new AbortController();
++    const started = current.begin(key);
++    // setState never runs synchronously in the effect body, and every update
++    // after the await is gated by the current generation.
+     void Promise.resolve().then(async () => {
+-      if (alive) await load();
++      if (started.generation !== current.currentGeneration) return;
++      setData(started.snapshot.data);
++      setLoading(started.snapshot.loading);
++      setError(started.snapshot.error);
++      if (!path) return;
++      try {
++        const result = await accountGet<T>(path, abort.signal);
++        const next = current.resolve(started.generation, result);
++        if (next) {
++          setData(next.data);
++          setLoading(next.loading);
++          setError(next.error);
++        }
++      } catch (cause) {
++        if (abort.signal.aborted) return;
++        const next = current.reject(started.generation, cause instanceof Error ? cause.message : "Không tải được dữ liệu.");
++        if (next) {
++          setData(next.data);
++          setLoading(next.loading);
++          setError(next.error);
++        }
++      }
+     });
+-    return () => { alive = false; };
+-  }, [load, revision]);
++    return () => {
++      abort.abort();
++      current.dispose();
++    };
++  }, [key, path, revision]);
+ 
+   return { data, loading, error, reload: () => setRevision((value) => value + 1) };
+ }
+ 
+ export async function signOutAccount(): Promise<void> {
+   const result = await authClient.signOut();
+   if (result?.error) throw new Error(result.error.message ?? "Không thể đăng xuất.");
+   await refreshSession();
+ }
+diff --git a/web/lib/account/resource.ts b/web/lib/account/resource.ts
+new file mode 100644
+index 0000000..2687ac6
+--- /dev/null
++++ b/web/lib/account/resource.ts
+@@ -0,0 +1,51 @@
++// Generation guard behind useRemoteResource. A response from a previous key,
++// request or disposed effect is ignored instead of writing stale account data.
++
++export type RemoteResourceSnapshot<T> = {
++  data: T | null;
++  loading: boolean;
++  error: string | null;
++  key: string;
++};
++
++type Started<T> = { generation: number; snapshot: RemoteResourceSnapshot<T> };
++
++let nextGeneration = 0;
++
++export class RemoteResourceController<T> {
++  private generation = 0;
++  private key = "";
++  private state: RemoteResourceSnapshot<T> = { data: null, loading: false, error: null, key: "" };
++
++  begin(key: string): Started<T> {
++    this.generation = ++nextGeneration;
++    this.key = key;
++    this.state = { data: null, loading: true, error: null, key };
++    return { generation: this.generation, snapshot: this.state };
++  }
++
++  resolve(generation: number, data: T): RemoteResourceSnapshot<T> | null {
++    if (generation !== this.generation) return null;
++    this.state = { data, loading: false, error: null, key: this.key };
++    return this.state;
++  }
++
++  reject(generation: number, message: string): RemoteResourceSnapshot<T> | null {
++    if (generation !== this.generation) return null;
++    this.state = { data: null, loading: false, error: message, key: this.key };
++    return this.state;
++  }
++
++  get currentGeneration(): number {
++    return this.generation;
++  }
++
++  /// Called from effect cleanup: any in-flight response is now irrelevant.
++  dispose(): void {
++    this.generation = ++nextGeneration;
++  }
++
++  get snapshot(): RemoteResourceSnapshot<T> {
++    return this.state;
++  }
++}
+diff --git a/web/lib/me/handlers.ts b/web/lib/me/handlers.ts
+index 692afbc..beec04e 100644
+--- a/web/lib/me/handlers.ts
++++ b/web/lib/me/handlers.ts
+@@ -1,20 +1,21 @@
+ import "server-only";
+ 
+ import type { AppDatabase } from "../db/client";
+ import { DatabaseConfigurationError, getDatabase } from "../db/client";
+ import { AuthConfigurationError, getAuth } from "../auth/server";
+ import { identityFromSession, type AccountIdentity } from "../auth/identity";
+ import { errorEnvelope } from "../contracts";
+ import {
+   boundedClientTime,
+   parseImportPayload,
++  parseLanguage,
+   parseLibraryInput,
+   parseProfilePatch,
+   parseProgressInput,
+   parseResourceId,
+   parseSettingsInput,
+   readJson,
+   requireOrigin,
+   ValidationError,
+ } from "../validators";
+ import { ServiceError, ensureProfile, getLevel, importGuest, listLibrary, listProgress, putLibrary, putProgress, deleteLibrary, deleteProgress, getSettings, putSettings, updateProfile } from "./service";
+@@ -118,21 +119,26 @@ export function createMeApi(deps: MeDeps) {
+ 
+     progressPut: (request: Request, params: { chapterId: string }) => withUser(request, async (user) => {
+       const chapterId = parseResourceId(params.chapterId, "chapterId");
+       const input = parseProgressInput(await readJson(request));
+       const item = await putProgress(db(), user.id, chapterId, input, now());
+       return privateJson({ item });
+     }, true),
+ 
+     progressDelete: (request: Request, params: { chapterId: string }) => withUser(request, async (user) => {
+       const chapterId = parseResourceId(params.chapterId, "chapterId");
+-      const deleted = await deleteProgress(db(), user.id, chapterId);
++      const query = new URL(request.url).searchParams;
++      const mangaId = parseResourceId(query.get("mangaId"), "mangaId");
++      const rawLanguage = query.get("lang");
++      if (!rawLanguage) throw new ValidationError(400, "INVALID_INPUT", "lang is required to delete progress.");
++      const language = parseLanguage(rawLanguage);
++      const deleted = await deleteProgress(db(), user.id, chapterId, mangaId, language);
+       if (!deleted) return privateJson(errorEnvelope("NOT_FOUND", "Progress entry not found."), 404);
+       return privateJson({ deleted: true });
+     }, true),
+ 
+     settingsGet: (request: Request) => withUser(request, async (user) => {
+       const settings = await getSettings(db(), user.id);
+       return privateJson(settings);
+     }),
+ 
+     settingsPut: (request: Request) => withUser(request, async (user) => {
+diff --git a/web/lib/me/service.ts b/web/lib/me/service.ts
+index 2a406f4..ed452fc 100644
+--- a/web/lib/me/service.ts
++++ b/web/lib/me/service.ts
+@@ -278,27 +278,36 @@ export async function putProgress(
+ }
+ 
+ export async function listProgress(db: AppDatabase, userId: string): Promise<ProgressDto[]> {
+   const rows = await db.select().from(tables.chapterProgress)
+     .where(eq(tables.chapterProgress.userId, userId))
+     .orderBy(desc(tables.chapterProgress.lastReadAt))
+     .limit(100);
+   return rows.map(progressDto);
+ }
+ 
+-export async function deleteProgress(db: AppDatabase, userId: string, chapterId: string): Promise<boolean> {
+-  const rows = await db.select().from(tables.chapterProgress)
+-    .where(and(eq(tables.chapterProgress.userId, userId), eq(tables.chapterProgress.chapterId, chapterId)))
+-    .limit(1);
++export async function deleteProgress(
++  db: AppDatabase,
++  userId: string,
++  chapterId: string,
++  mangaId: string,
++  language: string,
++): Promise<boolean> {
++  const where = and(
++    eq(tables.chapterProgress.userId, userId),
++    eq(tables.chapterProgress.mangaId, mangaId),
++    eq(tables.chapterProgress.chapterId, chapterId),
++    eq(tables.chapterProgress.language, language),
++  );
++  const rows = await db.select().from(tables.chapterProgress).where(where).limit(1);
+   if (rows.length === 0) return false;
+-  await db.delete(tables.chapterProgress)
+-    .where(and(eq(tables.chapterProgress.userId, userId), eq(tables.chapterProgress.chapterId, chapterId)));
++  await db.delete(tables.chapterProgress).where(where);
+   return true;
+ }
+ 
+ export function getLevel(): { level: number; totalXp: number; source: string } {
+   return { level: 1, totalXp: 0, source: "placeholder" };
+ }
+ 
+ export async function getSettings(db: AppDatabase, userId: string): Promise<ReaderSettingsDto> {
+   const rows = await db.select().from(tables.readerPreferences)
+     .where(eq(tables.readerPreferences.userId, userId)).limit(1);
+diff --git a/web/lib/reader-sync.ts b/web/lib/reader-sync.ts
+new file mode 100644
+index 0000000..e631f59
+--- /dev/null
++++ b/web/lib/reader-sync.ts
+@@ -0,0 +1,47 @@
++// Coordinates authenticated reader restoration. The first progress PUT is
++// gated until the server page has been applied, and any response that arrives
++// after navigation/account change is discarded.
++
++let nextGeneration = 0;
++
++export class ReaderRestoreCoordinator {
++  private generation = 0;
++  private key = "";
++  private ready = "";
++
++  /// Starts one restore attempt. Returns the generation that must be presented
++  /// when the async GET settles.
++  begin(key: string): number {
++    this.generation = ++nextGeneration;
++    this.key = key;
++    this.ready = "";
++    return this.generation;
++  }
++
++  /// Unlocks writes only for the still-current generation and key.
++  resolve(generation: number, key: string): string | null {
++    if (generation !== this.generation || key !== this.key) return null;
++    this.ready = key;
++    return key;
++  }
++
++  /// A failed restore clears both the in-flight key and the write gate so a
++  /// visible retry can start a fresh attempt.
++  fail(generation: number, key: string): boolean {
++    if (generation !== this.generation || key !== this.key) return false;
++    this.key = "";
++    this.ready = "";
++    return true;
++  }
++
++  isReady(key: string): boolean {
++    return this.ready === key && this.key === key;
++  }
++
++  /// Called on unmount: a late response may never touch a new chapter's WASM.
++  dispose(): void {
++    this.generation = ++nextGeneration;
++    this.key = "";
++    this.ready = "";
++  }
++}
+diff --git a/web/lib/validators.ts b/web/lib/validators.ts
+index 8b2e765..fbceb88 100644
+--- a/web/lib/validators.ts
++++ b/web/lib/validators.ts
+@@ -72,21 +72,21 @@ function optionalId(value: unknown): string | null {
+   return parsed;
+ }
+ 
+ function integerIn(value: unknown, min: number, max: number, field: string): number {
+   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+     throw new ValidationError(400, "INVALID_INPUT", `${field} is out of range.`);
+   }
+   return value;
+ }
+ 
+-function language(value: unknown): string {
++export function parseLanguage(value: unknown): string {
+   if (value === undefined || value === null || value === "") return "vi";
+   const parsed = plainText(value, 20) ?? "vi";
+   if (!/^[A-Za-z][A-Za-z-]{1,19}$/.test(parsed)) {
+     throw new ValidationError(400, "INVALID_INPUT", "Invalid language.");
+   }
+   return parsed;
+ }
+ 
+ /// Same-origin mutation guard. `Origin` must match the request's own host and
+ /// scheme, including forwarded headers in a platform deployment.
+@@ -192,42 +192,42 @@ export type LibraryInput = {
+   title: string;
+   coverFile: string | null;
+   lang: string;
+   status: LibraryStatus;
+ };
+ 
+ export function parseLibraryInput(body: Record<string, unknown>): LibraryInput {
+   assertAllowedKeys(body, ["title", "coverFile", "lang", "status"]);
+   const title = requiredText(body.title, "title", 200);
+   const coverFile = optionalId(body.coverFile);
+-  const lang = language(body.lang);
++  const lang = parseLanguage(body.lang);
+   const status = body.status === undefined ? "reading" : plainText(body.status, 20);
+   if (!status || !LIBRARY_STATUSES.includes(status as LibraryStatus)) {
+     throw new ValidationError(400, "INVALID_INPUT", "Unknown library status.");
+   }
+   return { title, coverFile, lang, status: status as LibraryStatus };
+ }
+ 
+ export type ProgressInput = {
+   mangaId: string;
+   lang: string;
+   page: number;
+   total: number;
+   chapter: string | null;
+   title: string | null;
+   coverFile: string | null;
+ };
+ 
+ export function parseProgressInput(body: Record<string, unknown>): ProgressInput {
+   assertAllowedKeys(body, ["mangaId", "lang", "page", "total", "chapter", "title", "coverFile"]);
+   const mangaId = parseResourceId(body.mangaId, "mangaId");
+-  const lang = language(body.lang);
++  const lang = parseLanguage(body.lang);
+   const total = integerIn(body.total, 1, 10_000, "total");
+   const page = integerIn(body.page, 1, 10_000, "page");
+   if (page > total) throw new ValidationError(400, "INVALID_INPUT", "page cannot exceed total.");
+   return {
+     mangaId,
+     lang,
+     page,
+     total,
+     chapter: optionalId(body.chapter),
+     title: plainText(body.title, 200),
+diff --git a/web/package.json b/web/package.json
+index 55f2b1e..7e5c6b8 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -6,23 +6,24 @@
+     "dev": "next dev",
+     "build:wasm": "node scripts/build-wasm.mjs",
+     "prebuild": "npm run build:wasm",
+     "build": "next build",
+     "start": "next start",
+     "test:wasm": "npm run build:wasm && node --test scripts/reader-wasm.test.mjs",
+     "lint": "eslint",
+     "test:smoke": "npm run build && node --test scripts/smoke.test.mjs",
+     "test:task4": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs",
+     "test:task5": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs",
+-    "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs",
++    "test:task6": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --import tsx --conditions=react-server --test scripts/auth.test.mjs scripts/database.test.mjs scripts/content-proxy.test.mjs scripts/guest-storage.test.mjs scripts/reader-wasm.test.mjs scripts/account.test.mjs scripts/account-resource.test.mjs scripts/reader-sync.test.mjs",
+     "test:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/reader-playwright.test.mjs",
+-    "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs"
++    "test:account:e2e": "npm run build && node --test scripts/account-playwright.test.mjs",
++    "test:task6:e2e": "npm run build && cargo build --manifest-path ../Cargo.toml -p server && node --test scripts/account-playwright.test.mjs scripts/reader-sync-playwright.test.mjs"
+   },
+   "dependencies": {
+     "@neon/auth": "^0.8.2",
+     "drizzle-orm": "^0.45.4",
+     "jose": "^6.2.18",
+     "next": "16.4.6",
+     "pg": "^8.23.1",
+     "react": "19.3.0",
+     "react-dom": "19.3.0",
+     "server-only": "^0.0.1",
+diff --git a/web/scripts/account-resource.test.mjs b/web/scripts/account-resource.test.mjs
+new file mode 100644
+index 0000000..8ab295c
+--- /dev/null
++++ b/web/scripts/account-resource.test.mjs
+@@ -0,0 +1,46 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++
++// Pure controller behind useRemoteResource: generation/abort correctness is
++// deterministic here; the browser tests cover the React wiring.
++const { RemoteResourceController } = await import("../lib/account/resource.ts");
++
++test("remote resource state is cleared on key change and stale responses are ignored", () => {
++  const controller = new RemoteResourceController();
++  const first = controller.begin("user-a|/api/v1/me/library");
++  assert.deepEqual(first.snapshot, { data: null, loading: true, error: null, key: "user-a|/api/v1/me/library" });
++  const second = controller.begin("user-a|/api/v1/me/library");
++
++  // A late response from the previous request must not write state.
++  assert.equal(controller.resolve(first.generation, ["old"]), null);
++  assert.deepEqual(controller.snapshot, { data: null, loading: true, error: null, key: "user-a|/api/v1/me/library" });
++
++  const current = controller.resolve(second.generation, ["fresh"]);
++  assert.deepEqual(current, { data: ["fresh"], loading: false, error: null, key: "user-a|/api/v1/me/library" });
++
++  const switched = controller.begin("user-b|/api/v1/me/library");
++  assert.equal(switched.generation, second.generation + 1);
++  assert.deepEqual(controller.snapshot, { data: null, loading: true, error: null, key: "user-b|/api/v1/me/library" });
++  assert.equal(controller.resolve(second.generation, ["user-a-again"]), null);
++  assert.deepEqual(controller.resolve(switched.generation, ["user-b"]), {
++    data: ["user-b"], loading: false, error: null, key: "user-b|/api/v1/me/library",
++  });
++});
++
++test("post-cleanup responses cannot revive a disposed resource", () => {
++  const controller = new RemoteResourceController();
++  const started = controller.begin("user-a|/api/v1/me/progress");
++  controller.resolve(started.generation, ["visible"]);
++  controller.dispose();
++  assert.equal(controller.resolve(started.generation, ["late"]), null);
++  assert.equal(controller.reject(started.generation, "late failure"), null);
++  assert.deepEqual(controller.snapshot.data, ["visible"]);
++});
++
++test("failure clears data and exposes an actionable error", () => {
++  const controller = new RemoteResourceController();
++  const started = controller.begin("user-a|/api/v1/me/settings");
++  assert.deepEqual(controller.reject(started.generation, "mất kết nối"), {
++    data: null, loading: false, error: "mất kết nối", key: "user-a|/api/v1/me/settings",
++  });
++});
+diff --git a/web/scripts/account.test.mjs b/web/scripts/account.test.mjs
+index 9783cbd..2c0d172 100644
+--- a/web/scripts/account.test.mjs
++++ b/web/scripts/account.test.mjs
+@@ -444,20 +444,53 @@ test("level is an explicit zero-XP placeholder and settings persist", async () =
+       body: JSON.stringify({ mode: "horizontal", fit: false, bg: "sepia", speed: 4 }),
+     }));
+     assert.equal(put.status, 200);
+     const get = await handle.settingsGet(request("/api/v1/me/settings"));
+     assert.deepEqual(await get.json(), { mode: "horizontal", fit: false, bg: "sepia", speed: 4 });
+   } finally {
+     await pg.close();
+   }
+ });
+ 
++test("progress delete is scoped to the requested manga and language", async () => {
++  const { pg, db } = await migratedDb();
++  try {
++    const handle = api(db);
++    for (const lang of ["vi", "en"]) {
++      await handle.progressPut(request("/api/v1/me/progress/c-shared", {
++        method: "PUT",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ mangaId: "m-shared", lang, page: 2, total: 8, chapter: "2", title: "Shared" }),
++      }), { chapterId: "c-shared" });
++    }
++    const before = await db.select().from(schema.chapterProgress);
++    assert.equal(before.length, 2);
++
++    const removed = await handle.progressDelete(
++      request("/api/v1/me/progress/c-shared?mangaId=m-shared&lang=vi", { method: "DELETE" }),
++      { chapterId: "c-shared" },
++    );
++    assert.equal(removed.status, 200);
++    const after = await db.select().from(schema.chapterProgress);
++    assert.deepEqual(after.map((row) => row.language), ["en"], "only the addressed language row may be deleted");
++
++    const ambiguous = await handle.progressDelete(
++      request("/api/v1/me/progress/c-shared", { method: "DELETE" }),
++      { chapterId: "c-shared" },
++    );
++    assert.equal(ambiguous.status, 400);
++    assert.equal((await db.select().from(schema.chapterProgress)).length, 1);
++  } finally {
++    await pg.close();
++  }
++});
++
+ test("database failures do not leave partial account writes", async () => {
+   const { pg, db } = await migratedDb();
+   try {
+     const handle = api({
+       ...db,
+       transaction: async (fn) => {
+         try {
+           return await db.transaction(async (tx) => {
+             await fn(tx);
+             throw new Error("forced database failure");
+diff --git a/web/scripts/reader-sync-playwright.test.mjs b/web/scripts/reader-sync-playwright.test.mjs
+new file mode 100644
+index 0000000..dd41f13
+--- /dev/null
++++ b/web/scripts/reader-sync-playwright.test.mjs
+@@ -0,0 +1,234 @@
++import assert from "node:assert/strict";
++import { spawn } from "node:child_process";
++import { createHash } from "node:crypto";
++import { existsSync, mkdirSync, writeFileSync } from "node:fs";
++import { connect } from "node:net";
++import { join } from "node:path";
++import { after, before, test } from "node:test";
++import { chromium } from "playwright-core";
++import { freePort, repoDir, startHttpServer, startNext, stop, webDir } from "./test-helpers.mjs";
++import { pagePng } from "./image-fixtures.mjs";
++
++const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
++const MANGA_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
++const CHAPTER_A = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
++const CHAPTER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc";
++const PAGES = [CHAPTER_A, CHAPTER_B].flatMap((id) =>
++  [1, 2, 3, 4].map((page) => `https://uploads.mangadex.org/data/${id}/page-${page}.png`));
++
++let contentFixture;
++let authFixture;
++let axum;
++let next;
++let browser;
++let baseUrl;
++let cacheDir;
++let pageErrors = [];
++
++const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++
++function waitForTcp(port, deadlineMs = 20_000) {
++  return new Promise((resolve, reject) => {
++    const deadline = Date.now() + deadlineMs;
++    const attempt = () => {
++      const socket = connect({ host: "127.0.0.1", port });
++      socket.once("connect", () => { socket.destroy(); resolve(); });
++      socket.once("error", (error) => {
++        socket.destroy();
++        if (Date.now() > deadline) reject(error);
++        else setTimeout(attempt, 100);
++      });
++    };
++    attempt();
++  });
++}
++
++function json(res, body) {
++  res.writeHead(200, { "content-type": "application/json" });
++  res.end(JSON.stringify(body));
++}
++
++before(async () => {
++  assert.ok(existsSync(EDGE), `Edge is required: ${EDGE}`);
++  cacheDir = join(webDir, ".test-cache", `reader-sync-${process.pid}`);
++  mkdirSync(cacheDir, { recursive: true });
++  PAGES.forEach((url, index) => {
++    const key = createHash("sha256").update(url).digest("hex");
++    writeFileSync(join(cacheDir, `${key}.png`), pagePng(index % 4));
++  });
++
++  const manga = {
++    id: MANGA_ID,
++    attributes: { title: { vi: "Fixture Manga" }, status: "ongoing", year: 2026, description: { vi: "Sync fixture" }, tags: [] },
++    relationships: [],
++  };
++  const chapter = (id, number) => ({
++    id,
++    attributes: {
++      chapter: String(number), volume: null, title: `Chương ${number}`, pages: 4,
++      externalUrl: null, translatedLanguage: "vi", readableAt: "2026-11-20T00:00:00Z",
++    },
++    relationships: [{ type: "manga", id: MANGA_ID }],
++  });
++  const chapters = [chapter(CHAPTER_A, 1), chapter(CHAPTER_B, 2)];
++  contentFixture = await startHttpServer((req, res) => {
++    const url = req.url ?? "";
++    if (url.startsWith("/at-home/server/")) {
++      return json(res, { baseUrl: "https://uploads.mangadex.org", chapter: { hash: "hash", data: ["page-1.png", "page-2.png", "page-3.png", "page-4.png"], dataSaver: [] } });
++    }
++    if (url.includes("/feed?")) {
++      const vietnamese = decodeURIComponent(url).includes("translatedLanguage[]=vi");
++      return json(res, { total: vietnamese ? chapters.length : 0, data: vietnamese ? chapters : [] });
++    }
++    if (url.startsWith("/statistics/manga?")) {
++      return json(res, { statistics: { [MANGA_ID]: { rating: { bayesian: 8.5 }, follows: 10 } } });
++    }
++    if (url.startsWith("/manga/")) return json(res, { data: manga });
++    return json(res, { total: 0, data: [] });
++  });
++
++  const axumPort = await freePort();
++  const axumUrl = `http://127.0.0.1:${axumPort}`;
++  const binary = join(repoDir, "target", "debug", process.platform === "win32" ? "server.exe" : "server");
++  assert.ok(existsSync(binary), "build Axum first: cargo build -p server");
++  axum = spawn(binary, [], {
++    cwd: repoDir,
++    env: { ...process.env, PORT: String(axumPort), MANGADEX_API_ORIGIN: contentFixture.baseUrl, CACHE_DIR: cacheDir, DIST_DIR: join(webDir, "public") },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  await waitForTcp(axumPort);
++
++  authFixture = await startHttpServer((req, res) => {
++    if (req.url?.includes("get-session")) {
++      const signedIn = (req.headers.cookie ?? "").includes("session_token=fixture");
++      res.writeHead(200, { "content-type": "application/json" });
++      res.end(JSON.stringify(signedIn ? {
++        session: { id: "session-opaque", userId: "google|opaque-42", expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
++        user: { id: "google|opaque-42", name: "Fixture Reader", email: "reader@example.com", emailVerified: true, image: null },
++      } : { session: null, user: null }));
++      return;
++    }
++    res.writeHead(200, {
++      "content-type": "application/json",
++      "set-cookie": "__Secure-neon-auth.session_token=fixture; Path=/; HttpOnly; SameSite=Lax",
++    });
++    res.end(JSON.stringify({ ok: true }));
++  });
++
++  next = await startNext({
++    RUST_CONTENT_API_ORIGIN: axumUrl,
++    NEON_AUTH_BASE_URL: `${authFixture.baseUrl}/neondb/auth`,
++    NEON_AUTH_COOKIE_SECRET: "fixture-secret-with-at-least-32-characters",
++  });
++  baseUrl = next.baseUrl;
++  browser = await chromium.launch({ executablePath: EDGE, headless: true });
++});
++
++after(async () => {
++  await browser?.close();
++  await stop(next?.child);
++  if (axum && axum.exitCode === null) axum.kill("SIGKILL");
++  await authFixture?.close();
++  await contentFixture?.close();
++});
++
++async function signedInContext() {
++  const signIn = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: "dark" });
++  const signPage = await signIn.newPage();
++  await signPage.goto(`${baseUrl}/tai-khoan`, { waitUntil: "networkidle" });
++  await signPage.locator('input[type="email"]').fill("reader@example.com");
++  await signPage.locator('input[type="password"]').fill("fixture-password");
++  await signPage.getByRole("button", { name: "Đăng nhập", exact: true }).click();
++  await signPage.getByText("Đã đăng nhập").waitFor({ timeout: 15_000 });
++  const cookies = await signIn.cookies();
++  await signIn.close();
++
++  // Fresh context => fresh client module state; the SDK cookies are the only
++  // thing carried over, so each test starts from a real session resolution.
++  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: "dark" });
++  await context.addCookies(cookies);
++  const page = await context.newPage();
++  page.on("pageerror", (error) => pageErrors.push(error.message));
++  await context.route("**/api/v1/me/settings", async (route) => {
++    await route.fulfill({
++      status: 200,
++      contentType: "application/json",
++      body: JSON.stringify({ mode: "vertical", fit: true, bg: "light", speed: 3 }),
++    });
++  });
++  return { context, page };
++}
++
++async function waitFor(predicate, timeout = 10_000) {
++  const deadline = Date.now() + timeout;
++  while (Date.now() < deadline) {
++    if (predicate()) return;
++    await delay(50);
++  }
++  throw new Error("timed out waiting for condition");
++}
++
++function progressItem(chapterId, page) {
++  return {
++    mangaId: MANGA_ID, chapterId, lang: "vi", chapter: "1", title: "Chương 1", coverFile: null,
++    page, total: 4, maxPage: page, lastReadAt: Date.now(), revision: 1,
++  };
++}
++
++test("restore failure exposes a retry that applies the server page", async () => {
++  const { context, page } = await signedInContext();
++  const puts = [];
++  let attempts = 0;
++  let failOnce = true;
++  await context.route("**/api/v1/me/progress", async (route) => {
++    attempts += 1;
++    if (failOnce && attempts === 1) {
++      failOnce = false;
++      await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":{"code":"INTERNAL_ERROR","message":"fixture failure","details":{}}}' });
++      return;
++    }
++    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [progressItem(CHAPTER_A, 3)] }) });
++  });
++  await context.route("**/api/v1/me/progress/**", async (route) => {
++    if (route.request().method() === "PUT") puts.push(JSON.parse(route.request().postData() ?? "{}"));
++    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
++  });
++  await page.goto(`${baseUrl}/read/${CHAPTER_A}?manga=${MANGA_ID}&lang=vi`);
++  const retry = page.getByRole("button", { name: "Thử lại đồng bộ" });
++  await retry.waitFor({ timeout: 10_000 });
++  assert.equal(puts.length, 0, "no write after a failed restore");
++  await retry.click();
++  await waitFor(() => puts.length > 0);
++  assert.equal(puts[0].page, 3);
++  assert.match(await page.locator(".reader-page-count").textContent(), /Trang 3\/4/);
++  await context.close();
++});
++
++test("a follow click during session loading is not written to guest storage", async () => {
++  const { context, page } = await signedInContext();
++  const libraryPuts = [];
++  await context.route("**/api/v1/me/library/**", async (route) => {
++    if (route.request().method() === "PUT") libraryPuts.push(route.request().postData());
++    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
++  });
++  await context.route("**/api/auth/get-session", async (route) => {
++    await delay(1500);
++    await route.continue();
++  });
++  await page.goto(`${baseUrl}/manga/${MANGA_ID}`);
++  const follow = page.locator("button[aria-pressed]");
++  await follow.waitFor();
++  assert.equal(await follow.isDisabled(), true, "follow must be gated until the session resolves");
++  await follow.evaluate((button) => button.click());
++  assert.equal(await page.evaluate(() => localStorage.getItem("truyenviet:library")), null, "early click must not write guest data");
++  assert.equal(libraryPuts.length, 0);
++  await page.waitForFunction(() => !document.querySelector("button[aria-pressed]")?.disabled, null, { timeout: 10_000 });
++  await follow.click();
++  await delay(300);
++  assert.ok(libraryPuts.length >= 1, "after resolution the synced API must be used");
++  await context.close();
++});
++
++test("reader sync fixes produced no page errors", () => {
++  assert.deepEqual(pageErrors, []);
++});
+diff --git a/web/scripts/reader-sync.test.mjs b/web/scripts/reader-sync.test.mjs
+new file mode 100644
+index 0000000..e265fa8
+--- /dev/null
++++ b/web/scripts/reader-sync.test.mjs
+@@ -0,0 +1,58 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++
++// Pure coordinator used by ReaderClient. It owns restoration generations and
++// the "ready to write" gate; the browser test covers the visible retry UI.
++const { ReaderRestoreCoordinator } = await import("../lib/reader-sync.ts");
++
++test("delayed restore gates the first progress PUT until server page is applied", () => {
++  const coordinator = new ReaderRestoreCoordinator();
++  const key = "chapter-a|vi|opaque-user";
++  const generation = coordinator.begin(key);
++
++  // The GET is still in flight: a PUT must not be allowed, even if page state
++  // already exists locally.
++  assert.equal(coordinator.isReady(key), false);
++  assert.equal(coordinator.resolve(generation + 99, key), null, "stale generation cannot unlock writes");
++
++  // Simulate the delayed GET arriving later with the server page.
++  assert.equal(coordinator.resolve(generation, key), key);
++  assert.equal(coordinator.isReady(key), true);
++  assert.equal(coordinator.isReady("chapter-a|vi|other-user"), false);
++});
++
++test("a slow chapter A response is ignored after navigating to chapter B", () => {
++  const coordinator = new ReaderRestoreCoordinator();
++  const a = "chapter-a|vi|opaque-user";
++  const b = "chapter-b|vi|opaque-user";
++  const first = coordinator.begin(a);
++  assert.equal(coordinator.begin(b), first + 1);
++
++  assert.equal(coordinator.resolve(first, a), null, "chapter A must not unlock chapter B");
++  assert.equal(coordinator.isReady(a), false);
++  assert.equal(coordinator.resolve(first + 1, b), b);
++  assert.equal(coordinator.isReady(b), true);
++});
++
++test("failed restore clears the settle key so a retry can write", () => {
++  const coordinator = new ReaderRestoreCoordinator();
++  const key = "chapter-a|vi|opaque-user";
++  const first = coordinator.begin(key);
++  assert.equal(coordinator.fail(first, key), true);
++  assert.equal(coordinator.isReady(key), false);
++
++  const retry = coordinator.begin(key);
++  assert.equal(retry, first + 1);
++  assert.equal(coordinator.resolve(first, key), null);
++  assert.equal(coordinator.resolve(retry, key), key);
++});
++
++test("responses after cleanup cannot revive a disposed reader session", () => {
++  const coordinator = new ReaderRestoreCoordinator();
++  const key = "chapter-a|vi|opaque-user";
++  const generation = coordinator.begin(key);
++  coordinator.dispose();
++  assert.equal(coordinator.resolve(generation, key), null);
++  assert.equal(coordinator.fail(generation, key), false);
++  assert.equal(coordinator.isReady(key), false);
++});

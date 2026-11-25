@@ -373,6 +373,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f67855af358fcb20fac58f9d714c94e2b228fe5694c1c9b4ead4a366343eda1b"
 
 [[package]]
+name = "contracts"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -403,6 +412,7 @@ dependencies = [
 name = "core"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "futures",
  "hickory-resolver",
  "moka",
@@ -517,6 +527,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1861,6 +1879,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "reader-core"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "serde_json",
+]
+
+[[package]]
+name = "reader-wasm"
+version = "0.1.0"
+dependencies = [
+ "reader-core",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2157,7 +2192,9 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "contracts",
  "core",
+ "serde",
  "serde_json",
  "tokio",
  "tower-http",
