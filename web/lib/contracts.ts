@@ -25,6 +25,44 @@ export type LibraryEntryDto = {
   revision: number;
 };
 
+export type PublicProfileEntryDto = {
+  targetType: "manga" | "chapter";
+  targetId: string;
+  mangaId: string | null;
+  title: string;
+  coverFile: string | null;
+  chapterLabel: string | null;
+  body: string;
+  createdAt: number;
+};
+
+export type PublicProfileDto = {
+  id: string;
+  username: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  bio: string | null;
+  title: string;
+  level: number;
+  totalXp: number;
+  joinedAt: number;
+  stats: {
+    chaptersRead: number;
+    following: number;
+    comments: number;
+    posted: number;
+    participating: number;
+    saved: number;
+  };
+  topTags: string[];
+  posted: PublicProfileEntryDto[];
+  participating: PublicProfileEntryDto[];
+  recent: PublicProfileEntryDto[];
+  saved: LibraryEntryDto[] | null;
+  savedTotal: number;
+  truncated: { posted: boolean; participating: boolean; recent: boolean; saved: boolean };
+};
+
 export type ProgressEntryDto = {
   mangaId: string;
   chapterId: string;
