@@ -189,13 +189,13 @@ test("a follow click during session loading is not written to guest storage", as
     });
   });
   await page.goto(`${baseUrl}/manga/${MANGA_ID}`);
-  const follow = page.locator("button[aria-pressed]");
+  const follow = page.locator("button.btn[aria-pressed]");
   await follow.waitFor();
   assert.equal(await follow.isDisabled(), true, "follow must be gated until the session resolves");
   await follow.evaluate((button) => button.click());
   assert.equal(await page.evaluate(() => localStorage.getItem("truyenviet:library")), null, "early click must not write guest data");
   assert.equal(libraryPuts.length, 0);
-  await page.waitForFunction(() => !document.querySelector("button[aria-pressed]")?.disabled, null, { timeout: 10_000 });
+  await page.waitForFunction(() => !document.querySelector("button.btn[aria-pressed]")?.disabled, null, { timeout: 10_000 });
   await follow.click();
   await delay(300);
   assert.ok(libraryPuts.length >= 1, "after resolution the synced API must be used");
