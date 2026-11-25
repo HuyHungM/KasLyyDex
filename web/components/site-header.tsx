@@ -4,7 +4,6 @@ import Link from "next/link";
 import ThemeToggle from "@/components/theme-toggle";
 import { NavIcon } from "@/components/site-shell";
 import NotificationCenter from "@/components/notifications/NotificationCenter";
-import RouteProgress from "@/components/route-progress";
 
 export default function SiteHeader() {
   return (
@@ -32,7 +31,6 @@ export default function SiteHeader() {
         <NotificationCenter compact />
         <ThemeToggle />
       </div>
-      <RouteProgress />
     </header>
   );
 }

@@ -55,7 +55,7 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
   const reading = pathname.startsWith("/read/");
   return (
     <div className={`site-shell${reading ? " reading" : ""}`}>
-      {reading ? <RouteProgress floating /> : null}
+      <RouteProgress />
       {!reading && (
         <aside className="site-rail">
           <Link href="/" className="logo" aria-label="KasLyyDex — trang chủ">

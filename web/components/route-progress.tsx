@@ -1,12 +1,14 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type Phase = "idle" | "loading" | "done";
 
-export default function RouteProgress({ floating = false }: { floating?: boolean }) {
+export default function RouteProgress() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [target, setTarget] = useState<string | null>(null);
+  const pathname = usePathname();
 
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
@@ -40,13 +42,29 @@ export default function RouteProgress({ floating = false }: { floating?: boolean
     };
     const check = () => {
       const current = window.location.pathname + window.location.search;
-      if (current === target) { finish(); return; }
-      if (performance.now() > deadline) { finish(); return; }
+      if (current === target || performance.now() > deadline) { finish(); return; }
       frame = requestAnimationFrame(check);
     };
     frame = requestAnimationFrame(check);
     return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); };
   }, [target]);
 
-  return <div className={`route-progress is-${phase}${floating ? " route-progress--floating" : ""}`} aria-hidden="true" />;
+  // Sit right under whichever top bar the current route uses: the site header
+  // or the reader toolbar. One instance survives both sides of the transition.
+  useEffect(() => {
+    let observer: ResizeObserver | null = null;
+    const update = () => {
+      const bar = document.querySelector(".reader-bar") ?? document.querySelector(".site-header");
+      document.documentElement.style.setProperty("--route-progress-top", `${Math.round(bar?.getBoundingClientRect().height ?? 0)}px`);
+      if (bar) {
+        observer?.disconnect();
+        observer = new ResizeObserver(update);
+        observer.observe(bar);
+      }
+    };
+    update();
+    return () => observer?.disconnect();
+  }, [pathname]);
+
+  return <div className={`route-progress is-${phase}`} aria-hidden="true" />;
 }

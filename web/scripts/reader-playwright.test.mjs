@@ -302,12 +302,29 @@ test("theme choice survives a reload in localStorage", async () => {
 test("leaving a chapter shows a route progress bar", async () => {
   const { context, page } = await openPage({ width: 1280, height: 800 });
   await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
-  assert.equal(await page.locator(".route-progress--floating").count(), 1, "reader needs its own progress bar");
+  assert.equal(await page.locator(".route-progress").count(), 1, "one persistent progress bar across routes");
+  const position = await page.evaluate(() => {
+    const bar = document.querySelector(".reader-bar");
+    const progress = document.querySelector(".route-progress");
+    return { barHeight: bar.getBoundingClientRect().height, top: progress.getBoundingClientRect().top };
+  });
+  assert.ok(Math.abs(position.top - position.barHeight) <= 2, `progress must sit under the reader toolbar: ${JSON.stringify(position)}`);
   await page.locator(".reader-bar .back-link").click();
   await page.waitForURL("**/manga/**");
   await page.waitForTimeout(400);
   const phase = await page.locator(".route-progress").getAttribute("class");
   assert.match(phase ?? "", /route-progress is-(idle|done)/, `progress should retire after commit, got ${phase}`);
+  assert.equal(pageErrors.length, 0, `unexpected page errors: ${pageErrors.join(" | ")}`);
+  await context.close();
+});
+
+test("entering a chapter keeps the route progress bar", async () => {
+  const { context, page } = await openPage({ width: 1280, height: 800 });
+  await page.goto(`${baseUrl}/manga/${MANGA_ID}`, { waitUntil: "networkidle" });
+  assert.equal(await page.locator(".route-progress").count(), 1);
+  await page.locator('a[href^="/read/"]').first().click();
+  await page.waitForURL("**/read/**");
+  assert.equal(await page.locator(".route-progress").count(), 1, "the bar must survive the chapter transition");
   assert.equal(pageErrors.length, 0, `unexpected page errors: ${pageErrors.join(" | ")}`);
   await context.close();
 });
