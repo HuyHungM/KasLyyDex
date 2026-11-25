@@ -53,17 +53,21 @@ export default function RouteProgress() {
   // or the reader toolbar. One instance survives both sides of the transition.
   useEffect(() => {
     let observer: ResizeObserver | null = null;
+    let observed: Element | null = null;
     const update = () => {
       const bar = document.querySelector(".reader-bar") ?? document.querySelector(".site-header");
       document.documentElement.style.setProperty("--route-progress-top", `${Math.round(bar?.getBoundingClientRect().height ?? 0)}px`);
-      if (bar) {
+      if (bar && bar !== observed) {
         observer?.disconnect();
         observer = new ResizeObserver(update);
         observer.observe(bar);
+        observed = bar;
       }
     };
+    const mutations = new MutationObserver(update);
+    mutations.observe(document.body, { childList: true, subtree: true });
     update();
-    return () => observer?.disconnect();
+    return () => { observer?.disconnect(); mutations.disconnect(); };
   }, [pathname]);
 
   return <div className={`route-progress is-${phase}`} aria-hidden="true" />;
