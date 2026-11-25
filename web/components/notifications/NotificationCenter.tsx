@@ -24,6 +24,61 @@ function TypeIcon({ type }: { type: string }) {
   return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>;
 }
 
+function NoticeCard({ item, busy, onRead }: {
+  item: NotificationDto;
+  busy: boolean;
+  onRead: (ids: string[]) => void;
+}) {
+  return (
+    <article className={`surface shelf-card notice-card${item.readAt === null ? " unread" : ""}`}>
+      <div className="notice-story">
+        <span className="notice-icon" aria-hidden="true"><TypeIcon type={item.type} /></span>
+        <div className="notice-copy">
+          <strong>{item.title}</strong>
+          <p>{item.body}</p>
+          <time className="cc-ch" dateTime={new Date(item.createdAt).toISOString()}>
+            {new Date(item.createdAt).toLocaleString("vi-VN")}
+          </time>
+        </div>
+      </div>
+      <div className="actions">
+        {item.href ? (
+          <Link href={item.href} className="btn" onClick={() => onRead([item.id])} aria-label={`Mở ${item.title}`}>Mở</Link>
+        ) : null}
+        {item.readAt === null ? (
+          <button type="button" className="btn" disabled={busy} aria-label={`Đánh dấu đã đọc: ${item.title}`} onClick={() => onRead([item.id])}>Đã đọc</button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function NoticeSkeleton() {
+  return (
+    <div className="surface shelf-card notice-skeleton" aria-hidden="true">
+      <div className="notice-story">
+        <span className="notice-icon skel-bar" />
+        <div className="notice-copy">
+          <span className="skel-bar notice-line-title" />
+          <span className="skel-bar notice-line-body" />
+          <span className="skel-bar notice-line-time" />
+        </div>
+      </div>
+      <span className="skel-bar notice-action" />
+    </div>
+  );
+}
+
+function EmptyNotices() {
+  return (
+    <div className="surface empty">
+      <h2>Hộp thư còn trống</h2>
+      <p>Bình luận và chương mới sẽ xuất hiện ở đây sau khi bạn theo dõi truyện.</p>
+      <Link href="/" className="btn btn-primary">Khám phá truyện</Link>
+    </div>
+  );
+}
+
 export default function NotificationCenter({ compact = false, autoRefresh = false }: Props) {
   const { session } = useAccountSession();
   const pathname = usePathname();
@@ -136,16 +191,11 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
   if (!signedIn) {
     if (compact) return null;
     return (
-      <section className="auth-shell auth-shell--state">
-        <div className="auth-aside">
-          <p className="auth-kicker">KasLyyDex / Inbox</p>
-          <h2 className="auth-title">Thông báo</h2>
-          <p className="auth-quote">Chưa có phiên đăng nhập để hiển thị hộp thư.</p>
-        </div>
-        <div className="auth-main">
-          <p className="account-hint">Đăng nhập để xem thông báo bình luận, kiểm duyệt và chương mới.</p>
-        </div>
-      </section>
+      <div className="surface empty">
+        <h2>Chưa có thông báo</h2>
+        <p>Đăng nhập để xem phản hồi bình luận, kiểm duyệt và chương mới.</p>
+        <Link href="/tai-khoan" className="btn btn-primary">Đăng nhập</Link>
+      </div>
     );
   }
 
@@ -177,26 +227,49 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
     </>
   );
 
-  if (!compact) {
-    return (
-      <section className="notification-page surface">
-        <header className="notification-page-head">
-          <div>
-            <p className="auth-kicker">KasLyyDex / Inbox</p>
-            <h1>Thông báo</h1>
-          </div>
-          {inbox.loading ? (
-            <span className="notification-count-skel skel-bar" role="status" aria-label="Đang tải thông báo" />
-          ) : (
-            <p className="notification-count" role="status" aria-atomic="true">
-              {unread > 0 ? `${unread} thông báo chưa đọc` : "Tất cả đã đọc"}
-            </p>
-          )}
-        </header>
-        {body}
-      </section>
-    );
-  }
+  const pageBody = (
+    <>
+      {error ? <p className="account-error" role="alert">{error}</p> : null}
+      {inbox.error ? <p className="account-error" role="alert">{inbox.error}</p> : null}
+      {partialWarning ? (
+        <p className="account-error" role="status">Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.</p>
+      ) : null}
+      <div className="notice-toolbar">
+        {inbox.loading ? (
+          <span className="notification-count-skel skel-bar" role="status" aria-label="Đang tải thông báo" />
+        ) : (
+          <span className="notification-count" role="status" aria-atomic="true">
+            {unread > 0 ? `${unread} thông báo chưa đọc` : "Tất cả đã đọc"}
+          </span>
+        )}
+        {!inbox.loading ? <p className="notification-summary" role="status">{unread > 0 ? `${unread} thông báo chưa đọc.` : "Tất cả đã đọc."}</p> : null}
+      </div>
+      {inbox.loading && !inbox.error ? (
+        <div className="shelf-grid">
+          {Array.from({ length: 4 }, (_, index) => <NoticeSkeleton key={index} />)}
+        </div>
+      ) : items.length === 0 ? <EmptyNotices /> : (
+        <div className="shelf-grid">
+          {items.map((item) => <NoticeCard key={item.id} item={item} busy={busy} onRead={(ids) => void markRead(ids)} />)}
+        </div>
+      )}
+      {!inbox.loading && items.length > 0 ? (
+        <div className="actions notice-actions">
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || unreadIds.length === 0}
+            onClick={() => void markRead(unreadIds)}
+          >
+            Đánh dấu tất cả đã đọc
+          </button>
+          {access.data?.moderator ? <Link href="/kiem-duyet" className="btn">Hàng đợi kiểm duyệt →</Link> : null}
+        </div>
+      ) : null}
+    </>
+  );
+
+  if (!compact) return <div className="notification-page">{pageBody}</div>;
 
   return (
     <div className="notification-center">
