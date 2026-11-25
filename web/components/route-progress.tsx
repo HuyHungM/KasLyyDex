@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type Phase = "idle" | "loading" | "done";
@@ -8,6 +8,8 @@ type Phase = "idle" | "loading" | "done";
 export default function RouteProgress() {
   const [phase, setPhase] = useState<Phase>("idle");
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const routeKey = `${pathname}?${searchParams.toString()}`;
 
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
@@ -31,7 +33,7 @@ export default function RouteProgress() {
     setPhase("done");
     const timer = window.setTimeout(() => setPhase("idle"), 320);
     return () => window.clearTimeout(timer);
-  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [routeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return <div className={`route-progress is-${phase}`} aria-hidden="true" />;
 }
