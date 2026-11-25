@@ -159,7 +159,7 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
       {partialWarning ? (
         <p className="account-error" role="status">Cảnh báo: thông báo chương có thể chưa đầy đủ do giới hạn nhà cung cấp.</p>
       ) : null}
-      {!compact ? <p className="notification-summary" role="status">{unread > 0 ? `${unread} thông báo chưa đọc.` : "Tất cả đã đọc."}</p> : null}
+      {!compact && !inbox.loading ? <p className="notification-summary" role="status">{unread > 0 ? `${unread} thông báo chưa đọc.` : "Tất cả đã đọc."}</p> : null}
       {inbox.loading && !inbox.error ? (
         <LineSkeleton lines={3} label="Đang tải thông báo" />
       ) : (
@@ -185,9 +185,13 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
             <p className="auth-kicker">KasLyyDex / Inbox</p>
             <h1>Thông báo</h1>
           </div>
-          <p className="notification-count" role="status" aria-atomic="true">
-            {unread > 0 ? `${unread} thông báo chưa đọc` : "Tất cả đã đọc"}
-          </p>
+          {inbox.loading ? (
+            <span className="notification-count-skel skel-bar" role="status" aria-label="Đang tải thông báo" />
+          ) : (
+            <p className="notification-count" role="status" aria-atomic="true">
+              {unread > 0 ? `${unread} thông báo chưa đọc` : "Tất cả đã đọc"}
+            </p>
+          )}
         </header>
         {body}
       </section>
@@ -206,14 +210,20 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
         <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
         </svg>
-        {unread > 0 ? <span className="notification-badge" aria-hidden="true">{unread > 9 ? "9+" : unread}</span> : null}
-        <span className="sr-only" role="status" aria-atomic="true">{unread > 0 ? `${unread} thông báo chưa đọc` : "Không có thông báo chưa đọc"}</span>
+        {!inbox.loading && unread > 0 ? <span className="notification-badge" aria-hidden="true">{unread > 9 ? "9+" : unread}</span> : null}
+        {!inbox.loading ? (
+          <span className="sr-only" role="status" aria-atomic="true">{unread > 0 ? `${unread} thông báo chưa đọc` : "Không có thông báo chưa đọc"}</span>
+        ) : null}
       </button>
       {open ? (
         <div className="notification-panel surface" role="dialog" aria-label="Trung tâm thông báo">
           <header className="notification-panel-head">
             <h2>Thông báo</h2>
-            <span role="status" aria-atomic="true">{unread > 0 ? `${unread} chưa đọc` : "Đã đọc hết"}</span>
+            {inbox.loading ? (
+              <span className="notification-count-skel skel-bar" role="status" aria-label="Đang tải thông báo" />
+            ) : (
+              <span role="status" aria-atomic="true">{unread > 0 ? `${unread} chưa đọc` : "Đã đọc hết"}</span>
+            )}
           </header>
           {body}
         </div>
