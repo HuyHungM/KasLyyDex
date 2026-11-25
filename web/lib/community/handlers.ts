@@ -25,6 +25,7 @@ import {
 } from "../validators";
 import { errorToResponse, privateJson } from "../me/handlers";
 import { ensureProfile, ServiceError } from "../me/service";
+import { getPublicProfile } from "../public-profile/service";
 import {
   createComment,
   createReport,
@@ -102,6 +103,12 @@ export function createCommunityApi(deps: CommunityDeps) {
         parseLimit(query.get("limit")), user?.id ?? null,
       );
       return privateJson(result);
+    }, { optional: true }),
+
+    usersGet: (request: Request, params: { userId: string }) => withUser(request, async (user) => {
+      const userId = parseResourceId(params.userId, "userId");
+      const profile = await getPublicProfile(db(), user?.id ?? null, userId, await deps.content());
+      return privateJson(profile);
     }, { optional: true }),
 
     commentPost: (request: Request) => withUser(request, async (user) => {

@@ -1,7 +1,13 @@
 import { and, count, desc, eq } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import * as tables from "../db/schema";
-import type { ContentClient, LibraryEntryDto, PublicProfileDto, PublicProfileEntryDto } from "../contracts";
+import type {
+  ContentClient,
+  LibraryEntryDto,
+  MangaSummaryDto,
+  PublicProfileDto,
+  PublicProfileEntryDto,
+} from "../contracts";
 import { ServiceError } from "../me/service";
 import { levelFromXp, realmForLevel } from "../progression";
 
@@ -21,6 +27,10 @@ function libraryDto(row: typeof tables.libraryEntries.$inferSelect): LibraryEntr
   };
 }
 
+function targetKey(row: CommentRow) {
+  return `${row.targetType}:${row.targetId}`;
+}
+
 function entryFrom(row: CommentRow): PublicProfileEntryDto {
   return {
     targetType: row.targetType as "manga" | "chapter",
@@ -37,7 +47,7 @@ function entryFrom(row: CommentRow): PublicProfileEntryDto {
 function latestByTarget(rows: CommentRow[]): Map<string, CommentRow> {
   const groups = new Map<string, CommentRow>();
   for (const row of rows) {
-    const key = `${row.targetType}:${row.targetId}`;
+    const key = targetKey(row);
     if (!groups.has(key)) groups.set(key, row);
   }
   return groups;
@@ -47,7 +57,7 @@ export async function getPublicProfile(
   db: AppDatabase,
   viewerId: string | null,
   userId: string,
-  _content: ContentClient,
+  content: ContentClient,
 ): Promise<PublicProfileDto> {
   const [profile] = await db.select().from(tables.profiles)
     .where(eq(tables.profiles.userId, userId))
@@ -69,17 +79,87 @@ export async function getPublicProfile(
   const roots = latestByTarget(visible.filter((row) => row.parentId === null));
   const replies = latestByTarget(visible.filter((row) => row.parentId !== null));
 
-  const saved = viewerId === userId
-    ? (await db.select().from(tables.libraryEntries)
+  const savedRows = viewerId === userId
+    ? await db.select().from(tables.libraryEntries)
       .where(eq(tables.libraryEntries.userId, userId))
       .orderBy(desc(tables.libraryEntries.followedAt))
-      .limit(24)).map(libraryDto)
-    : null;
+      .limit(24)
+    : [];
+  const saved = viewerId === userId ? savedRows.map(libraryDto) : null;
+  const libraryTitles = new Map(savedRows.map((row) => [row.mangaId, row]));
 
-  const level = levelFromXp(profile.totalXp);
   const postedAll = Array.from(roots.values());
   const participatingAll = Array.from(replies.values());
+  const recentRows = visible.slice(0, 5);
+  const entries = new Map<string, PublicProfileEntryDto>();
+  const entryFor = (row: CommentRow, section: string) => {
+    const key = `${section}:${targetKey(row)}`;
+    let entry = entries.get(key);
+    if (!entry) {
+      entry = entryFrom(row);
+      entries.set(key, entry);
+    }
+    return entry;
+  };
+  const posted = postedAll.slice(0, 20).map((row) => entryFor(row, "posted"));
+  const participating = participatingAll.slice(0, 20).map((row) => entryFor(row, "participating"));
+  const recent = recentRows.map((row, index) => entryFor(row, `recent:${index}`));
 
+  let contentCalls = 0;
+  const mangaCache = new Map<string, MangaSummaryDto | null>();
+  const tagCounts = new Map<string, number>();
+  const taggedManga = new Set<string>();
+  const loadManga = async (mangaId: string): Promise<MangaSummaryDto | null> => {
+    if (mangaCache.has(mangaId)) return mangaCache.get(mangaId) ?? null;
+    if (contentCalls >= 12) return null;
+    contentCalls += 1;
+    try {
+      const manga = await content.manga(mangaId);
+      mangaCache.set(mangaId, manga);
+      return manga;
+    } catch {
+      mangaCache.set(mangaId, null);
+      return null;
+    }
+  };
+  const applyManga = (entry: PublicProfileEntryDto, manga: MangaSummaryDto | null) => {
+    const known = libraryTitles.get(entry.mangaId ?? "");
+    if (manga) {
+      entry.title = manga.title;
+      entry.coverFile = manga.cover_file;
+      if (!taggedManga.has(manga.id)) {
+        taggedManga.add(manga.id);
+        for (const tag of manga.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+      }
+    } else if (known) {
+      entry.title = known.title;
+      entry.coverFile = known.coverFile;
+    }
+  };
+
+  for (const entry of entries.values()) {
+    if (entry.targetType === "manga") {
+      applyManga(entry, await loadManga(entry.targetId));
+      continue;
+    }
+    if (contentCalls >= 12) continue;
+    contentCalls += 1;
+    try {
+      const metadata = await content.chapterMetadata(entry.targetId);
+      entry.mangaId = metadata.manga_id;
+      entry.chapterLabel = metadata.chapter ? `Chương ${metadata.chapter}` : null;
+      applyManga(entry, await loadManga(metadata.manga_id));
+    } catch {
+      // Keep the fallback title and a working link to the chapter.
+    }
+  }
+
+  const topTags = Array.from(tagCounts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 3)
+    .map(([tag]) => tag);
+
+  const level = levelFromXp(profile.totalXp);
   return {
     id: profile.userId,
     username: profile.username,
@@ -98,10 +178,10 @@ export async function getPublicProfile(
       participating: replies.size,
       saved: savedTotalRow?.value ?? 0,
     },
-    topTags: [],
-    posted: postedAll.slice(0, 20).map(entryFrom),
-    participating: participatingAll.slice(0, 20).map(entryFrom),
-    recent: visible.slice(0, 5).map(entryFrom),
+    topTags,
+    posted,
+    participating,
+    recent,
     saved,
     savedTotal: savedTotalRow?.value ?? 0,
     truncated: {

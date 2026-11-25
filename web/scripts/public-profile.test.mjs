@@ -8,6 +8,7 @@ import { drizzle } from "drizzle-orm/d1";
 const publicProfile = await import("../lib/public-profile/service.ts");
 const schema = await import("../lib/db/schema.ts");
 const { ServiceError } = await import("../lib/me/service.ts");
+const { createCommunityApi } = await import("../lib/community/handlers.ts");
 
 const DAY = 86_400_000;
 const OWNER = "opaque|owner";
@@ -65,11 +66,11 @@ after(async () => {
   await pg?.close();
 });
 
-function comment(id, targetId, at, body, status = "visible", parentId = null) {
+function comment(id, targetId, at, body, status = "visible", parentId = null, targetType = "manga") {
   return {
     id,
     userId: OWNER,
-    targetType: "manga",
+    targetType,
     targetId,
     parentId,
     body,
@@ -112,4 +113,65 @@ test("saved library is owner-only and unknown users return 404", async () => {
     () => publicProfile.getPublicProfile(db, null, "opaque|missing", brokenContent),
     (error) => error instanceof ServiceError && error.status === 404 && error.code === "USER_NOT_FOUND",
   );
+});
+
+const richContent = {
+  manga: async (id) => ({
+    id,
+    title: `Manga ${id}`,
+    cover_file: "cover.jpg",
+    tags: id === "m1" ? ["Action", "Isekai"] : ["Action"],
+  }),
+  chapterMetadata: async (id) => ({
+    id,
+    manga_id: "m1",
+    lang: "vi",
+    pages: 10,
+    external_url: null,
+    unavailable: false,
+    chapter: "7",
+    title: "Chapter 7",
+  }),
+};
+
+function api(user) {
+  return createCommunityApi({
+    db: () => db,
+    identity: async () => user,
+    now: () => now,
+    allowlist: [],
+    content: async () => richContent,
+  });
+}
+
+function request(path) {
+  return new Request(`http://localhost${path}`);
+}
+
+test("profile enriches titles, tags and falls back when content fails", async () => {
+  await db.insert(schema.comments).values(comment("chapter-root", "c1", now - 300, "chapter root", "visible", null, "chapter"));
+
+  const payload = await publicProfile.getPublicProfile(db, null, OWNER, richContent);
+  const chapterEntry = payload.posted.find((entry) => entry.targetType === "chapter");
+  assert.equal(chapterEntry.mangaId, "m1");
+  assert.equal(chapterEntry.chapterLabel, "Chương 7");
+  assert.equal(chapterEntry.title, "Manga m1");
+  assert.equal(payload.posted.find((entry) => entry.targetId === "m1").coverFile, "cover.jpg");
+  assert.equal(payload.topTags[0], "Action");
+
+  const fallback = await publicProfile.getPublicProfile(db, null, OWNER, brokenContent);
+  assert.equal(fallback.posted.find((entry) => entry.targetId === "m1").title, "Truyện");
+  assert.equal(fallback.posted.find((entry) => entry.targetId === "c1").targetId, "c1");
+});
+
+test("usersGet returns owner saved entries and guest null", async () => {
+  const ownerRes = await api({ id: OWNER }).usersGet(request(`/api/v1/users/${OWNER}`), { userId: OWNER });
+  assert.equal(ownerRes.status, 200);
+  const ownerPayload = await ownerRes.json();
+  assert.equal(ownerPayload.saved[0].mangaId, "m1");
+
+  const guestRes = await api(null).usersGet(request(`/api/v1/users/${OWNER}`), { userId: OWNER });
+  assert.equal(guestRes.status, 200);
+  const guestPayload = await guestRes.json();
+  assert.equal(guestPayload.saved, null);
 });
