@@ -54,21 +54,30 @@ export default function RouteProgress() {
   useEffect(() => {
     let observer: ResizeObserver | null = null;
     let observed: Element | null = null;
+    let frame = 0;
+    const deadline = performance.now() + 2000;
     const update = () => {
-      const bar = document.querySelector(".site-header") ?? document.querySelector(".reader-bar");
-      if (!bar) return;
+      const bar = pathname.startsWith("/read/")
+        ? document.querySelector(".reader-bar")
+        : document.querySelector(".site-header") ?? document.querySelector(".reader-bar");
+      if (!bar) return false;
       document.documentElement.style.setProperty("--route-progress-top", `${Math.round(bar.getBoundingClientRect().bottom)}px`);
-      if (bar && bar !== observed) {
+      if (bar !== observed) {
         observer?.disconnect();
         observer = new ResizeObserver(update);
         observer.observe(bar);
         observed = bar;
       }
+      return true;
     };
-    const mutations = new MutationObserver(update);
+    const tick = () => {
+      if (update() || performance.now() > deadline) return;
+      frame = requestAnimationFrame(tick);
+    };
+    const mutations = new MutationObserver(tick);
     mutations.observe(document.body, { childList: true, subtree: true });
-    update();
-    return () => { observer?.disconnect(); mutations.disconnect(); };
+    tick();
+    return () => { cancelAnimationFrame(frame); observer?.disconnect(); mutations.disconnect(); };
   }, [pathname]);
 
   return <div className={`route-progress is-${phase}`} aria-hidden="true" />;

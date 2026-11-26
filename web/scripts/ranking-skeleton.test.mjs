@@ -10,7 +10,7 @@ const TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const CHAPTER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 const manga = (index) => ({
-  id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`,
+  id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(24, "0")}`,
   title: `Fixture ${index}`,
   cover_file: "cover.jpg",
   status: "ongoing",
@@ -26,7 +26,7 @@ const manga = (index) => ({
   source: "mangadex",
   source_label: "MangaDex",
 });
-const books = Array.from({ length: 12 }, (_, index) => manga(index + 1));
+const books = Array.from({ length: 24 }, (_, index) => manga(index + 1));
 const chapter = {
   id: CHAPTER_ID, chapter: "1", volume: null, title: "Chương 1", lang: "vi", pages: 1,
   external_url: null, publish_at: "2026-11-21T00:00:00Z", group: "Fixture", source: "mangadex", source_label: "MangaDex",
@@ -67,7 +67,7 @@ after(async () => {
 });
 
 async function openPage(options = {}) {
-  const context = await browser.newContext({ viewport: { width: 375, height: 812 }, ...options });
+  const context = await browser.newContext({ viewport: { width: 375, height: 824 }, ...options });
   return { context, page: await context.newPage() };
 }
 
@@ -84,7 +84,7 @@ async function assertNoOverflow(page, label) {
 const SKELETON = ".rank-list .rank-row.skel";
 const REAL = ".rank-list .rank-row:not(.skel)";
 
-test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows", async () => {
+test("route loading shell shows intro, tabs and 24 shape-matched skeleton rows", async () => {
   contentDelay = 1500;
   const { context, page } = await openPage();
   await page.goto(`${app.baseUrl}/bxh?kind=follows`, { waitUntil: "commit" });
@@ -92,7 +92,7 @@ test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows",
 
   assert.match(await page.locator(".page-intro h1").first().textContent(), /Bảng xếp hạng/);
   assert.equal(await page.locator(".rank-tabs a").count(), 3, "loading shell needs the three tabs");
-  assert.equal(await page.locator(".rank-list > li").count(), 12, "loading shell needs 12 skeleton rows");
+  assert.equal(await page.locator(".rank-list > li").count(), 24, "loading shell needs 24 skeleton rows");
 
   const status = await page.locator(".rank-list").first().evaluate((el) => ({
     role: el.getAttribute("role"), label: el.getAttribute("aria-label"),
@@ -115,7 +115,7 @@ test("route loading shell shows intro, tabs and 12 shape-matched skeleton rows",
 
   contentDelay = 0;
   await page.locator(`${REAL}`).first().waitFor();
-  assert.equal(await page.locator(REAL).count(), 12, "ranking needs 12 real rows");
+  assert.equal(await page.locator(REAL).count(), 24, "ranking needs 24 real rows");
 
   const realFrames = await page.locator(REAL).evaluateAll((rows) => rows.slice(0, 4).map((row) => row.className));
   for (const rank of [1, 2, 3]) {
@@ -152,11 +152,11 @@ test("changing kind shows the skeleton again before the new data", async () => {
   contentDelay = 1500;
   await page.locator('.rank-tabs a[href="/bxh?kind=rating"]').click();
   await page.locator(SKELETON).first().waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator(".rank-list > li").count(), 12, "kind switch must re-show 12 skeleton rows");
+  assert.equal(await page.locator(".rank-list > li").count(), 24, "kind switch must re-show 24 skeleton rows");
 
   contentDelay = 0;
   await page.locator(REAL).first().waitFor();
-  assert.equal(await page.locator(REAL).count(), 12);
+  assert.equal(await page.locator(REAL).count(), 24);
   await context.close();
 });
 

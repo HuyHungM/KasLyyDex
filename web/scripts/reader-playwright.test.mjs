@@ -302,11 +302,13 @@ test("theme choice survives a reload in localStorage", async () => {
 test("leaving a chapter shows a route progress bar", async () => {
   const { context, page } = await openPage({ width: 1280, height: 800 });
   await page.goto(`${baseUrl}/read/${CHAPTER_IDS[0]}?manga=${MANGA_ID}&lang=vi`, { waitUntil: "networkidle" });
+  await page.locator(".reader-bar").waitFor();
+  await page.locator(".site-header").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
   assert.equal(await page.locator(".route-progress").count(), 1, "one persistent progress bar across routes");
   const position = await page.evaluate(() => {
     const bar = document.querySelector(".reader-bar");
     const progress = document.querySelector(".route-progress");
-    return { barHeight: bar.getBoundingClientRect().height, top: progress.getBoundingClientRect().top };
+    return { barHeight: bar.getBoundingClientRect().height, top: progress.getBoundingClientRect().top, header: document.querySelectorAll(".site-header").length, cssVar: getComputedStyle(document.documentElement).getPropertyValue("--route-progress-top") };
   });
   assert.ok(Math.abs(position.top - position.barHeight) <= 2, `progress must sit under the reader toolbar: ${JSON.stringify(position)}`);
   await page.locator(".reader-bar .back-link").click();

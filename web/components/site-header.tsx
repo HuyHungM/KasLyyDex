@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import ThemeToggle from "@/components/theme-toggle";
-import { NavIcon } from "@/components/site-shell";
+import { NavIcon } from "@/components/nav-icon";
 import NotificationCenter from "@/components/notifications/NotificationCenter";
 
 export default function SiteHeader() {

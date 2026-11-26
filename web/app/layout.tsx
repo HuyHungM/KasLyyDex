@@ -4,6 +4,7 @@ import { Be_Vietnam_Pro, Bricolage_Grotesque } from "next/font/google";
 import "./globals.css";
 import AuthCallback from "@/components/auth-callback";
 import SiteShell from "@/components/site-shell";
+import SiteShellFrame from "@/components/site-shell-frame";
 
 const beVietnam = Be_Vietnam_Pro({
   variable: "--font-be-vietnam",
@@ -31,7 +32,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="vi" className={`${beVietnam.variable} ${bricolage.variable}`}>
       <body>
         <AuthCallback />
-        <Suspense fallback={<div className="site-shell">{children}</div>}>
+        <Suspense fallback={<SiteShellFrame>{children}</SiteShellFrame>}>
           <SiteShell>{children}</SiteShell>
         </Suspense>
       </body>

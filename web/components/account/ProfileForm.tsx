@@ -69,7 +69,7 @@ export default function ProfileForm() {
   );
 
   if (session.status !== "authenticated") return null;
-  if (remote.loading && !remote.data) return <FormSkeleton label="Đang tải hồ sơ" fields={3} />;
+  if (remote.loading && !remote.data) return <FormSkeleton label="Đang tải hồ sơ" fields={4} />;
   if (remote.error || !remote.data) {
     return (
       <div className="surface account-card" role="alert">

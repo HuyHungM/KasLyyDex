@@ -6,6 +6,7 @@ import { statusText } from "@/lib/format";
 import { GridSkeleton, MangaGrid } from "@/components/manga-card";
 import GenreGroups from "@/components/search/GenreGroups";
 import GenreGroupsSkeleton from "@/components/search/GenreGroupsSkeleton";
+import { SearchFiltersSkeleton } from "@/components/loaders";
 import Select from "@/components/ui/Select";
 
 type Query = {
@@ -187,15 +188,7 @@ async function SearchContent({ searchParams }: Props) {
       <div className="page-intro">
         <div><h1>Khám phá truyện</h1><p>Lọc theo thể loại, trạng thái hoặc cách sắp xếp.</p></div>
       </div>
-      <Suspense fallback={
-        <div className="surface search-filters" role="status" aria-label="Đang tải bộ lọc">
-          <div className="skel-line w60" aria-hidden="true" />
-          <fieldset className="filter-tags">
-            <legend>Thể loại</legend>
-            <GenreGroupsSkeleton />
-          </fieldset>
-        </div>
-      }>
+      <Suspense fallback={<SearchFiltersSkeleton />}>
         <Filters current={current} />
       </Suspense>
       <Suspense fallback={<GridSkeleton />}>

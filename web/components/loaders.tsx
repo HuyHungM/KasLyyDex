@@ -1,3 +1,5 @@
+import GenreGroupsSkeleton from "@/components/search/GenreGroupsSkeleton";
+
 export function LineSkeleton({ lines = 3, label = "Đang tải dữ liệu" }: { lines?: number; label?: string }) {
   return (
     <div className="load-skeleton" role="status" aria-label={label} aria-busy="true">
@@ -44,7 +46,7 @@ export function ShelfSkeleton({ label = "Đang tải truyện", count = 4 }: { l
             <span className="skel-cover" />
             <span className="load-copy"><span className="skel-bar" /><span className="skel-bar load-sub" /></span>
           </div>
-          <span className="skel-bar load-submit" />
+          <div className="actions"><span className="skel-bar load-submit" /></div>
         </div>
       ))}
     </div>
@@ -65,6 +67,48 @@ export function ReaderPageSkeleton() {
   return (
     <div className="reader-skel" role="status" aria-label="Đang mở trang truyện" aria-busy="true">
       <div aria-hidden="true" />
+    </div>
+  );
+}
+
+export function ReaderChromeSkeleton() {
+  return (
+    <div className="reader" aria-busy="true">
+      <div className="reader-bar" aria-hidden="true">
+        <span className="skel-bar load-back" />
+        <span className="skel-bar load-title" />
+        <span className="skel-bar load-pill" />
+      </div>
+      <main className="reader-main">
+        <ReaderPageSkeleton />
+      </main>
+      <nav className="reader-bottom" aria-label="Đang tải điều hướng chương" aria-busy="true">
+        <div className="reader-nav" aria-hidden="true">
+          <span className="skel-bar load-pill" />
+          <span className="skel-bar load-label" />
+          <span className="skel-bar load-pill" />
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+export function PageSkeleton() {
+  return (
+    <div className="page-skeleton" role="status" aria-label="Đang tải trang" aria-busy="true">
+      <div className="page-intro" aria-hidden="true">
+        <span className="skel-bar load-title" />
+        <span className="skel-bar load-sub" />
+      </div>
+      <div className="manga-grid" aria-hidden="true">
+        {Array.from({ length: 6 }, (_, index) => (
+          <div className="card skel-card skel" key={index}>
+            <span className="card-cover skel-cover" />
+            <span className="card-title skel-bar" />
+            <span className="card-year skel-bar" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -97,8 +141,11 @@ export function ProfileHeaderSkeleton() {
       <div className="profile-identity" aria-hidden="true">
         <span className="skel-bar load-title" />
         <span className="skel-bar load-sub" />
-        <span className="skel-bar load-pill" />
-        <span className="skel-bar load-sub" />
+        <span className="cultivation-badge skel" aria-hidden="true">
+          <span className="skel-bar load-realm" />
+          <span className="skel-bar load-pill" />
+          <span className="skel-bar load-xp" />
+        </span>
         <span className="skel-bar load-sub" />
       </div>
     </section>
@@ -141,6 +188,7 @@ export function ProfileRecentSkeleton() {
         <div className="profile-recent-row skel" key={index} aria-hidden="true">
           <span className="skel-bar load-sub" />
           <span className="skel-bar load-label" />
+          <span className="skel-bar" />
         </div>
       ))}
     </div>
@@ -174,6 +222,84 @@ export function PublicProfileSkeleton() {
         <div className="profile-section-head"><span className="skel-bar load-title" /></div>
         <ShelfSkeleton count={3} />
       </section>
+    </div>
+  );
+}
+
+export function HistorySkeleton({ label = "Đang tải lịch sử", rows = 3 }: { label?: string; rows?: number }) {
+  return (
+    <div className="history-list" role="status" aria-label={label} aria-busy="true">
+      {Array.from({ length: rows }, (_, index) => (
+        <div className="history-row skel" key={index} aria-hidden="true">
+          <span><span className="skel-bar load-title" /><span className="skel-bar load-sub" /></span>
+          <span className="skel-bar load-progress" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ModerationSkeleton({ label = "Đang tải hàng đợi", rows = 3 }: { label?: string; rows?: number }) {
+  return (
+    <section className="surface account-card moderation-card" role="status" aria-label={label} aria-busy="true">
+      <span className="skel-bar load-heading" aria-hidden="true" />
+      <span className="skel-bar load-sub" aria-hidden="true" />
+      <div className="moderation-list" aria-hidden="true">
+        {Array.from({ length: rows }, (_, index) => (
+          <div className="moderation-row skel" key={index}>
+            <div><span className="skel-bar load-title" /><span className="skel-bar" /><span className="skel-bar load-sub" /></div>
+            <div className="comment-actions" aria-hidden="true">
+              <span className="skel-bar load-pill" /><span className="skel-bar load-pill" />
+              <span className="skel-bar load-pill" /><span className="skel-bar load-pill" /><span className="skel-bar load-pill" />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="account-form" aria-hidden="true">
+        {Array.from({ length: 3 }, (_, index) => (
+          <span className="auth-field" key={index}>
+            <span className="skel-bar load-label" />
+            <span className="skel-bar load-input" />
+          </span>
+        ))}
+        <span className="skel-bar load-submit" />
+      </div>
+    </section>
+  );
+}
+
+export function CompactNotificationSkeleton({ label = "Đang tải thông báo", rows = 3 }: { label?: string; rows?: number }) {
+  return (
+    <div className="notification-list" role="status" aria-label={label} aria-busy="true">
+      {Array.from({ length: rows }, (_, index) => (
+        <article className="notification-item skel" key={index} aria-hidden="true">
+          <span className="notification-icon skel-bar" />
+          <div className="notification-copy">
+            <span className="skel-bar load-title" />
+            <span className="skel-bar" />
+            <span className="skel-bar load-sub" />
+          </div>
+          <div className="notification-actions"><span className="skel-bar load-pill" /></div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+export function SearchFiltersSkeleton({ label = "Đang tải bộ lọc" }: { label?: string }) {
+  return (
+    <div className="surface search-filters" role="status" aria-label={label} aria-busy="true">
+      <span className="skel-bar search-filter-summary" aria-hidden="true" />
+      <div className="search-filter-form" aria-hidden="true">
+        <div className="filter-fields">
+          {Array.from({ length: 5 }, (_, index) => <span className="skel-bar load-input" key={index} />)}
+        </div>
+        <fieldset className="filter-tags">
+          <legend className="skel-bar load-label" />
+          <GenreGroupsSkeleton />
+        </fieldset>
+        <div className="actions"><span className="skel-bar load-submit" /></div>
+      </div>
     </div>
   );
 }

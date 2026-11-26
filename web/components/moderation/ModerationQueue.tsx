@@ -4,7 +4,7 @@ import { useState } from "react";
 import Select from "@/components/ui/Select";
 import type { ReportDto, ReportListDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
-import { FormSkeleton } from "@/components/loaders";
+import { ModerationSkeleton } from "@/components/loaders";
 
 export default function ModerationQueue() {
   const { session } = useAccountSession();
@@ -43,7 +43,7 @@ export default function ModerationQueue() {
   if (!signedIn) {
     return <section className="surface account-card"><h1>Kiểm duyệt</h1><p className="account-hint">Cần đăng nhập để truy cập hàng đợi kiểm duyệt.</p></section>;
   }
-  if (queue.loading && !queue.data) return <FormSkeleton label="Đang tải hàng đợi" fields={4} />;
+  if (queue.loading && !queue.data) return <ModerationSkeleton label="Đang tải hàng đợi" rows={4} />;
   if (queue.error) {
     return (
       <section className="surface account-card" role="alert">

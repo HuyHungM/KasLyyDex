@@ -157,7 +157,8 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
   contentDelay = 1200;
   await page.goto(`${app.baseUrl}/search?q=Fixture`, { waitUntil: "commit" });
   await page.locator(".skel-card:visible").first().waitFor();
-  await assertStatus(page.locator(".manga-grid:has(.skel-card):visible"));
+  await page.locator('.manga-grid[role=status]').first().waitFor({ state: "visible", timeout: 10000 });
+  await assertStatus(page.locator('.manga-grid[role=status][aria-label="Đang tải truyện"]:visible').first());
   assert.ok(await page.locator(".skel-card:visible").count() >= 4, "search needs card skeletons");
   await assertNoOverflow(page, "375px search skeleton");
   contentDelay = 0;

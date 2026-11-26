@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { NotificationDto, NotificationListDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
 import { refreshChapterNotifications } from "@/lib/community/client";
-import { LineSkeleton } from "@/components/loaders";
+import { CompactNotificationSkeleton } from "@/components/loaders";
 
 type Props = { compact?: boolean; autoRefresh?: boolean };
 
@@ -211,7 +211,7 @@ export default function NotificationCenter({ compact = false, autoRefresh = fals
       ) : null}
       {!compact && !inbox.loading ? <p className="notification-summary" role="status">{unread > 0 ? `${unread} thông báo chưa đọc.` : "Tất cả đã đọc."}</p> : null}
       {inbox.loading && !inbox.error ? (
-        <LineSkeleton lines={3} label="Đang tải thông báo" />
+        <CompactNotificationSkeleton label="Đang tải thông báo" rows={3} />
       ) : (
         <>
           {rows(items)}

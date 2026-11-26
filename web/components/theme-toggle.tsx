@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getTheme, saveTheme, type Theme } from "@/lib/guest";
-import { NavIcon } from "@/components/site-shell";
+import { NavIcon } from "@/components/nav-icon";
 
 const ORDER: readonly Theme[] = ["light", "dark", "black"];
 const LABELS: Record<Theme, string> = { light: "sáng", dark: "tối", black: "đen" };

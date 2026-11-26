@@ -157,14 +157,14 @@ test("advanced search has no horizontal overflow at 375px", async () => {
   await context.close();
 });
 
-test("genre fallback reserves four groups with at least eight pills each on first render", async () => {
+test("genre fallback reserves a group with at least eight pills on first render", async () => {
   tagsDelay = 2_000;
   const { context, page } = await openPage();
   try {
     await page.goto(`${app.baseUrl}/search`, { waitUntil: "commit" });
     const groups = page.locator(".search-filters .genre-group.skel");
     await groups.first().waitFor({ state: "attached" });
-    assert.equal(await groups.count(), 4, "genre fallback needs four groups");
+    assert.equal(await groups.count(), 1, "genre fallback needs one shared group");
     const pillCounts = await groups.evaluateAll((sections) => sections.map(
       (section) => section.querySelectorAll(".skel-pill").length,
     ));

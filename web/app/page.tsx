@@ -19,7 +19,7 @@ async function withContent<T>(load: (client: Awaited<ReturnType<typeof serverCon
 
 function HeroSkeleton() {
   return (
-    <div className="feature skel-hero skel" role="status" aria-label="Đang tải truyện nổi bật">
+    <div className="feature skel-hero feature-slider skel" role="status" aria-label="Đang tải truyện nổi bật">
       <div className="feature-art" aria-hidden="true">
         <span className="feature-bleed skel-bar" />
         <span className="feature-poster skel-bar" />
@@ -33,7 +33,7 @@ function HeroSkeleton() {
       </div>
       <div className="feature-slider-controls" aria-hidden="true">
         <span className="feature-dots">
-          {Array.from({ length: 5 }, (_, index) => <span className="skel-bar" key={index} />)}
+          {Array.from({ length: 10 }, (_, index) => <span className="skel-bar" key={index} />)}
         </span>
       </div>
     </div>
@@ -48,7 +48,6 @@ function FeedSkeleton() {
           <span className="feed-cover" />
           <div className="feed-details">
             <span className="skel-line title" />
-            <span className="skel-line short" />
             <div className="chapter-pills"><span className="skel-pill" /><span className="skel-pill" /></div>
           </div>
         </article>

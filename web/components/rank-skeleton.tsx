@@ -1,7 +1,7 @@
 export function RankListSkeleton() {
   return (
     <ol className="rank-list rank-podium" role="status" aria-label="Đang tải xếp hạng">
-      {Array.from({ length: 12 }, (_, index) => {
+      {Array.from({ length: 24 }, (_, index) => {
         const rank = index + 1;
         const podium = rank <= 3;
         const frame = podium ? `podium-card rank-top rank-${rank}` : "";

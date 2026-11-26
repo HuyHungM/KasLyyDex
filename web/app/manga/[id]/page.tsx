@@ -105,14 +105,19 @@ export default function MangaPage({ params }: Props) {
     <Suspense
       fallback={
         <main className="wrap">
+          <span className="back-link skel-bar load-back" aria-hidden="true" />
           <section className="surface manga-head skel" role="status" aria-label="Đang tải truyện">
             <div className="skel-cover big" aria-hidden="true" />
             <div className="skel-info" aria-hidden="true">
               <div className="skel-line w60" /><div className="skel-line w30" /><div className="skel-line w90" />
+              <div className="skel-line w90" /><div className="skel-line w60" />
+              <div className="tags"><span className="skel-pill" /><span className="skel-pill" /><span className="skel-pill" /></div>
+              <div className="actions"><span className="skel-bar load-submit" /></div>
             </div>
           </section>
           <section className="surface chapters-panel" role="status" aria-label="Đang tải danh sách chapter">
             <div className="section-title"><h2>Danh sách chapter</h2></div>
+            <div className="lang-tabs" aria-hidden="true"><span className="skel-bar load-pill" /><span className="skel-bar load-pill" /></div>
             <ul className="chapter-list">
               {Array.from({ length: 4 }, (_, index) => (
                 <li key={index}>
