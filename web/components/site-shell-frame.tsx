@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import SiteHeader from "@/components/site-header";
+import RouteProgress from "@/components/route-progress";
 import { NavIcon } from "@/components/nav-icon";
 
 const LINKS = [
@@ -32,7 +33,11 @@ export default function SiteShellFrame({ children, pathname = "" }: { children: 
   const reading = pathname.startsWith("/read/");
   return (
     <div className={`site-shell${reading ? " reading" : ""}`}>
-      <div className="route-progress is-idle" aria-hidden="true" />
+      {!reading ? (
+        <Suspense fallback={<div className="route-progress is-idle" aria-hidden="true" />}>
+          <RouteProgress />
+        </Suspense>
+      ) : null}
       {!reading ? (
         <aside className="site-rail">
           <Link href="/" className="logo" aria-label="KasLyyDex — trang chủ">

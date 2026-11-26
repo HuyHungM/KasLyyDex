@@ -40,27 +40,19 @@ const report = {
   },
 };
 
-const progressItems = Array.from({ length: 4 }, (_, index) => ({
-  ...progressItem,
-  chapterId: `c${index}`,
-  mangaId: `m${index}`,
-}));
+const progressItems = [progressItem];
 
-const reports = Array.from({ length: 4 }, (_, index) => ({
-  ...report,
-  id: `r${index}`,
-  commentId: `c${index}`,
-}));
+const reports = [report];
 
-const notifications = Array.from({ length: 3 }, (_, index) => ({
-  id: `n${index}`,
+const notifications = [{
+  id: "n1",
   type: "chapter",
-  title: `Chương mới ${index}`,
+  title: "Chương mới",
   body: "Có chương mới",
   href: "/manga/m1",
   readAt: null,
   createdAt: Date.now(),
-}));
+}];
 
 const bodies = {
   "**/api/v1/me": { profile, settings: { mode: "vertical", fit: true, bg: "auto", speed: 3 } },
