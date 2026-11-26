@@ -319,7 +319,7 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .rank-panel-heading .auth-kicker { margin: 0 0 4px; }
 .rank-panel-heading h2 { font-size: 1.2rem; }
 .rank-panel-heading .text-link { min-height: 36px; }
-.rank-tabs { display: grid; gap: 0; padding: 8px 0 12px; border: 0; }
+.home-side .rank-tabs { display: grid; gap: 0; padding: 8px 0 12px; border: 0; }
 .rank-tabs .rank-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; margin: 0 12px 12px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
 .rank-tabs .rank-switch button { min-height: 36px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: .74rem; font-weight: 700; transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
 .rank-tabs .rank-switch button:hover { color: var(--text); }

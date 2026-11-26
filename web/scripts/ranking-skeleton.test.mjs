@@ -86,12 +86,17 @@ const REAL = ".rank-list .rank-row:not(.skel)";
 
 test("route loading shell shows intro, tabs and 24 shape-matched skeleton rows", async () => {
   contentDelay = 1500;
-  const { context, page } = await openPage();
+  const { context, page } = await openPage({ width: 1280, height: 900 });
   await page.goto(`${app.baseUrl}/bxh?kind=follows`, { waitUntil: "commit" });
   await page.locator(SKELETON).first().waitFor();
 
   assert.match(await page.locator(".page-intro h1").first().textContent(), /Bảng xếp hạng/);
   assert.equal(await page.locator(".rank-tabs a").count(), 3, "loading shell needs the three tabs");
+  const tabLayout = await page.locator(".rank-tabs").first().evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { display: style.display, wrap: style.flexWrap };
+  });
+  assert.deepEqual(tabLayout, { display: "flex", wrap: "nowrap" }, "ranking tabs must stay in one horizontal row");
   assert.equal(await page.locator(".rank-list > li").count(), 24, "loading shell needs 24 skeleton rows");
 
   const status = await page.locator(".rank-list").first().evaluate((el) => ({
