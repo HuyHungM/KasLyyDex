@@ -276,7 +276,11 @@ impl Md {
         self.chapters
             .try_get_with(id.clone(), async move {
                 let (vi, en) = futures::join!(md.feed(&id, "vi"), md.feed(&id, "en"));
-                Ok(Arc::new(ChaptersResponse { vi: vi?, en: en?, notice: None }))
+                Ok(Arc::new(ChaptersResponse {
+                    vi: vi?,
+                    en: en?,
+                    notice: None,
+                }))
             })
             .await
             .map_err(|e: Arc<Err>| (*e).clone())
