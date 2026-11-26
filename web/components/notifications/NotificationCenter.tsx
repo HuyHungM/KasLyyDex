@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { NotificationDto, NotificationListDto } from "@/lib/contracts";
 import { accountMutate, useAccountSession, useRemoteResource } from "@/lib/account/client";
 import { refreshChapterNotifications } from "@/lib/community/client";
-import { CompactNotificationSkeleton } from "@/components/loaders";
+import { CompactNotificationSkeleton, NoticeSkeleton } from "@/components/loaders";
 
 type Props = { compact?: boolean; autoRefresh?: boolean };
 
@@ -50,22 +50,6 @@ function NoticeCard({ item, busy, onRead }: {
         ) : null}
       </div>
     </article>
-  );
-}
-
-function NoticeSkeleton() {
-  return (
-    <div className="surface shelf-card notice-skeleton" aria-hidden="true">
-      <div className="notice-story">
-        <span className="notice-icon skel-bar" />
-        <div className="notice-copy">
-          <span className="skel-bar notice-line-title" />
-          <span className="skel-bar notice-line-body" />
-          <span className="skel-bar notice-line-time" />
-        </div>
-      </div>
-      <span className="skel-bar notice-action" />
-    </div>
   );
 }
 

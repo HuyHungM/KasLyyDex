@@ -304,6 +304,74 @@ export function SearchFiltersSkeleton({ label = "Đang tải bộ lọc" }: { la
   );
 }
 
+export function NoticeSkeleton() {
+  return (
+    <div className="surface shelf-card notice-skeleton" aria-hidden="true">
+      <div className="notice-story">
+        <span className="notice-icon skel-bar" />
+        <div className="notice-copy">
+          <span className="skel-bar notice-line-title" />
+          <span className="skel-bar notice-line-body" />
+          <span className="skel-bar notice-line-time" />
+        </div>
+      </div>
+      <span className="skel-bar notice-action" />
+    </div>
+  );
+}
+
+export function AccountPageSkeleton() {
+  return (
+    <div className="volume" role="status" aria-label="Đang tải tài khoản" aria-busy="true">
+      <header className="volume-masthead" aria-hidden="true">
+        <span className="skel-bar volume-kicker" />
+        <span className="skel-bar load-title" />
+        <span className="skel-bar load-sub" />
+      </header>
+      <div className="volume-cover" aria-hidden="true"><AuthSkeleton /></div>
+      <ol className="volume-toc" aria-hidden="true">
+        {Array.from({ length: 3 }, (_, index) => (
+          <li className="toc-row" key={index}>
+            <span className="skel-bar toc-no" />
+            <span className="toc-body"><span className="skel-bar load-input" /></span>
+            <span className="skel-bar toc-label" />
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+export function MangaPageSkeleton() {
+  return (
+    <div role="status" aria-label="Đang tải truyện" aria-busy="true">
+      <span className="back-link skel-bar load-back" aria-hidden="true" />
+      <section className="surface manga-head skel" role="status" aria-label="Đang tải truyện" aria-busy="true">
+        <div className="skel-cover big" aria-hidden="true" />
+        <div className="skel-info" aria-hidden="true">
+          <div className="skel-line w60" /><div className="skel-line w30" /><div className="skel-line w90" />
+          <div className="skel-line w90" /><div className="skel-line w60" />
+          <div className="tags"><span className="skel-pill" /><span className="skel-pill" /><span className="skel-pill" /></div>
+          <div className="actions"><span className="skel-bar load-submit" /></div>
+        </div>
+      </section>
+      <section className="surface chapters-panel" role="status" aria-label="Đang tải danh sách chapter" aria-busy="true">
+        <div className="section-title"><span className="skel-bar load-title" /></div>
+        <div className="lang-tabs" aria-hidden="true"><span className="skel-bar load-pill" /><span className="skel-bar load-pill" /></div>
+        <ul className="chapter-list">
+          {Array.from({ length: 4 }, (_, index) => (
+            <li key={index}>
+              <div className="chapter-row skel-chapter skel" aria-hidden="true">
+                <span className="skel-bar skel-num" /><span className="skel-bar skel-title" /><span className="skel-bar skel-date" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
 export function AuthSkeleton() {
   return (
     <div className="auth-shell auth-shell--state" role="status" aria-label="Đang khôi phục phiên" aria-busy="true">
