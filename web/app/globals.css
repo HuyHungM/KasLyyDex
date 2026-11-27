@@ -545,15 +545,18 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .skel-head { display: flex; gap: 16px; }
 .skel-info { flex: 1; }
 .skel-bar { display: block; min-width: 0; border-radius: 5px; background: var(--hover); }
+.skel-hero .skel-bar { background: rgba(255, 255, 255, .16); }
 .skel-hero .feature-copy { display: grid; align-content: center; gap: 12px; }
-.skel-hero .skel-label { width: 11ch; height: 14px; }
-.skel-hero .skel-title { width: min(80%, 460px); height: clamp(2.5rem, 5vw, 4.5rem); border-radius: 10px; }
-.skel-hero .skel-meta { width: 40%; height: 14px; }
-.skel-hero .skel-desc { width: min(60%, 420px); height: 14px; }
-.skel-hero .skel-action { width: 132px; height: 44px; border-radius: 9px; }
+.skel-hero .skel-label { width: 13ch; height: 12px; border-radius: 999px; background: rgba(255, 255, 255, .22); }
+.skel-hero .skel-title { width: min(78%, 440px); height: clamp(2.4rem, 4.6vw, 4rem); border-radius: 12px; }
+.skel-hero .skel-meta { width: 42%; height: 12px; }
+.skel-hero .skel-desc { width: min(58%, 400px); height: 11px; }
+.skel-hero .skel-desc.short { width: 36%; }
+.skel-hero .skel-action { width: 132px; height: 44px; border-radius: 9px; background: rgba(255, 255, 255, .22); }
 .skel-hero .feature-art { position: absolute; inset: 0; }
-.skel-hero .feature-bleed { position: absolute; inset: 0 0 0 auto; width: 86%; opacity: .35; }
-.skel-hero .feature-poster { position: absolute; right: 11%; top: 50%; height: 86%; width: 30%; border-radius: 10px; transform: translateY(-50%) rotate(4deg); }
+.skel-hero .feature-bleed { position: absolute; inset: 0 0 0 auto; width: 86%; border-radius: 18px; background: linear-gradient(120deg, #3b2a4e, #6a4b86 60%, #2d213a); opacity: .38; filter: blur(18px); transform: scale(1.05); }
+.skel-hero .feature-poster { position: absolute; right: 11%; top: 50%; height: 86%; width: 30%; border: 1px solid rgba(255, 255, 255, .14); border-radius: 12px; background: linear-gradient(160deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, .03)); transform: translateY(-50%) rotate(4deg); box-shadow: 0 16px 44px #08090955; }
+.skel-hero .feature-badge { position: absolute; z-index: 2; right: 11%; bottom: 12%; width: 68px; height: 18px; border-radius: 999px; background: rgba(255, 255, 255, .22); }
 .skel-hero .feature-slider-controls { position: absolute; left: clamp(16px, 3vw, 36px); bottom: 16px; }
 .skel-hero .feature-dots { display: flex; gap: 5px; }
 .skel-hero .feature-dots .skel-bar { width: 8px; height: 4px; border-radius: 999px; }
@@ -639,7 +642,7 @@ progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-col
 .img-fade[data-loaded="true"] { opacity: 1; }
 @media (max-width: 639px) {
   .skel-hero .skel-title { width: 76%; height: 2.5rem; }
-  .skel-hero .skel-desc, .skel-hero .feature-poster { display: none; }
+  .skel-hero .skel-desc, .skel-hero .feature-poster, .skel-hero .feature-badge { display: none; }
 }
 @media (min-width: 640px) {
   .skel-chapter .skel-date { grid-column: auto; }

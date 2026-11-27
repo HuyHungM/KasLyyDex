@@ -123,6 +123,11 @@ test("home, search and manga fallbacks use shape-matched skeletons with accessib
   await assertStatus(page.locator(".chapter-feed:has(.skel-feed):visible"));
   await assertStatus(page.locator(".rank-list:has(.skel-rank):visible"));
   assert.ok(await page.locator(".skel-card:visible").count() >= 4, "popular rail needs card skeletons");
+  assert.ok(await page.locator(".skel-hero .feature-badge").count() >= 1, "hero skeleton needs a badge slot");
+  assert.equal(await page.locator(".skel-hero .skel-desc").count(), 2, "hero skeleton needs two compact description lines");
+  assert.equal(await page.locator(".skel-hero .feature-dots .skel-bar").count(), 10, "hero skeleton needs ten dots");
+  assert.equal(await page.locator(".skel-card .card-cover").count() >= 4, true, "card skeletons need cover slots");
+  assert.ok(await page.locator(".skel-feed .feed-cover").count() >= 2, "feed skeletons need cover slots");
   assert.ok(await page.locator(".skel-feed:visible").count() >= 2, "feed needs row skeletons");
   assert.ok(await page.locator(".skel-rank:visible").count() >= 3, "rank needs row skeletons");
 

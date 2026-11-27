@@ -21,14 +21,16 @@ function HeroSkeleton() {
   return (
     <div className="feature skel-hero feature-slider skel" role="status" aria-label="Đang tải truyện nổi bật">
       <div className="feature-art" aria-hidden="true">
-        <span className="feature-bleed skel-bar" />
-        <span className="feature-poster skel-bar" />
+        <span className="feature-bleed" />
+        <span className="feature-poster" />
+        <span className="skel-bar feature-badge" />
       </div>
       <div className="feature-copy" aria-hidden="true">
         <span className="skel-bar skel-label" />
         <span className="skel-bar skel-title" />
         <span className="skel-bar skel-meta" />
         <span className="skel-bar skel-desc" />
+        <span className="skel-bar skel-desc short" />
         <span className="skel-bar skel-action" />
       </div>
       <div className="feature-slider-controls" aria-hidden="true">
