@@ -129,7 +129,7 @@ test("home hero rotates top picks and ranking has day/month tabs, without hero s
   const featured = renderPage("app/page.tsx", {});
   assert.doesNotMatch(featured, heroSearch);
   assert.match(featured, /class="feature feature-slider"/);
-  assert.match(featured, /Top 10 nổi bật/);
+  assert.match(featured, /Top 10 ngày/);
   assert.match(featured, /aria-label="Top 10 truyện nổi bật · 1\/1"/);
   assert.match(featured, /class="rank-switch"/);
   assert.match(featured, /Top ngày/);

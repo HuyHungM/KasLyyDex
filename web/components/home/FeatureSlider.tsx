@@ -72,7 +72,7 @@ export default function FeatureSlider({ items }: { items: MangaSummaryDto[] }) {
         key={`copy-${layer}-${item.id}`}
         aria-hidden={active ? undefined : true}
       >
-        <p className="feature-label"><span aria-hidden="true" />Top 10 nổi bật · {slide.current + 1}/{items.length}</p>
+        <p className="feature-label"><span aria-hidden="true" />Top 10 ngày · {slide.current + 1}/{items.length}</p>
         {active ? <h1 id="featured-title">{item.title}</h1> : <h2 className="feature-title">{item.title}</h2>}
         <p className="feature-meta">
           {item.rating && item.rating > 0 ? <strong>★ {item.rating.toFixed(1)}</strong> : null}
