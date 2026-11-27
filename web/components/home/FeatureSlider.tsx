@@ -90,7 +90,7 @@ export default function FeatureSlider({ items }: { items: MangaSummaryDto[] }) {
   return (
     <section
       className="feature feature-slider"
-      aria-label={`Top 10 truyện nổi bật · ${slide.current + 1}/${items.length}`}
+      aria-label={`Top 10 ngày · ${slide.current + 1}/${items.length}`}
       onMouseEnter={() => setInteracting(true)}
       onMouseLeave={() => setInteracting(false)}
       onFocusCapture={() => setInteracting(true)}

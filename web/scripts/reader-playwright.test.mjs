@@ -93,7 +93,7 @@ before(async () => {
       pages: 4,
       externalUrl: null,
       translatedLanguage: "vi",
-      readableAt: `2026-11-2${number}T00:00:00Z`,
+      readableAt: new Date(Date.now() - number * 3600_000).toISOString(),
     },
     relationships: [{ type: "manga", id: MANGA_ID }],
   });

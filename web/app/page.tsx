@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { dailyFeatured } from "@/lib/home-feature";
 import { serverContent } from "@/lib/content-server";
 import { coverImageUrl, type LatestMangaDto, type MangaSummaryDto } from "@/lib/contracts";
 import { chapterName, relDate } from "@/lib/format";
@@ -95,7 +96,7 @@ function FeatureFallback() {
 }
 
 async function Featured() {
-  const list = await withContent((client) => client.rank("follows").then((rows) => rows.slice(0, 10)), [] as MangaSummaryDto[]);
+  const list = await withContent(async (client) => dailyFeatured(await client.latest()), [] as LatestMangaDto[]);
   if (list.length === 0) return <FeatureFallback />;
   return <FeatureSlider items={list} />;
 }

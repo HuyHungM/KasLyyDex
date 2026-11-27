@@ -67,7 +67,7 @@ const sourceFixture = {
   rank: [sourceManga],
   latest: [{
     ...sourceManga,
-    chapters: [{ id: "c1", chapter: "1", lang: "vi", publish_at: "2026-11-20T00:00:00Z" }],
+    chapters: [{ id: "c1", chapter: "1", lang: "vi", publish_at: new Date(Date.now() - 3600_000).toISOString() }],
   }],
   manga: sourceManga,
   chapters: { vi: [], en: [] },
